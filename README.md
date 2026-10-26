@@ -124,7 +124,9 @@ tắt.
     trang chẵn, số trang ở mép ngoài). Thay vào là một dòng "Trang " + trường PAGE + "/" + trường
     NUMPAGES ở chỗ PDF đặt số trang (giữa chân trang nếu PDF không có hay số trang đổi bên); y
     giữ số của PDF khi nhãn ghi tổng khác số trang ("Trang 1/4" trong file 6 trang có 2 trang đáp
-    án). Thêm/bớt trang trong Word thì số trang tự cập nhật.
+    án). Thêm/bớt trang trong Word thì số trang tự cập nhật. Đoạn đứng ngay sau một dòng bị bỏ
+    (đầu/chân trang, chữ watermark, link) lấy khoảng trước đoạn từ phần còn lại phía trên nó (0 ở
+    đầu trang), không từ dòng đã bỏ: chữ chạy liền nên khoảng đó sẽ thành khe hở giữa trang.
   - Khoảng dòng và khoảng cách đoạn lấy từ baseline thật. Độ rộng "tự nhiên" của mỗi dòng
     (tổng bề rộng ký tự) cho biết dòng nào nhà sản xuất PDF đã nén khoảng trắng; đoạn đó
     được thụt lề phải âm vừa đủ để Word ngắt dòng y như bản gốc.

@@ -162,8 +162,33 @@ def strip_watermarks(pages: list[PageLayout]) -> tuple[int, int]:
                 paragraphs += 1
             else:
                 kept.append(el)
-        page.elements = kept
+        _keep_only(page, kept)
     return pictures, paragraphs
+
+
+def _keep_only(page: PageLayout, kept: list) -> None:
+    """Keep these of the page's elements. One that followed a dropped line (a
+    header, a stamp, a link) gets its space before from what is now above it –
+    nothing at the top of the page – not from the line that is gone: once the
+    text flows on in Word that space would open up mid-page."""
+    ids = {id(e) for e in kept}
+    out, prev, after_gap = [], None, False
+    held = [(p.y0, p.y1) for p in page.pictures if p.wrap and not p.behind_text]
+    for el in page.elements:
+        if id(el) not in ids:
+            after_gap = True
+            continue
+        if after_gap:
+            if prev is None:
+                el.space_before_pt = 0.0
+            else:
+                gap = max(el.y0 - prev.y1 - (0.3 * el.font_pt if page.source == "ocr" else 0.0), 0.0)
+                figure = any(y0 < el.y0 and y1 > prev.y1 for y0, y1 in held)
+                el.space_before_pt = gap if figure else min(gap, 72.0)
+            after_gap = False
+        out.append(el)
+        prev = el
+    page.elements = out
 
 
 def el_zone(el) -> str | None:
@@ -276,7 +301,10 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
                         occurrences.setdefault(k, []).append((i, el.text))
                 else:
                     kept.append(el)
-            setattr(page, attr, kept)
+            if attr == "elements":
+                _keep_only(page, kept)
+            else:
+                page.pictures = kept
     for k, found in occurrences.items():
         _page_number_fields(templates[k][1], found, len(pages))
 
@@ -308,7 +336,7 @@ def _page_number_template(pages: list[PageLayout]) -> Paragraph | None:
     hits = list(first_per_page.values())
     for i, el, *_, j in hits:
         if not _keep_pieces(el, lambda index, _, target=j: index != target):
-            pages[i].elements.remove(el)
+            _keep_only(pages[i], [e for e in pages[i].elements if e is not el])
     texts = [canonical(h[4]).lower() for h in hits]
     labels = (("trang", "Trang "), ("page", "Page "))
     prefix = next((label for key, label in labels if any(key in t for t in texts)), "")
