@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF sang Word (OCR)</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+    --accent: #2754e6; --accent-soft: #eef2ff; --ok: #12805c; --err: #c4320a; --err-soft: #fff1ec;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b1f27; --text: #e7e9ee; --muted: #98a1b2; --line: #2c323d;
+      --accent: #6d8dff; --accent-soft: #232b45; --ok: #3ccf91; --err: #ff8a65; --err-soft: #3a2420;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: var(--radius); padding: 40px 16px; text-align: center;
+          cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop.over, .drop:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .drop strong { color: var(--accent); }
+  .file { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .file .name { font-weight: 600; word-break: break-all; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+           background: var(--accent-soft); color: var(--accent); }
+  .options { display: grid; gap: 10px; margin: 16px 0; }
+  .opt { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px;
+         padding: 12px 14px; cursor: pointer; }
+  .opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .opt input { margin-top: 4px; accent-color: var(--accent); }
+  .opt b { display: block; }
+  .opt span { color: var(--muted); font-size: 13px; }
+  label.lang { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+  select { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); }
+  button, a.btn { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 11px 18px; cursor: pointer;
+                  background: var(--accent); color: #fff; text-decoration: none; display: inline-block; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 12px 0 6px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .done h2 { color: var(--ok); margin: 0 0 8px; font-size: 18px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 12px 0 16px; }
+  .stats div { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+  .stats small { color: var(--muted); display: block; font-size: 12px; }
+  .error { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  details { margin-top: 24px; }
+  summary { cursor: pointer; color: var(--muted); }
+  #log { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all;
+         background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; max-height: 420px; overflow: auto; }
+  #log .req { color: var(--accent); font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PDF sang Word</h1>
+  <p class="sub">Upload → phân tích → chuyển (cơ bản hoặc OCR) → tải về.</p>
+
+  <div id="error" class="error" hidden></div>
+
+  <section id="pick" class="card">
+    <div id="drop" class="drop">
+      <div>Kéo thả file PDF vào đây hoặc <strong>chọn file</strong></div>
+      <div class="meta">Tối đa 50 MB, 50 trang</div>
+    </div>
+    <input id="input" type="file" accept="application/pdf,.pdf" hidden>
+  </section>
+
+  <section id="work" class="card" hidden>
+    <div class="file">
+      <div><div class="name" id="fname"></div><div class="meta" id="fmeta"></div></div>
+      <span class="badge" id="kind" hidden></span>
+    </div>
+
+    <div id="busy">
+      <div class="bar"><div id="barfill"></div></div>
+      <div class="meta" id="status"></div>
+    </div>
+
+    <form id="options" hidden>
+      <div class="options">
+        <label class="opt"><input type="radio" name="mode" value="basic">
+          <div><b>Chuyển đổi cơ bản</b><span>Dựng lại từ lớp text có sẵn: giữ font, màu, số mũ, hình, header/footer; tự chuyển font VNI/TCVN3. Trang scan giữ dạng ảnh.</span></div></label>
+        <label class="opt"><input type="radio" name="mode" value="ocr">
+          <div><b>Nâng cao với OCR</b><span>Như cơ bản, và nhận dạng chữ (Tesseract) cho trang scan và ảnh lớn chứa chữ để sửa được trong Word.</span></div></label>
+      </div>
+      <label class="lang"><input type="checkbox" id="strip">
+        <span>Xoá watermark, chữ đóng dấu mờ và link ở header/footer</span>
+      </label>
+      <div id="ocrrow">
+        <label class="lang">Ngôn ngữ OCR
+          <select id="lang"></select>
+        </label>
+        <label class="lang"><input type="checkbox" id="full">
+          <span>OCR toàn bộ trang, bỏ qua lớp text có sẵn <span class="meta">(khi text trong PDF bị lỗi font)</span></span>
+        </label>
+      </div>
+      <button type="submit">Chuyển sang Word →</button>
+    </form>
+
+    <div id="done" class="done" hidden>
+      <h2>Xong</h2>
+      <div class="stats" id="stats"></div>
+      <div class="row">
+        <a class="btn" id="download" href="#">Tải file .docx</a>
+        <button class="ghost" type="button" id="again">Chuyển file khác</button>
+      </div>
+    </div>
+  </section>
+
+  <details>
+    <summary>Nhật ký API (các request đã gửi)</summary>
+    <div id="log"></div>
+  </details>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KIND = { text: "PDF có text", scan: "Bản scan", mixed: "Hỗn hợp", empty: "Trang trống" };
+const LANG_LABEL = { vie: "Tiếng Việt", eng: "English", "vie+eng": "Tiếng Việt + English" };
+const ERRORS = {
+  password: "File PDF được đặt mật khẩu. Hãy gỡ mật khẩu rồi thử lại.",
+  corrupt_pdf: "File PDF bị hỏng hoặc không đọc được.",
+  no_pages_in_pdf: "File PDF không có trang nào.",
+  too_many_pages: "File vượt quá số trang cho phép.",
+  no_text_found: "Không nhận dạng được chữ nào trong file.",
+  input_tokens: "File không còn trên server (có thể đã hết hạn). Hãy upload lại.",
+  timeout: "Xử lý quá lâu, đã dừng chờ.",
+  internal_server_error: "Lỗi server khi xử lý file.",
+};
+let state = {};
+
+function log(method, url, body, res) {
+  const el = $("log");
+  const line = document.createElement("div");
+  line.innerHTML = `<span class="req"></span>\n`;
+  line.firstChild.textContent = `${method} ${url}`;
+  line.append(
+    (body ? "→ " + JSON.stringify(body) + "\n" : "") + "← " + JSON.stringify(res) + "\n\n"
+  );
+  el.append(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({ success: false, error: `HTTP ${res.status}` }));
+  log(method, url, body, json);
+  if (!res.ok || json.success === false) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+function putFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("content-type", "application/pdf");
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let json = {};
+      try { json = JSON.parse(xhr.responseText); } catch {}
+      log("PUT", url.split("?")[0] + "?expires=…&sig=…", null, json);
+      xhr.status < 300 ? resolve(json) : reject(new Error(json.error || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("Lỗi mạng khi upload"));
+    xhr.send(file);
+  });
+}
+
+const newTaskId = () => crypto.randomUUID().replaceAll("-", "");
+
+async function runTask(tool, options) {
+  const task_id = newTaskId();
+  await api("POST", "/v1/tasks", { tool, task_id, input_tokens: [state.token], options });
+  const deadline = Date.now() + 10 * 60 * 1000;
+  let logged = false;
+  while (true) {
+    if (Date.now() > deadline) throw Object.assign(new Error("timeout"), { code: "timeout" });
+    await new Promise((r) => setTimeout(r, 700));
+    const res = await fetch(`/v1/tasks/${task_id}`).then((r) => r.json());
+    const data = res.data;
+    if (!data) throw new Error(res.error || "Không lấy được trạng thái task");
+    const { current, total } = data.progress;
+    if (total) setProgress(current / total, `Đang xử lý trang ${Math.min(current + 1, total)}/${total}…`);
+    if (data.status === "done" || data.status === "failed") {
+      log("GET", `/v1/tasks/${task_id}`, null, res);
+      if (data.status === "failed") {
+        throw Object.assign(new Error(data.result.error_fe), { code: data.result.error_fe });
+      }
+      return data.result;
+    } else if (!logged) {
+      log("GET", `/v1/tasks/${task_id}`, null, res);
+      logged = true;
+    }
+  }
+}
+
+function setProgress(frac, text) {
+  $("barfill").style.width = `${Math.round(frac * 100)}%`;
+  $("status").textContent = text;
+}
+
+function showError(err) {
+  $("error").textContent = ERRORS[err.code] || ERRORS[err.message] || err.message;
+  $("error").hidden = false;
+  $("busy").hidden = true;
+}
+
+function reset() {
+  state = {};
+  for (const id of ["error", "work", "options", "done", "kind"]) $(id).hidden = true;
+  $("pick").hidden = false;
+  $("input").value = "";
+}
+
+async function handleFile(file) {
+  reset();
+  if (!file.name.toLowerCase().endsWith(".pdf")) return showError(new Error("Chỉ hỗ trợ file .pdf"));
+  state.name = file.name;
+  $("pick").hidden = true;
+  $("work").hidden = false;
+  $("busy").hidden = false;
+  $("fname").textContent = file.name;
+  $("fmeta").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+  try {
+    setProgress(0, "Đang upload…");
+    const up = await api("POST", "/v1/upload-url", { filename: file.name });
+    await putFile(up.url, file, (f) => setProgress(f, `Đang upload… ${Math.round(f * 100)}%`));
+    state.token = up.token;
+
+    setProgress(1, "Đang phân tích file…");
+    const analysis = (await runTask("analyse-document", {})).options;
+    if (analysis.password_protected) throw Object.assign(new Error("password"), { code: "password" });
+    $("fmeta").textContent += ` · ${analysis.page_count} trang`;
+    $("kind").textContent = KIND[analysis.kind] || analysis.kind;
+    $("kind").hidden = false;
+
+    // Preselect OCR when the file is a scan.
+    const mode = analysis.kind === "scan" ? "ocr" : "basic";
+    document.querySelector(`input[value=${mode}]`).checked = true;
+    $("ocrrow").hidden = mode !== "ocr";
+    $("busy").hidden = true;
+    $("options").hidden = false;
+  } catch (err) {
+    showError(err);
+  }
+}
+
+async function convert(e) {
+  e.preventDefault();
+  const mode = new FormData($("options")).get("mode");
+  const ocrType = mode === "ocr" ? ($("full").checked ? "ocr-full" : "ocr") : "";
+  const options = {
+    ocr_type: ocrType,
+    languages: ocrType ? $("lang").value.split("+") : [],
+    strip_watermarks: $("strip").checked,
+  };
+  $("options").hidden = true;
+  $("error").hidden = true;
+  $("busy").hidden = false;
+  setProgress(0, "Đang chuyển đổi…");
+  const started = performance.now();
+  try {
+    const result = await runTask("pdf-to-word", options);
+    const info = result.options;
+    const stem = state.name.replace(/\.pdf$/i, "");
+    $("download").href = `/v1/files/${result.output_files[0]}?name=${encodeURIComponent(stem + ".docx")}`;
+    const pageKinds = [
+      info.pages_native && `${info.pages_native} text gốc`,
+      info.pages_ocr && `${info.pages_ocr} OCR`,
+      info.pages_image && `${info.pages_image} ảnh`,
+    ].filter(Boolean).join(" · ");
+    const stats = [
+      ["Thời gian", `${((performance.now() - started) / 1000).toFixed(1)} giây`],
+      ["Trang", `${info.page_count} (${pageKinds})`],
+      ["OCR", info.used_ocr ? `Có (${info.ocr_languages.map((l) => LANG_LABEL[l] || l).join(", ")})` : "Không cần"],
+      ["Hình", info.pictures],
+      ["Header/footer", info.header_footer ? "Có" : "Không"],
+    ];
+    if (info.legacy_font_spans) stats.push(["Đoạn font VNI/TCVN3 đã chuyển", info.legacy_font_spans]);
+    if (info.removed_watermarks || info.removed_lines) {
+      stats.push(["Đã xoá", `${info.removed_watermarks} watermark · ${info.removed_lines} dòng link/dấu mờ`]);
+    }
+    if (info.used_ocr) {
+      stats.push(["Số từ nhận dạng", info.word_count], ["Độ tin cậy TB", `${info.avg_confidence}%`]);
+    }
+    $("stats").innerHTML = "";
+    for (const [k, v] of stats) {
+      const d = document.createElement("div");
+      d.innerHTML = "<small></small><span></span>";
+      d.children[0].textContent = k;
+      d.children[1].textContent = v;
+      $("stats").append(d);
+    }
+    $("busy").hidden = true;
+    $("done").hidden = false;
+  } catch (err) {
+    showError(err);
+    $("options").hidden = false;
+  }
+}
+
+async function loadLanguages() {
+  const { languages, default: def } = await fetch("/v1/languages").then((r) => r.json());
+  const choices = [];
+  if (languages.includes("vie")) choices.push("vie");
+  if (languages.includes("vie") && languages.includes("eng")) choices.push("vie+eng");
+  for (const l of languages) if (l !== "vie") choices.push(l);
+  for (const c of choices) {
+    const o = new Option(LANG_LABEL[c] || c, c);
+    o.selected = c === def.join("+");
+    $("lang").append(o);
+  }
+}
+
+$("drop").onclick = () => $("input").click();
+$("input").onchange = () => $("input").files[0] && handleFile($("input").files[0]);
+$("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("over"); };
+$("drop").ondragleave = () => $("drop").classList.remove("over");
+$("drop").ondrop = (e) => {
+  e.preventDefault();
+  $("drop").classList.remove("over");
+  e.dataTransfer.files[0] && handleFile(e.dataTransfer.files[0]);
+};
+$("options").onsubmit = convert;
+$("options").onchange = () => {
+  $("ocrrow").hidden = new FormData($("options")).get("mode") !== "ocr";
+};
+$("again").onclick = reset;
+loadLanguages();
+</script>
+</body>
+</html>
