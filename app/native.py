@@ -681,6 +681,9 @@ class _Extractor:
         spans = [s for b in blocks if b["type"] == 0 for ln in b["lines"] for s in ln["spans"]]
         for s in spans:  # rawdict has per-character boxes instead of "text"
             s["text"] = "".join(c["c"] for c in s["chars"])
+        for b in blocks:
+            if b["type"] == 0:
+                b["lines"] = _join_interleaved(b["lines"])
         total = sum(len(s["text"].strip()) for s in spans)
         hidden = sum(len(s["text"].strip()) for s in spans if s.get("alpha", 255) == 0)
         # Searchable scans carry an invisible OCR layer: keep it as the text.
@@ -1493,6 +1496,58 @@ def _split_at_tabs(spans: list[dict]) -> list[dict]:
             piece["origin"] = part[0]["origin"]
             piece["tab_before"] = k > 0 or s.get("tab_before", False)
             out.append(piece)
+    return out
+
+
+def _line_baseline(line: dict) -> tuple[float, float] | None:
+    """(baseline, size) of a line's main text, or None for a blank or rotated line."""
+    visible = [s for s in line["spans"] if s["text"].strip()]
+    if not visible or abs(line["dir"][1]) > 0.02 or line["dir"][0] < 0:
+        return None
+    main = max(s["size"] for s in visible)
+    return median(s["origin"][1] for s in visible if s["size"] > main - 0.5), main
+
+
+def _join_interleaved(lines: list[dict]) -> list[dict]:
+    """Lines of a block that run into each other on one baseline become one
+    line, their spans in order across: Word's export puts a superscript and the
+    text after it in a line of its own that starts inside the previous one
+    ("J/kg" "C" + "⁰" ") được"). A blank span starting on a glyph of the other
+    line is dropped; one running under a glyph is cut short at it (the printed
+    space before the superscript, not a tab)."""
+    out: list[dict] = []
+    for line in lines:
+        base = _line_baseline(line)
+        host = None
+        if base is not None:
+            for q in out:
+                qb = _line_baseline(q)
+                if (
+                    qb is not None
+                    and abs(qb[0] - base[0]) <= 0.3 * max(qb[1], base[1])
+                    and line["bbox"][0] < q["bbox"][2] - 1
+                    and q["bbox"][0] < line["bbox"][2] - 1
+                ):
+                    host = q
+                    break
+        if host is None:
+            out.append(line)
+            continue
+        spans = host["spans"] + line["spans"]
+        boxes = [pymupdf.Rect(s["bbox"]) for s in spans if s["text"].strip()]
+        spans = [
+            s for s in spans
+            if s["text"].strip() or not any(r.x0 - 0.5 <= s["bbox"][0] < r.x1 - 0.5 for r in boxes)
+        ]
+        for k, s in enumerate(spans):
+            if s["text"].strip():
+                continue
+            end = min((r.x0 for r in boxes if s["bbox"][0] < r.x0 < s["bbox"][2]), default=None)
+            if end is not None:
+                cut = lambda bb: (bb[0], bb[1], min(bb[2], end), bb[3])  # noqa: E731
+                spans[k] = {**s, "bbox": cut(s["bbox"]), "chars": [{**c, "bbox": cut(c["bbox"])} for c in s["chars"]]}
+        host["spans"] = sorted(spans, key=lambda s: s["bbox"][0])
+        host["bbox"] = tuple(pymupdf.Rect(host["bbox"]) | pymupdf.Rect(line["bbox"]))
     return out
 
 

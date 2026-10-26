@@ -105,7 +105,9 @@ tắt.
     lần nữa cạnh ảnh). Ảnh chỉ có nét của chính công thức trên nền trong suốt: watermark, nền ô,
     chữ xoay chéo phía sau và mép dòng bên cạnh đều không lọt vào. Dấu câu ngay sau công thức
     (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%", "(1) 6273." là chữ. Dòng
-    bị PDF cắt quanh công thức được nối lại; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
+    bị PDF cắt quanh công thức được nối lại; hai dòng của PDF chen nhau trên cùng đường chân chữ (số
+    mũ "⁰" cùng ") được" là một dòng riêng bắt đầu giữa "J/kg" và "C") được ghép theo thứ tự ngang,
+    không thành tab; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
     thức rộng cạnh hình không bị coi là nhãn của hình.
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
     mép (tên trục "s (km)", vạch chia "O", "2 4 5"; ở trên/dưới hình thì phải nằm trong bề ngang
