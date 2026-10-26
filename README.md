@@ -23,6 +23,10 @@ https://github.com/tesseract-ocr/tessdata_best vào `tessdata/`; giao diện t�
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `TESSERACT_CMD`.
 
+Cập nhật bản chạy trên máy chủ (dịch vụ systemd `pdf2word`): `./scripts/deploy.sh`. Script
+`git pull`, cài lại thư viện khi `requirements.txt` đổi và chỉ restart khi `app/` đổi (giao diện
+`static/` đọc thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
+
 ## Luồng API
 
 | Bước | Request |
