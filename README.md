@@ -96,10 +96,16 @@ tắt.
     "!", "\"", "#"…, chữ toán Unicode (𝑥) – được cắt thành **ảnh nội dòng** 300 DPI đúng chỗ trong
     câu, hạ theo baseline (alt "Công thức (ảnh)"). Vùng công thức là nhóm glyph công thức cùng
     glyph Symbol/Cambria Math kề bên (cùng dòng: cách ≤0,35em; chồng nhau như cận tích phân: chỉ
-    glyph nhỏ hơn) và nét vẽ dính vào (gạch phân số, căn, mũi tên, vạch trị tuyệt đối "|x|").
-    Dấu câu ngay sau công thức (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và
-    nhãn "(1)", "20%" là chữ. Dòng bị PDF cắt quanh công thức được nối lại; mảnh sát nhau ghép
-    thẳng, không chèn tab.
+    glyph nhỏ hơn nằm giữa glyph lớn) và nét vẽ dính vào (gạch phân số, căn, mũi tên, vạch trị
+    tuyệt đối "|x|"). Gạch phân số giữ tử và mẫu đặt gọn trên/dưới nó thành một khối, kể cả chữ
+    thường trong phương trình Word ("Năng lượng nhận được", "1/110" Cambria Math); gạch chân thì
+    cắt qua hộp chữ nên không bị coi là gạch phân số. Hai dòng công thức xếp sát nhau vẫn là hai
+    ảnh. Khối chồng lên nhau gộp làm một, chữ nằm gần trọn trong khối thuộc về khối (không viết lại
+    lần nữa cạnh ảnh). Ảnh chỉ có nét của chính công thức trên nền trong suốt: watermark, nền ô,
+    chữ xoay chéo phía sau và mép dòng bên cạnh đều không lọt vào. Dấu câu ngay sau công thức
+    (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%" là chữ. Dòng
+    bị PDF cắt quanh công thức được nối lại; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
+    thức rộng cạnh hình không bị coi là nhãn của hình.
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
     mép (tên trục "s (km)", vạch chia "O", "2 4 5"; ở trên/dưới hình thì phải nằm trong bề ngang
     hình – "PHẦN I." trên bảng là tiêu đề) được render cùng hình; hình lớn đè lên chữ

@@ -11,7 +11,7 @@ is kept rather than re-recognised.
 - Formulas whose glyphs carry no usable text (MathType/Equation exported by
   Word: subset fonts read as "!\"#$", Cambria Math) are cut out as inline
   pictures at their place in the line, with the bars and radicals drawn
-  around them.
+  around them, on a clear ground (no watermark from behind).
 - Raster images and vector drawings become floating pictures; small labels
   over a figure are rendered into it, large drawings (watermarks) go behind
   the text.
@@ -234,6 +234,40 @@ def _join_strips(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     return out
 
 
+def _fraction_parts(bar: pymupdf.Rect, marks: list[tuple]) -> list[int]:
+    """Formula glyphs (node indexes) of the fraction a thin bar draws: a
+    numerator right above it and a denominator right below it, both centred
+    within it. Glyph boxes reach the font's descent, so an underline runs
+    through the boxes of the text it underlines, while a fraction bar keeps
+    clear of its numerator and denominator."""
+    over, under = [], []
+    for rect, size, _c, node in marks:
+        cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
+        if not bar.x0 - 1 <= cx <= bar.x1 + 1:
+            continue
+        if cy < bar.y0 and bar.y0 - 0.5 * size <= rect.y1 <= bar.y1 + 0.35 * size:
+            if rect.y1 > bar.y1 + 0.5:
+                return []
+            over.append(node)
+        elif cy > bar.y1 and bar.y0 - 0.35 * size <= rect.y0 <= bar.y1 + 0.5 * size:
+            if rect.y0 < bar.y0 - 0.5:
+                return []
+            under.append(node)
+    over, under = [k for k in over if k is not None], [k for k in under if k is not None]
+    return over + under if over and under else []
+
+
+def _overlaps(a: pymupdf.Rect, b: pymupdf.Rect) -> bool:
+    """Boxes sharing a good part of the smaller one (not just a grazing edge)."""
+    common = a & b
+    return not common.is_empty and abs(common) >= 0.3 * min(abs(a), abs(b))
+
+
+def _mostly_inside(r: pymupdf.Rect, box: pymupdf.Rect) -> bool:
+    common = r & box
+    return not common.is_empty and abs(common) >= 0.6 * abs(r)
+
+
 def _min_size(rect: pymupdf.Rect, minimum: float = 2.0) -> pymupdf.Rect:
     r = pymupdf.Rect(rect)
     if r.width < minimum:
@@ -424,6 +458,7 @@ class _Extractor:
         self.invisible_layer = False
         self.rotated_lines: list[dict] = []
         self._stripped_doc = None
+        self._ground_doc = None
         self._ink_refs: tuple[float | None, float | None] | None = None
         self._bold_cache: dict[tuple, bool] = {}
 
@@ -477,9 +512,10 @@ class _Extractor:
         """The span's runs: one, or several where underline/highlight change mid-span."""
         if span.get("formula") is not None:
             f = span["formula"]
-            box = f["box"] = self._formula_box(f["rect"])
+            box, image = self._formula_picture(f)
+            f["box"] = box
             run = Run(
-                text=OBJ, size=_half(main), image=self._render_formula(box), image_w=box.width,
+                text=OBJ, size=_half(main), image=image, image_w=box.width,
                 image_h=box.height, image_depth=box.y1 - baseline,
             )
             f["run"] = run
@@ -575,9 +611,7 @@ class _Extractor:
 
     def _row(self, block: int, line: dict, skip_invisible: bool, hosted=()) -> _Row | None:
         dx, dy = line["dir"]
-        if abs(dy) > 0.02 or dx < 0:  # rotated text: watermarks, stamps
-            if any(s["text"].strip() for s in line["spans"]):
-                self.rotated_lines.append(line)
+        if abs(dy) > 0.02 or dx < 0:  # rotated text (watermarks, stamps): collected in rows()
             return None
         # Text under 4pt cannot be read on paper (a 3pt white "c" left as a marker): dropped.
         spans = [
@@ -648,6 +682,11 @@ class _Extractor:
         hidden = sum(len(s["text"].strip()) for s in spans if s.get("alpha", 255) == 0)
         # Searchable scans carry an invisible OCR layer: keep it as the text.
         self.invisible_layer = total > 0 and hidden > 0.5 * total
+        # rotated text (watermarks, stamps) goes to the background; formula pictures leave it out
+        self.rotated_lines = [
+            ln for b in blocks if b["type"] == 0 for ln in b["lines"]
+            if (abs(ln["dir"][1]) > 0.02 or ln["dir"][0] < 0) and any(s["text"].strip() for s in ln["spans"])
+        ]
         hosts: dict[int, list[dict]] = {}
         if not self.invisible_layer:
             self.formulas = self._find_formulas(blocks)
@@ -674,8 +713,10 @@ class _Extractor:
         """Regions of formulas without usable text: connected groups of formula
         glyphs (opaque spans, math alphanumerics), Symbol/math-font glyphs and
         the small drawings touching them (fraction bars, radicals, arrows). A
-        group needs at least one formula glyph; Symbol alone stays text."""
+        group needs at least one formula glyph or a fraction bar; Symbol alone
+        stays text."""
         nodes: list[list] = []  # [rect, kind, size, drawing index, char]; kind 2 formula, 1 joins, 0 drawing
+        marks: list[tuple] = []  # every visible upright glyph: (rect, size, char, node index or None)
         for b in blocks:
             if b["type"] != 0:
                 continue
@@ -696,24 +737,33 @@ class _Extractor:
                         has_formula and _maybe_opaque(s["text"])
                     )
                     for c in s["chars"]:
-                        if not c["c"].strip():
+                        if not c["c"].strip() or s["size"] < 4:
                             continue
                         kind = 2 if formula_span or _math_alnum(c["c"]) else 1 if joins else 0
+                        marks.append((pymupdf.Rect(c["bbox"]), s["size"], c, len(nodes) if kind else None))
                         if kind:
                             nodes.append([pymupdf.Rect(c["bbox"]), kind, s["size"], None, c])
-        if not any(n[1] == 2 for n in nodes):
+        if not nodes:
             return []
+        in_table = lambda r: any(  # noqa: E731
+            t.x0 - 1 <= r.x0 and r.x1 <= t.x1 + 1 and t.y0 - 1 <= r.y0 and r.y1 <= t.y1 + 1 for t in self.table_rects
+        )
+        fractions: list[tuple[int, list[int]]] = []  # (bar node, glyph nodes over and under it)
         for i, d in enumerate(self.drawings):
             r = pymupdf.Rect(d["rect"])
             # an upright stroke outside ruled tables: an absolute-value bar or a bracket
-            upright = r.width <= 1 and 0 < r.height <= 40 and not any(
-                t.x0 - 1 <= r.x0 and r.x1 <= t.x1 + 1 and t.y0 - 1 <= r.y0 and r.y1 <= t.y1 + 1 for t in self.table_rects
+            upright = r.width <= 1 and 0 < r.height <= 40 and not in_table(r)
+            parts = (
+                _fraction_parts(r, marks) if r.height <= 2 and 3 <= r.width <= 0.9 * self.width and not in_table(r) else []
             )
             if upright:  # a zero-width box is empty to PyMuPDF and would drop out of the region
                 nodes.append([pymupdf.Rect(r.x0 - 0.5, r.y0, r.x1 + 0.5, r.y1), 0, None, i, None, True])
-            elif r.width <= 0.3 * self.width and r.height <= 40 and not r.is_empty or (r.height <= 2 and r.width <= 0.3 * self.width):
+            elif parts or r.width <= 0.3 * self.width and r.height <= 40 and not r.is_empty or (r.height <= 2 and r.width <= 0.3 * self.width):
+                if parts:
+                    fractions.append((len(nodes), parts))
                 nodes.append([r, 0, None, i, None, False])
         parent = list(range(len(nodes)))
+        in_fraction = {id(nodes[k]) for _bar, parts in fractions for k in parts}
 
         def find(a: int) -> int:
             while parent[a] != a:
@@ -741,11 +791,18 @@ class _Extractor:
             size = min(a[2], b[2])
             hgap = max(rb.x0 - ra.x1, ra.x0 - rb.x1)
             vgap = max(rb.y0 - ra.y1, ra.y0 - rb.y1)
-            if vgap < 0:  # on one line: neighbours, scripts (a script's gap scales with its base)
+            # on one line: neighbours, scripts (a script's gap scales with its base); the boxes of
+            # two tightly set lines touch, which does not make them one line
+            if vgap < -0.25 * size:
                 return hgap <= 0.35 * max(a[2], b[2])
-            # stacked without a bar (limits under a big operator): only a smaller
-            # glyph right under/over a larger one, never two lines of text
-            return hgap < 0 and vgap <= 0.3 * size and size <= 0.85 * max(a[2], b[2])
+            # stacked without a bar (limits under a big operator): only a smaller glyph centred
+            # right under/over a larger one, never two lines of text nor a fraction's part and
+            # the line next to it
+            if id(a) in in_fraction or id(b) in in_fraction:
+                return False
+            small, big = (a, b) if a[2] < b[2] else (b, a)
+            centred = big[0].x0 <= (small[0].x0 + small[0].x1) / 2 <= big[0].x1
+            return centred and vgap <= 0.3 * size and size <= 0.85 * big[2]
 
         order = sorted(range(len(nodes)), key=lambda k: nodes[k][0].y0)
         for x, a in enumerate(order):
@@ -755,34 +812,92 @@ class _Extractor:
                     break
                 if near(nodes[a], nodes[b]):
                     parent[find(a)] = find(b)
+        # A fraction bar holds its numerator and denominator together, whatever their glyphs
+        # (Word's equations set words "Năng lượng nhận được" in Cambria Math too).
+        for bar, parts in fractions:
+            for k in parts:
+                parent[find(k)] = find(bar)
         groups: dict[int, list[int]] = {}
         for k in range(len(nodes)):
             groups.setdefault(find(k), []).append(k)
-        out = []
+        bars = {bar for bar, _parts in fractions}
+        found = []
         for members in groups.values():
-            if not any(nodes[k][1] == 2 for k in members):
+            # a formula glyph, or a fraction of math-font glyphs ("1/110" in Cambria Math)
+            if not any(nodes[k][1] == 2 or k in bars for k in members):
                 continue
             rect = pymupdf.Rect(nodes[members[0]][0])
             for k in members[1:]:
                 rect |= nodes[k][0]
-            sizes = [nodes[k][2] for k in members if nodes[k][2]]
-            for k in members:
-                if nodes[k][3] is not None:
-                    self.formula_drawings.add(nodes[k][3])
-                    self.used_drawings.add(nodes[k][3])
-                if nodes[k][4] is not None:
-                    self.formula_chars.add(id(nodes[k][4]))
-            out.append({"rect": rect, "size": median(sizes), "run": None})
+            found.append({
+                "rect": rect,
+                "chars": [nodes[k][4] for k in members if nodes[k][4] is not None],
+                "drawings": {nodes[k][3] for k in members if nodes[k][3] is not None},
+            })
+        found = self._close_formulas(found, marks)
+        size_of = {id(m[2]): m[1] for m in marks}
+        out = []
+        for f in found:
+            sizes = [size_of[id(c)] for c in f["chars"]]
+            # the main line's baseline: where the largest glyphs sit
+            top = max(sizes)
+            baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if size > top - 0.5)
+            self.formula_drawings |= f["drawings"]
+            self.used_drawings |= f["drawings"]
+            self.formula_chars.update(id(c) for c in f["chars"])
+            # what the picture shows: the glyph boxes (italics lean out of them) and the strokes
+            parts = [(pymupdf.Rect(c["bbox"]), 0.2 * size, 0.1 * size) for c, size in zip(f["chars"], sizes)]
+            parts += [(pymupdf.Rect(self.drawings[i]["rect"]), 1.0, 1.0) for i in f["drawings"]]
+            out.append({"rect": f["rect"], "size": median(sizes), "baseline": baseline, "parts": parts, "run": None})
         return sorted(out, key=lambda f: (f["rect"].y0, f["rect"].x0))
 
+    def _close_formulas(self, found: list[dict], marks: list[tuple]) -> list[dict]:
+        """A formula's picture shows everything inside its box, so formulas whose
+        boxes overlap become one, and glyphs and strokes lying inside a box join
+        it (a denominator or an index set a little apart) instead of being
+        written a second time beside the picture."""
+        taken = {id(c) for f in found for c in f["chars"]}
+        for _ in range(5):
+            changed = False
+            merged: list[dict] = []
+            for f in sorted(found, key=lambda f: -abs(f["rect"])):
+                host = next((g for g in merged if _overlaps(g["rect"], f["rect"])), None)
+                if host is None:
+                    merged.append(f)
+                    continue
+                host["rect"] |= f["rect"]
+                host["chars"] += f["chars"]
+                host["drawings"] |= f["drawings"]
+                changed = True
+            found = merged
+            for f in found:
+                r = f["rect"]
+                for rect, _size, c, _node in marks:
+                    if id(c) in taken or not _mostly_inside(rect, r):
+                        continue
+                    f["chars"].append(c)
+                    taken.add(id(c))
+                    f["rect"] |= rect
+                    changed = True
+                for i, d in enumerate(self.drawings):
+                    if i in f["drawings"] or i in self.used_drawings:
+                        continue
+                    dr = pymupdf.Rect(d["rect"])
+                    if r.x0 - 1 <= dr.x0 and dr.x1 <= r.x1 + 1 and r.y0 - 1 <= dr.y0 and dr.y1 <= r.y1 + 1:
+                        f["drawings"].add(i)
+                        changed = True
+            if not changed:
+                break
+        return found
+
     def _in_formula(self, char: dict) -> bool:
-        """A glyph drawn by a formula picture (other text inside a formula's box stays text)."""
+        """A glyph drawn by a formula picture."""
         return id(char) in self.formula_chars
 
     def _formula_hosts(self, blocks: list[dict]) -> dict[int, list[dict]]:
         """The line that carries each formula: a line with text outside the
-        formulas whose baseline lies inside the formula, nearest its likely
-        baseline (a quarter em below the middle) and horizontally close; else the
+        formulas whose baseline lies inside the formula, nearest the baseline
+        of its largest glyphs and horizontally close; else the
         line holding most of the formula's glyphs (a formula on its own line)."""
         lines = []
         for b in blocks:
@@ -800,7 +915,7 @@ class _Extractor:
         hosts: dict[int, list[dict]] = {}
         for f in self.formulas:
             r = f["rect"]
-            target = (r.y0 + r.y1) / 2 + 0.25 * f["size"]
+            target = f["baseline"]
             best, best_key = None, None
             for ln, baseline, size, outside in lines:
                 x0, x1 = ln["bbox"][0], ln["bbox"][2]
@@ -848,7 +963,7 @@ class _Extractor:
         base_y = median(s["origin"][1] for s in visible) if visible else None
         for f in hosted:
             r = f["rect"]
-            y = base_y if base_y is not None else r.y1 - 0.25 * f["size"]
+            y = base_y if base_y is not None else f["baseline"]
             out.append({
                 "text": OBJ, "chars": [{"c": OBJ, "bbox": tuple(r), "origin": (r.x0, y)}], "bbox": tuple(r),
                 "origin": (r.x0, y), "size": f["size"], "font": "", "flags": 0, "color": 0, "alpha": 255,
@@ -856,31 +971,45 @@ class _Extractor:
             })
         return sorted(out, key=lambda s: s["bbox"][0])
 
-    def _formula_box(self, rect: pymupdf.Rect) -> pymupdf.Rect:
-        """What a formula picture shows: exactly the glyph boxes across (their
-        advances carry the spacing to the text around it, and any extra width
-        moves Word's line breaks), the ink up and down – glyph boxes reach the
-        font's whole ascent and descent and would make the line taller."""
+    def _formula_picture(self, f: dict) -> tuple[pymupdf.Rect, bytes]:
+        """The formula's picture and the box it shows. It holds the formula's own
+        glyphs and strokes on a clear ground: no watermark or shading from behind
+        (the page drawn without its text and formula strokes is taken away), no
+        bits of the lines around it. Across, it spans exactly the glyph boxes
+        (their advances carry the spacing to the text around it, and any extra
+        width moves Word's line breaks); up and down, only the ink – glyph boxes
+        reach the font's whole ascent and descent and would make the line taller."""
+        rect = f["rect"]
         clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & self.page.rect
-        pix = self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False, colorspace=pymupdf.csGRAY)
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, : pix.width]
-        ink = np.flatnonzero((img < 200).any(axis=1))
-        if not ink.size:
-            return clip
+        full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
+        ground = _rgb(self._ground_page().get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
+        h, w = full.shape[:2]
+        if ground.shape != full.shape:  # rounding of the clip: never expected
+            ground = np.full_like(full, 255)
+        ink = np.abs(full.astype(np.int16) - ground).max(axis=2) > 10
+        # rotated watermark text is text too: its pale paint is not the formula's ink
+        ink &= ~_paint_mask(full, clip, FORMULA_DPI, self.rotated_paints())
+        own = np.zeros((h, w), dtype=bool)
         s = FORMULA_DPI / 72
-        return pymupdf.Rect(
-            clip.x0, max(clip.y0, clip.y0 + ink[0] / s - 1), clip.x1, min(clip.y1, clip.y0 + (ink[-1] + 1) / s + 1)
-        )
-
-    def _render_formula(self, clip: pymupdf.Rect, paints=None) -> bytes:
-        pix = self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False)
-        if not paints:
-            return pix.tobytes("png")
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)
-        img = img[:, : pix.width * 3].reshape(pix.height, pix.width, 3).copy()
-        _clear_paint(img, clip, FORMULA_DPI, paints)
-        ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-        return buf.tobytes() if ok else pix.tobytes("png")
+        for r, padx, pady in f["parts"]:
+            x0, x1 = max(int((r.x0 - padx - clip.x0) * s), 0), min(int((r.x1 + padx - clip.x0) * s) + 1, w)
+            y0, y1 = max(int((r.y0 - pady - clip.y0) * s), 0), min(int((r.y1 + pady - clip.y0) * s) + 1, h)
+            own[y0:y1, x0:x1] = True
+        shown = ink & own
+        # specks: pieces of ink without a single strong pixel (overlapping strokes of a pale
+        # watermark) are not part of the formula
+        count, labels = cv2.connectedComponents(shown.astype(np.uint8), connectivity=8)
+        strong = np.abs(full.astype(np.int16) - ground).max(axis=2) >= 80
+        keep = np.zeros(count, dtype=bool)
+        keep[np.unique(labels[shown & strong])] = True
+        keep[0] = False
+        shown = keep[labels]
+        rows = np.flatnonzero(shown.any(axis=1))
+        top, bottom = (max(rows[0] - int(s), 0), min(rows[-1] + 1 + int(s), h)) if rows.size else (0, h)
+        rgba = np.dstack([full, np.where(shown, 255, 0).astype(np.uint8)])[top:bottom]
+        ok, buf = cv2.imencode(".png", cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+        box = pymupdf.Rect(clip.x0, clip.y0 + top / s, clip.x1, clip.y0 + bottom / s)
+        return box, buf.tobytes()
 
     # --- tables -----------------------------------------------------------
 
@@ -1006,22 +1135,43 @@ class _Extractor:
 
     # --- figures ------------------------------------------------------------
 
+    def _ground_page(self) -> pymupdf.Page:
+        """This page with its text and formula strokes removed: what lies
+        behind a formula picture."""
+        if self._ground_doc is None:
+            self._ground_doc = self._without_text()
+        return self._ground_doc[0]
+
     def _stripped_page(self) -> pymupdf.Page:
-        """This page with its text removed, for rendering backgrounds."""
+        """The ground with rotated text (a watermark) drawn back, for rendering
+        backgrounds."""
         if self._stripped_doc is None:
-            doc = pymupdf.open()
-            doc.insert_pdf(self.page.parent, from_page=self.page.number, to_page=self.page.number)
-            p = doc[0]
-            p.add_redact_annot(p.rect, fill=False, cross_out=False)
-            p.apply_redactions(
-                images=pymupdf.PDF_REDACT_IMAGE_NONE,
-                graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-                text=pymupdf.PDF_REDACT_TEXT_REMOVE,
-            )
+            doc = self._without_text()
             for line in self.rotated_lines:
-                self._reset_rotated(p, line)
+                self._reset_rotated(doc[0], line)
             self._stripped_doc = doc
         return self._stripped_doc[0]
+
+    def _without_text(self) -> pymupdf.Document:
+        doc = pymupdf.open()
+        doc.insert_pdf(self.page.parent, from_page=self.page.number, to_page=self.page.number)
+        p = doc[0]
+        p.add_redact_annot(p.rect, fill=False, cross_out=False)
+        p.apply_redactions(
+            images=pymupdf.PDF_REDACT_IMAGE_NONE,
+            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+            text=pymupdf.PDF_REDACT_TEXT_REMOVE,
+        )
+        for i in self.formula_drawings:
+            r = pymupdf.Rect(self.drawings[i]["rect"])
+            p.add_redact_annot(pymupdf.Rect(r.x0 - 0.5, r.y0 - 0.5, r.x1 + 0.5, r.y1 + 0.5), fill=False, cross_out=False)
+        if self.formula_drawings:
+            p.apply_redactions(
+                images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                text=pymupdf.PDF_REDACT_TEXT_NONE,
+            )
+        return doc
 
     @staticmethod
     def _reset_rotated(page: pymupdf.Page, line: dict) -> None:
@@ -1089,7 +1239,11 @@ class _Extractor:
             near = not (rect & pymupdf.Rect(region.x0 - m, region.y0 - m, region.x1 + m, region.y1 + m)).is_empty and (
                 rect.y1 > region.y0 and rect.y0 < region.y1 or region.x0 - m <= rect.x0 and rect.x1 <= region.x1 + m
             )
-            label = len(row.text.strip()) <= 12 and len(row.segs) <= 3
+            # (a formula picture is one character of text: its width tells a label "𝑡(𝑠)"
+            # from a line of working "0,9 = … → 𝑡 = 28,8 ℃" beside a figure)
+            label = len(row.text.strip()) <= 12 and len(row.segs) <= 3 and (
+                OBJ not in row.text or row.x1 - row.x0 <= 6 * row.size
+            )
             if overlap.is_empty and not (near and label):
                 continue
             if (not overlap.is_empty and abs(overlap) >= 0.8 * max(abs(rect), 1e-6)) or (near and label):
@@ -1139,6 +1293,17 @@ class _Extractor:
                 continue
             opacity = d.get("fill_opacity") or 1.0
             paints.append((r, 255 - opacity * (255 - 255 * np.array(fill[:3], dtype=float))))
+        return paints
+
+    def rotated_paints(self) -> list[tuple[pymupdf.Rect, np.ndarray]]:
+        """(box, colour on white paper) of each rotated text line (a watermark)."""
+        paints = []
+        for line in self.rotated_lines:
+            for span in line["spans"]:
+                rgb = span["color"] & 0xFFFFFF
+                color = np.array([(rgb >> sh) & 255 for sh in (16, 8, 0)], dtype=float)
+                opacity = span.get("alpha", 255) / 255
+                paints.append((pymupdf.Rect(line["bbox"]), 255 - opacity * (255 - color)))
         return paints
 
     def is_watermark(self, region: pymupdf.Rect, rotated: list[pymupdf.Rect]) -> bool:
@@ -1462,12 +1627,18 @@ def _columns(
     )
 
 
-def _clear_paint(img: np.ndarray, clip: pymupdf.Rect, dpi: int, paints) -> None:
-    """Whiten pixels that are exactly a watermark's colour over white paper,
-    or a blend of it with white (anti-aliased edges). The figure's own
-    pixels (darker, or of another hue) are left alone."""
+def _rgb(pix: pymupdf.Pixmap) -> np.ndarray:
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)
+    return img[:, : pix.width * 3].reshape(pix.height, pix.width, 3).copy()
+
+
+def _paint_mask(img: np.ndarray, clip: pymupdf.Rect, dpi: int, paints) -> np.ndarray:
+    """Pixels that are exactly a watermark's colour over white paper, or a
+    blend of it with white (anti-aliased edges). A figure's own pixels
+    (darker, or of another hue) are not."""
     s = dpi / 72
     h, w = img.shape[:2]
+    mask = np.zeros((h, w), dtype=bool)
     for rect, paint in paints:
         box = rect & clip
         if box.is_empty:
@@ -1480,9 +1651,13 @@ def _clear_paint(img: np.ndarray, clip: pymupdf.Rect, dpi: int, paints) -> None:
         if not channels.any():
             continue
         t = (255 - sub[..., channels]) / gap[channels]  # how much paint each pixel holds
-        match = (t.min(axis=2) > -0.05) & (t.max(axis=2) < 1.15) & (t.max(axis=2) - t.min(axis=2) < 0.25)
-        sub[match] = 255
-        img[y0:y1, x0:x1] = sub.astype(np.uint8)
+        mask[y0:y1, x0:x1] |= (t.min(axis=2) > -0.05) & (t.max(axis=2) < 1.15) & (t.max(axis=2) - t.min(axis=2) < 0.25)
+    return mask
+
+
+def _clear_paint(img: np.ndarray, clip: pymupdf.Rect, dpi: int, paints) -> None:
+    """Whiten the pixels of a watermark's paint (see _paint_mask)."""
+    img[_paint_mask(img, clip, dpi, paints)] = 255
 
 
 def native_page(
@@ -1545,10 +1720,6 @@ def native_page(
         )
     # When watermarks are stripped, figures drop the watermark showing through them.
     paints = ex.watermark_paints(backgrounds) if strip else None
-    if paints:
-        for f in ex.formulas:
-            if f["run"] is not None:
-                f["run"].image = ex._render_formula(f["box"], paints)
     obstacles: list[pymupdf.Rect] = []  # figures text wraps around
     for region in _merge_boxes(figures, gap=2):
         labels = ex._classify(region, free_rows)[1]
