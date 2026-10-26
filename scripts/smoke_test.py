@@ -103,12 +103,15 @@ def formatting_checks(data: bytes) -> list[tuple[str, bool]]:
         ("answer options on tab stops", body.count("<w:tab/>") >= 3 and "<w:tabs>" in body),
         ("figure floated on the page", "<wp:anchor" in body),
         ("rotated stamp kept behind the text", 'behindDoc="1"' in body),
-        ("footer link kept without stripping", "dethi.example.vn" in footers),
         ("letterhead as side-by-side cells", "<w:tbl>" in body),
-        ("repeated header moved to Word header", "Trường THPT Mẫu" in headers),
+        # Header/footer hold "Trang x/y" only; what repeated there is gone.
         (
-            "page numbers are PAGE/NUMPAGES fields",
-            'w:instr="PAGE ' in footers and 'w:instr="NUMPAGES ' in footers,
+            "repeated header/footer text removed",
+            not any(t in body + headers + footers for t in ("Trường THPT Mẫu", "Đề thi thử", "dethi.example.vn")),
+        ),
+        (
+            "footer is 'Trang PAGE/NUMPAGES'",
+            "Trang " in footers and 'w:instr="PAGE ' in footers and 'w:instr="NUMPAGES ' in footers,
         ),
     ]
 
@@ -151,7 +154,9 @@ def main():
             "exam-like.pdf",
             "text",
             {"ocr_type": "ocr", "languages": ["vie"]},
-            pdf_text(SAMPLES / "exam-like.pdf"),
+            # header/footer lines are dropped by design (only "Trang x/y" is kept)
+            re.sub(r"Trường\s+THPT\s+Mẫu|Nguồn:\s+kho\s+đề\s+mẫu|Đề\s+thi\s+thử|https://dethi\.example\.vn|Trang\s+\d/2", " ",
+                   unicodedata.normalize("NFC", pdf_text(SAMPLES / "exam-like.pdf"))),
         ),
         # Scans: straightened before OCR, figures kept as pictures.
         ("vi-scan-skewed.pdf", "scan", {"ocr_type": "ocr", "languages": ["vie"]}, truth_vi),
@@ -199,8 +204,8 @@ def main():
     failures += not passed
     print(f"{'OK ' if passed else 'BAD'} exam-like-scan: page numbers are Word fields in the footer")
 
-    # strip_watermarks: stamps, background watermarks and header/footer links go,
-    # the real header, footer text and page numbers stay.
+    # strip_watermarks: stamps, background watermarks and links go; the page
+    # numbers stay (the only header/footer content kept in any mode).
     token = upload((SAMPLES / "exam-like.pdf").read_bytes())
     result = run_task(token, "pdf-to-word", {"ocr_type": "", "strip_watermarks": True})
     data = call("GET", f"/v1/files/{result['output_files'][0]}")[1]
@@ -212,7 +217,6 @@ def main():
         ("figure kept", "<wp:anchor" in body),
         ("footer link removed", "dethi.example.vn" not in body + rest),
         ("translucent stamp removed", "kho đề mẫu" not in body + rest),
-        ("real header and footer text kept", "Trường THPT Mẫu" in rest and "Đề thi thử" in rest),
         ("page numbers kept", 'w:instr="PAGE ' in rest),
         # ~20k watermark pixels show through the figure unless cleared; only
         # anti-aliased edges of the figure may keep a tint.

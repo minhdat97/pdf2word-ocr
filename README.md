@@ -81,11 +81,17 @@ tắt.
     mới); khối đặt cạnh nhau (đầu trang hai cột) – chung ít nhất nửa dòng – thành bảng không viền;
     đầu trang mà mỗi cặp dòng là một cặp khối riêng ("SỞ GIÁO DỤC…" | "ĐỀ KIỂM TRA…") vẫn gộp
     thành một bảng.
-  - Bảng kẻ khung: `page.find_tables()`, khung nới ra theo nét kẻ bên trong bảng (PyMuPDF có khi
-    cắt ô ngoài theo chữ: kẻ 63–532pt mà chỉ báo 76–339pt, phần nét kẻ còn lại thành ảnh bảng
-    thứ hai). Màu nền ô là hình tô màu phủ ≥60% ô; ô căn giữa khi mọi dòng chữ cách hai viền như
-    nhau và có dòng chừa trống >15% bề ngang mỗi bên, căn phải khi chữ sát viền phải còn bên trái
-    trống >30% (dòng đầy ô không cho biết gì nên để trái).
+  - Bảng kẻ khung: trước hết đọc thẳng từ nét kẻ (nét ngang/dọc, kể cả hình chữ nhật tô dày 0pt
+    Word hay vẽ, nối nhau thành lưới có khung kín; có chữ trong ít nhất một ô; không có đường
+    cong/xiên bên trong – đó là đồ thị). Thiếu nét giữa hai ô thì là **ô gộp** (bảng Đúng/Sai có
+    "Câu 1" gộp 5 hàng thành `vMerge` của Word). Chỗ khác dùng `page.find_tables()` (PyMuPDF bỏ
+    sót bảng đáp án một hàng và đọc nhầm lưới Đúng/Sai thành bảng 1×3), khung nới ra theo nét kẻ
+    bên trong bảng (PyMuPDF có khi cắt ô ngoài theo chữ: kẻ 63–532pt mà chỉ báo 76–339pt, phần nét
+    kẻ còn lại thành ảnh bảng thứ hai). Màu nền ô là hình tô màu phủ ≥60% ô; ô căn giữa khi mọi
+    dòng chữ cách hai viền như nhau và có dòng chừa trống >15% bề ngang mỗi bên, căn phải khi chữ
+    sát viền phải còn bên trái trống >30% (dòng đầy ô không cho biết gì nên để trái). Lề trong ô
+    lấy theo khoảng viền → chữ của ô canh trái (0,5–5,4pt; mặc định 5,4pt của Word làm cột hẹp bẻ
+    "Đúng" thành "Đún/g"). Nét kẻ của bảng không bị coi là gạch chân chữ.
   - Công thức không có chữ dùng được – MathType/Equation mà Word xuất ra PDF đánh số glyph
     "!", "\"", "#"…, chữ toán Unicode (𝑥) – được cắt thành **ảnh nội dòng** 300 DPI đúng chỗ trong
     câu, hạ theo baseline (alt "Công thức (ảnh)"). Vùng công thức là nhóm glyph công thức cùng
@@ -102,16 +108,23 @@ tắt.
     vào đoạn đầu tiên nằm ngang mép trên của nó (chung ít nhất 8pt, hoặc nửa đoạn), không có thì
     đoạn ngay trên nó, và đặt theo **đoạn đó** (không theo trang): hình đi theo câu hỏi cả khi chữ
     dời sang trang khác. Khoảng trống chứa hình giữ đủ chiều cao (khoảng khác tối đa 72pt). Ảnh nền
-    và nét mảnh (không có chữ bao quanh) vẫn neo vào đoạn đầu trang, đặt theo trang.
+    và nét mảnh (không có chữ bao quanh) vẫn neo vào đoạn đầu trang, đặt theo trang. Hình lấn ≤4pt
+    vào khung dòng ngay trên/dưới được dời (hay thu nhỏ ≤15%) cho vừa khe, nếu không Word bắt dòng
+    đó chạy quanh hình và đẩy chữ xuống. Mấy ảnh xếp sát nhau trên một dải (dòng chữ WordArt xuất
+    thành từng mẩu, chữ thiếu dấu để là chữ thật đè lên) gộp thành một hình. Chữ dưới 4pt (chữ
+    trắng 3pt để đánh dấu) bị bỏ.
   - Chữ xoay (watermark là tên trang chia sẻ đề) được set lại đúng gốc, góc, độ dài, độ mờ
     rồi đưa vào ảnh nền sau chữ.
   - Chữ bán trong suốt (`alpha` của span) được trộn với nền trắng thành màu tương ứng. Font
     Type3 (không có tên, không có cờ đậm): độ đậm suy ra từ độ dày nét so với chữ thường và
     chữ đậm cùng trang.
-  - Dòng lặp lại ở đầu/cuối hầu hết các trang thành header/footer của Word; số trang
-    ("Trang 1/2") thành trường PAGE/NUMPAGES (`\* MERGEFORMAT`, giá trị hiển thị sẵn là số
-    trang thật cho trình xem không tự tính trường). Thêm/bớt trang trong Word thì số trang tự
-    cập nhật.
+  - **Đầu/chân trang chỉ giữ "Trang x/y"**: mọi thứ lặp lại ở dải đầu/cuối trang (8% chiều cao)
+    bị bỏ – dòng chữ và ảnh (logo, khẩu hiệu, dòng liên hệ, tên trang web) có trên hầu hết các
+    trang, hoặc trên mọi trang lẻ / mọi trang chẵn của sách in hai mặt (logo trang lẻ, khẩu hiệu
+    trang chẵn, số trang ở mép ngoài). Thay vào là một dòng "Trang " + trường PAGE + "/" + trường
+    NUMPAGES ở chỗ PDF đặt số trang (giữa chân trang nếu PDF không có hay số trang đổi bên); y
+    giữ số của PDF khi nhãn ghi tổng khác số trang ("Trang 1/4" trong file 6 trang có 2 trang đáp
+    án). Thêm/bớt trang trong Word thì số trang tự cập nhật.
   - Khoảng dòng và khoảng cách đoạn lấy từ baseline thật. Độ rộng "tự nhiên" của mỗi dòng
     (tổng bề rộng ký tự) cho biết dòng nào nhà sản xuất PDF đã nén khoảng trắng; đoạn đó
     được thụt lề phải âm vừa đủ để Word ngắt dòng y như bản gốc.
@@ -141,10 +154,10 @@ tắt.
   5. Dựng layout: tách đoạn theo dòng kết thúc sớm / thụt đầu dòng / hết câu + chữ hoa; khoảng
      trống ≥1em thành tab stop (hàng đáp án); chữ đậm theo từng từ (tỉ lệ nét còn lại sau
      erosion ~0,11em); cỡ chữ thân bài tính từ bề rộng dòng (thứ quyết định ngắt dòng trong
-     Word), đối chiếu với chiều cao glyph; dòng lặp lại ở đầu/cuối trang thành header/footer
+     Word), đối chiếu với chiều cao glyph; dòng lặp lại ở đầu/cuối trang bị bỏ như trang có text
      (so khớp bỏ qua khoảng trắng và ký tự gạch chéo OCR đọc lệch như "1⁄2"). Số trang OCR đọc
-     sai khác nhau giữa các trang ("Trang" / "Trang 2/2") vẫn được nhận: chữ tĩnh bị bỏ và thay
-     bằng trường PAGE/NUMPAGES ở đúng vị trí.
+     sai khác nhau giữa các trang ("Trang" / "Trang 2/2") vẫn được nhận: chữ tĩnh bị bỏ, vị trí
+     của nó là chỗ đặt "Trang x/y".
 - **Ghi DOCX** (`app/docx_builder.py`): khổ giấy, lề, header/footer, ảnh nổi (`wp:anchor`),
   bảng, tab stop, khoảng dòng "at least"/"exactly", tắt widow/orphan control. Lề dưới chừa 10pt
   dưới dòng thấp nhất của trang đầy nhất (Word dàn cao hơn PDF vài pt là dòng cuối đã sang trang
@@ -198,7 +211,10 @@ nhanh gấp đôi, 95,2%.
 
 ## Giới hạn
 
-- Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ ô gộp, bảng không viền; màu viền chưa giữ (luôn đen).
+- Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
+  scan (OCR) chưa có ô gộp.
+- Mọi thông tin đầu/chân trang trừ số trang đều bị bỏ (cố ý): tên trường, tên đề in lặp mỗi
+  trang cũng mất; dòng chỉ có ở trang đầu thì vẫn là nội dung.
 - Bảng scan: màu nền ô lệch vài đơn vị so với bản gốc (ảnh chụp điện thoại lệch nhiều hơn); ô tô
   màu chỉ đậm hơn giấy dưới 10/255 (hay dưới độ chênh sáng của ảnh chụp) thì thành ô trắng.
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không

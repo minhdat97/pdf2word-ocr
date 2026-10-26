@@ -1,12 +1,14 @@
 """Write page layouts (native text or OCR) to an editable .docx."""
 
 import io
+from dataclasses import replace
 from itertools import count, pairwise
 from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
+from docx.exceptions import InvalidSpanError
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
@@ -265,15 +267,30 @@ def _add_table(doc, el: Table, margin_left: float):
     table = doc.add_table(rows=len(el.cells), cols=len(el.cells[0]))
     table.style = "Table Grid"
     table.autofit = False
-    _set_table_props(table, sum(el.col_widths_pt), el.x0 - margin_left, borders=el.borders)
+    _set_table_props(table, sum(el.col_widths_pt), el.x0 - margin_left, borders=el.borders, cell_margin=el.cell_margin_pt)
     for c, width in enumerate(el.col_widths_pt):
         table.columns[c].width = Pt(width)
     for r, row in enumerate(el.cells):
         table.rows[r].height = Pt(el.row_heights_pt[r])
         table.rows[r].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+        for c in range(len(row)):
+            table.cell(r, c).width = Pt(el.col_widths_pt[c])
+    # Merged cells (widths add up); their text sits in the first grid cell.
+    covered: set[tuple[int, int]] = set()
+    for r0, c0, rs, cs in el.merges:
+        area = {(r, c) for r in range(r0, r0 + rs) for c in range(c0, c0 + cs)}
+        if area & covered:
+            continue
+        try:
+            table.cell(r0, c0).merge(table.cell(r0 + rs - 1, c0 + cs - 1))
+        except InvalidSpanError:
+            continue
+        covered |= area - {(r0, c0)}
+    for r, row in enumerate(el.cells):
         for c, cell in enumerate(row):
+            if (r, c) in covered:
+                continue
             target = table.cell(r, c)
-            target.width = Pt(el.col_widths_pt[c])
             target.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             if cell.shading:
                 shd = OxmlElement("w:shd")
@@ -364,6 +381,35 @@ def _anchor_for(pic: Picture, placed: list[tuple[float, float, object]]) -> tupl
     return above[-1] if above else (ordered[0][2], ordered[0][0])
 
 
+def _clear_of_lines(pic: Picture, page: PageLayout) -> Picture:
+    """A figure reaching up to 4pt into the line box of the text just above or
+    below it (lines it is not beside) fitted between them – moved, or scaled
+    down by up to 15% about its centre when it cannot move: Word would otherwise
+    wrap that line around the figure, pushing a word onto a new line and every
+    line after it down."""
+    lo, hi = float("-inf"), float("inf")
+    for e in page.elements:
+        if not isinstance(e, Paragraph) or not (e.x0 < pic.x1 and pic.x0 < e.x1):
+            continue
+        if e.y0 < pic.y0 < e.y1 <= pic.y0 + 4:
+            lo = max(lo, e.y1 + 0.5)
+        if pic.y1 - 4 <= e.y0 < pic.y1 < e.y1:
+            hi = min(hi, e.y0 - 0.5)
+    if lo == float("-inf") and hi == float("inf"):
+        return pic
+    h, w = pic.y1 - pic.y0, pic.x1 - pic.x0
+    top = max(pic.y0, lo)
+    if top + h > hi:
+        top = max(hi - h, lo)
+    if top + h <= hi:
+        return replace(pic, y0=top, y1=top + h)
+    scale = (hi - top) / h
+    if scale < 0.85:
+        return pic
+    x0 = pic.x0 + w * (1 - scale) / 2
+    return replace(pic, x0=x0, y0=top, x1=x0 + w * scale, y1=top + h * scale)
+
+
 FLOW_ROOM_LINES = 6  # a page ending further than this above the bottom was ended on purpose
 
 
@@ -452,6 +498,7 @@ def build_docx(
         _fill_story(section.footer, footer, left, right_edge, normal)
 
     z = count(251658240)
+
     content_bottom = pages[0].height_pt - bottom
     lines = [p.line_height_pt or 1.2 * p.font_pt for pg in pages for p in pg.elements if isinstance(p, Paragraph)]
     body_line = sorted(lines)[len(lines) // 2] if lines else 14.0
@@ -467,13 +514,20 @@ def build_docx(
         first_para = None
         placed: list[tuple[float, float, object]] = []  # (y0, y1, paragraph) of this page
         chained: dict[int, tuple[object, float]] = {}  # id(paragraph) in the keep chain -> the chain's first
-        figure_tops = [p.y0 for p in page.pictures if p.wrap and not p.behind_text]
+        figures = [p for p in page.pictures if p.wrap and not p.behind_text]
         prev_p = None  # the previous element's Word paragraph, if it was one
         for j, el in enumerate(page.elements):
             space_before = (el.y0 - top) if j == 0 and (i == 0 or new_page) else el.space_before_pt
             if isinstance(el, Paragraph):
                 gap_top = el.y0 - space_before
-                if prev_p is not None and space_before > 1 and any(gap_top - 1 < y < el.y1 for y in figure_tops):
+                met = [f for f in figures if gap_top - 1 < f.y0 < el.y1] if prev_p is not None and space_before > 1 else []
+                # A figure spanning the text column (less than 100pt left beside it)
+                if any(f.x1 - f.x0 > right_edge - left - 100 for f in met):
+                    # Word puts the next line below it by itself, after any space
+                    # before; spacing for the figure's height (here or as the
+                    # line above's space after) would be added on top of it.
+                    space_before = max(el.y0 - max(f.y1 for f in met), 0.0)
+                elif met:
                     # Word moves a line meeting a figure's top edge down to that
                     # edge together with its space before; as the previous
                     # paragraph's space after, the gap stays where the PDF has it.
@@ -506,6 +560,7 @@ def build_docx(
             # page. Backgrounds and thin line art (rules, bars: no text wrap) stay
             # page-relative with the page's first paragraph.
             if pic.wrap and not pic.behind_text and placed:
+                pic = _clear_of_lines(pic, page)
                 anchor, anchor_top = _anchor_for(pic, placed)
                 # Word breaks a keep-with-next chain at a paragraph holding a
                 # floating picture: such pictures hang from the chain's first one.

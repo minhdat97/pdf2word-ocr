@@ -24,8 +24,8 @@ from .analyze import open_pdf, page_kind
 from .docx_builder import build_docx
 from .errors import TaskError
 from .layout import canonical, looks_like_page_label, looks_like_page_number
-from .model import TAB, PageLayout, Paragraph, Run
-from .native import image_page, native_page
+from .model import TAB, PageLayout, Paragraph, Picture, Run
+from .native import HEADER_ZONE, image_page, native_page
 from .ocr import ocr_page
 
 MODES = ("basic", "ocr", "ocr-full")
@@ -69,72 +69,55 @@ def _page_number_fields(template: Paragraph, occurrences: list[tuple[int, str]],
     template.runs = [replace(r, text=canonical(r.text)) for r in runs]
 
 
-def _merge_row(paras: list[Paragraph], left: float, right: float) -> Paragraph:
-    """Join header/footer pieces that share a line into one paragraph, each
-    piece placed by a tab stop: centred pieces on a centre tab, pieces ending
-    at the right edge on a right tab, so page numbers never wrap."""
-    paras = sorted(paras, key=lambda p: p.x0)
-    if len(paras) == 1:
-        return paras[0]
-    center = (left + right) / 2
-    runs: list[Run] = []
-    stops: list[tuple[float, str]] = []
-    for p in paras:
-        mid = (p.x0 + p.x1) / 2
-        if abs(mid - center) < 4:
-            stops.append((mid, "center"))
-        elif abs(p.x1 - right) < 6:
-            stops.append((p.x1, "right"))
-        else:
-            stops.append((p.x0, "left"))
-        runs.append(Run(TAB))
-        runs.extend(p.runs)
-        stops.extend(p.tab_stops)
-    return replace(
-        paras[0],
-        text="\t".join(p.text for p in paras),
-        runs=runs,
-        tab_stops=stops,
-        x0=left,
-        x1=max(p.x1 for p in paras),
-        y0=min(p.y0 for p in paras),
-        y1=max(p.y1 for p in paras),
-        align="left",
-        first_line_indent_pt=0.0,
-    )
-
-
 def extract_header_footer(pages: list[PageLayout]) -> tuple[list[Paragraph], list[Paragraph]]:
-    """Move lines repeated in the top/bottom zone of most pages into the Word
-    header/footer, so they no longer push body text across page breaks."""
+    """Remove what repeats in the top/bottom zone – lines and pictures on most
+    pages, or on all odd or all even pages of a two-sided book (logo on one,
+    slogan on the other, the page number at the outer edge) – and number the
+    pages instead: the Word header/footer holds "Trang x/y" and nothing else.
+    Returns (header, footer) paragraphs; one of them holds the page number."""
     if len(pages) < 2:
         return [], []
 
-    templates: dict[tuple[str, str], Paragraph] = {}
+    templates: dict[tuple, tuple[str, object]] = {}  # key -> (side, first occurrence)
     _move_repeated(pages, templates)
     # Page labels OCR read differently on each page, then whatever shared the
     # line with them (a site link) and now repeats on its own.
     numbering = _page_number_template(pages)
     if numbering:
-        templates[(numbering.zone, "#page-number")] = numbering
+        templates[("P", numbering.zone, "#page-number")] = ("all", numbering)
         _move_repeated(pages, templates)
-    if not templates:
-        return [], []
+    line = _page_number_line(pages, [(k, t) for k, (_, t) in templates.items()])
+    return ([line], []) if line.zone == "top" else ([], [line])
 
-    body = [e for page in pages for e in page.elements]
+
+def _page_number_line(pages: list[PageLayout], removed: list[tuple]) -> Paragraph:
+    """ "Trang x/y" with Word fields, where the PDF numbered its pages (bottom
+    centre when it did not, or when the number flipped between the edges); y is
+    the PDF's own total when its labels say so ("Trang 1/4" in a 6-page file
+    with 2 answer pages), else the page count."""
+    labels = [
+        t for k, t in removed
+        if isinstance(t, Paragraph) and (k[2] == "#page-number" or looks_like_page_label(t.text))
+    ]
+    body = [e for page in pages for e in page.elements if isinstance(e, Paragraph)]
+    width, height = pages[0].width_pt, pages[0].height_pt
     left = min((e.x0 for e in body), default=0)
-    right = max((e.x1 for e in body), default=pages[0].width_pt)
-
-    def stack(zone: str) -> list[Paragraph]:
-        lines: list[list[Paragraph]] = []
-        for p in sorted((t for (z, _), t in templates.items() if z == zone), key=lambda p: p.y0):
-            if lines and p.y0 < max(q.y1 for q in lines[-1]) - 0.3 * p.font_pt:
-                lines[-1].append(p)
-            else:
-                lines.append([p])
-        return [_merge_row(line, left, right) for line in lines]
-
-    return stack("top"), stack("bottom")
+    right = max((e.x1 for e in body), default=width)
+    style = next((r for t in labels for r in t.runs if r.text.strip() and not r.field), None)
+    size = (style.size if style and style.size else None) or round(median([e.font_pt for e in body] or [11.0]) * 2) / 2
+    total = next((r.text for t in labels for r in t.runs if r.field == "NUMPAGES"), None)
+    shown = next((m.group(1) for t in labels if (m := re.search(r"/\s*(\d+)", t.text))), None)
+    denominator = Run(total or str(len(pages)), size=size, field="NUMPAGES") if total or not shown else Run(shown, size=size)
+    runs = [Run("Trang ", size=size), Run("1", size=size, field="PAGE"), Run("/", size=size), denominator]
+    zone, align, y1 = "bottom", "center", height - 18
+    if labels:
+        zone = Counter(t.zone for t in labels).most_common(1)[0][0]
+        y1 = labels[0].y1
+        edges = {"c" if abs((t.x0 + t.x1) / 2 - (left + right) / 2) < 0.1 * width else "l" if t.x1 < (left + right) / 2 else "r" for t in labels}
+        align = {"l": "left", "r": "right", "c": "center"}[edges.pop()] if len(edges) == 1 else "center"
+    return Paragraph(
+        text="Trang #/#", x0=left, y0=y1 - 1.2 * size, x1=right, y1=y1, font_pt=size, runs=runs, align=align, zone=zone
+    )
 
 
 def _whiten_pale(data: bytes) -> bytes:
@@ -226,31 +209,76 @@ def _drop_stamped_pieces(p: Paragraph) -> bool:
     return _keep_pieces(p, keep)
 
 
-def _move_repeated(pages: list[PageLayout], templates: dict[tuple[str, str], Paragraph]) -> None:
-    """Move zone lines repeated on most pages into `templates` (one per text);
-    numbers that count pages become PAGE / NUMPAGES fields."""
+def _picture_zone(pic: Picture, page: PageLayout) -> str | None:
+    if pic.y1 <= HEADER_ZONE * page.height_pt + 2:
+        return "top"
+    if pic.y0 >= (1 - HEADER_ZONE) * page.height_pt - 2:
+        return "bottom"
+    return None
 
-    def key(el) -> tuple[str, str] | None:
-        return (el.zone, _norm(el.text)) if isinstance(el, Paragraph) and el.zone else None
 
-    seen = Counter(k for page in pages for k in {key(el) for el in page.elements} if k)
-    repeated = {k for k, c in seen.items() if c >= max(2, (len(pages) + 1) // 2)}
-    if not repeated:
-        return
-    occurrences: dict[tuple[str, str], list[tuple[int, str]]] = {}
+def _side(on: list[int], total: int) -> str | None:
+    """Where something seen on pages `on` (0-based) of `total` belongs: on most
+    pages of both kinds -> every page; on most odd (or even) pages and none of
+    the other kind -> odd (even) pages only; else nowhere (it is body content)."""
+    n_odd, n_even = (total + 1) // 2, total // 2
+    odd = sum(1 for i in on if i % 2 == 0)
+    even = len(on) - odd
+    if len(on) >= max(2, (total + 1) // 2) and odd >= 0.5 * n_odd and even >= 0.5 * n_even:
+        return "all"
+    if not even and odd >= max(2, 0.6 * n_odd):
+        return "odd"
+    if not odd and even >= max(2, 0.6 * n_even):
+        return "even"
+    return None
+
+
+def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, object]]) -> None:
+    """Move zone lines and pictures repeated on the pages into `templates` (one
+    per kind, with its side); numbers that count pages become PAGE / NUMPAGES
+    fields. A line is told by its text and by where it sits (left, centre,
+    right: a book's page number flips between the outer edges)."""
+    width = pages[0].width_pt
+
+    def key(el, page: PageLayout) -> tuple | None:
+        if isinstance(el, Paragraph) and el.zone:
+            mid = (el.x0 + el.x1) / 2
+            edge = "c" if abs(mid - width / 2) < 0.1 * width else "l" if mid < width / 2 else "r"
+            return ("P", el.zone, _norm(el.text), edge)
+        if isinstance(el, Picture) and (zone := _picture_zone(el, page)):
+            return ("I", zone, round(el.x0 / 3), round(el.y0 / 3), round((el.x1 - el.x0) / 3), round((el.y1 - el.y0) / 3))
+        return None
+
+    on: dict[tuple, list[int]] = {}
     for i, page in enumerate(pages):
-        kept = []
-        for el in page.elements:
-            k = key(el)
-            if k in repeated:
-                templates.setdefault(k, el)
-                occurrences.setdefault(k, []).append((i, el.text))
-            else:
-                kept.append(el)
-        page.elements = kept
+        for k in {key(el, page) for el in page.elements + page.pictures} - {None}:
+            on.setdefault(k, []).append(i)
+    sides = {k: s for k, pages_on in on.items() if (s := _side(pages_on, len(pages)))}
+    if any(s in ("odd", "even") for s in sides.values()):
+        # Printed two-sided: what sits on every page of one kind and none of the
+        # other belongs there too, even when that kind has a single page.
+        kinds = {"odd": {i for i in range(len(pages)) if i % 2 == 0}, "even": {i for i in range(len(pages)) if i % 2}}
+        for k, pages_on in on.items():
+            for side, members in kinds.items():
+                if k not in sides and members and set(pages_on) == members:
+                    sides[k] = side
+    if not sides:
+        return
+    occurrences: dict[tuple, list[tuple[int, str]]] = {}
+    for i, page in enumerate(pages):
+        for attr in ("elements", "pictures"):
+            kept = []
+            for el in getattr(page, attr):
+                k = key(el, page)
+                if k in sides:
+                    templates.setdefault(k, (sides[k], el))
+                    if isinstance(el, Paragraph):
+                        occurrences.setdefault(k, []).append((i, el.text))
+                else:
+                    kept.append(el)
+            setattr(page, attr, kept)
     for k, found in occurrences.items():
-        if len(found) == len(pages):
-            _page_number_fields(templates[k], found, len(pages))
+        _page_number_fields(templates[k][1], found, len(pages))
 
 
 def _page_number_template(pages: list[PageLayout]) -> Paragraph | None:

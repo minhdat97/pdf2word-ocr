@@ -78,6 +78,8 @@ class Table:
     font_pt: float
     space_before_pt: float = 0.0
     borders: bool = True
+    merges: list[tuple[int, int, int, int]] = field(default_factory=list)  # (row, column, rows, columns)
+    cell_margin_pt: float | None = None  # left/right padding in the cells; None: Word's default
 
 
 @dataclass

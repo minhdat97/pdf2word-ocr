@@ -218,6 +218,22 @@ def _merge_boxes(rects: list[pymupdf.Rect], gap: float) -> list[pymupdf.Rect]:
     return [pymupdf.Rect(b[0] + gap, b[1] + gap, b[2] - gap, b[3] - gap) for b in boxes]
 
 
+def _join_strips(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
+    """Images set side by side in one band (a line of WordArt text exported as
+    strips, its missing letters left as real text on top) become one region,
+    so the line is kept whole; overlapping or nested images stay apart."""
+    out: list[pymupdf.Rect] = []
+    for r in sorted(rects, key=lambda r: r.x0):
+        for k, o in enumerate(out):
+            same_band = abs(r.y0 - o.y0) <= 2 and abs(r.y1 - o.y1) <= 2
+            if same_band and r.x0 <= o.x1 + 2 and r.x1 > o.x1:
+                out[k] = o | r
+                break
+        else:
+            out.append(pymupdf.Rect(r))
+    return out
+
+
 def _min_size(rect: pymupdf.Rect, minimum: float = 2.0) -> pymupdf.Rect:
     r = pymupdf.Rect(rect)
     if r.width < minimum:
@@ -225,6 +241,152 @@ def _min_size(rect: pymupdf.Rect, minimum: float = 2.0) -> pymupdf.Rect:
     if r.height < minimum:
         r.y0, r.y1 = r.y0 - (minimum - r.height) / 2, r.y1 + (minimum - r.height) / 2
     return r
+
+
+def _rules(drawings: list[dict]) -> tuple[list[list[float]], list[list[float]]]:
+    """Axis-aligned rules, joined end to end: [y, x0, x1] across and [x, y0, y1]
+    down. From thin filled boxes (how Word draws table borders, often 0pt
+    thick), stroked lines and the sides of stroked boxes; white paint is not a rule."""
+    hs, vs = [], []
+    for d in drawings:
+        fill, stroke = d.get("fill"), d.get("color")
+        dark_fill = fill is not None and min(fill[:3]) < 0.97
+        dark_stroke = stroke is not None and min(stroke[:3]) < 0.97
+        for item in d["items"]:
+            if item[0] == "re":
+                r = pymupdf.Rect(item[1])
+                if dark_fill and r.width <= 1.5 and r.height > 2:
+                    vs.append([(r.x0 + r.x1) / 2, r.y0, r.y1])
+                elif dark_fill and r.height <= 1.5 and r.width > 2:
+                    hs.append([(r.y0 + r.y1) / 2, r.x0, r.x1])
+                elif dark_stroke and r.width > 2 and r.height > 2:
+                    hs += [[r.y0, r.x0, r.x1], [r.y1, r.x0, r.x1]]
+                    vs += [[r.x0, r.y0, r.y1], [r.x1, r.y0, r.y1]]
+            elif item[0] == "l" and dark_stroke:
+                p, q = item[1], item[2]
+                if abs(p.y - q.y) <= 0.5 and abs(p.x - q.x) > 2:
+                    hs.append([p.y, min(p.x, q.x), max(p.x, q.x)])
+                elif abs(p.x - q.x) <= 0.5 and abs(p.y - q.y) > 2:
+                    vs.append([p.x, min(p.y, q.y), max(p.y, q.y)])
+
+    def join(segs: list[list[float]]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for s in sorted(segs, key=lambda s: (round(s[0] / 0.8), s[1])):
+            if out and abs(out[-1][0] - s[0]) <= 0.8 and s[1] <= out[-1][2] + 1.5:
+                out[-1][2] = max(out[-1][2], s[2])
+            else:
+                out.append(list(s))
+        return out
+
+    return join(hs), join(vs)
+
+
+def _covered(segs: list[list[float]], at: float, lo: float, hi: float) -> float:
+    """Share of [lo, hi] that rules at coordinate `at` cover."""
+    parts = sorted((max(s[1], lo), min(s[2], hi)) for s in segs if abs(s[0] - at) <= 1.5 and s[2] > lo and s[1] < hi)
+    total, end = 0.0, lo
+    for a, b in parts:
+        if b > end:
+            total += b - max(a, end)
+            end = b
+    return total / max(hi - lo, 1e-6)
+
+
+def _ruled_grids(drawings: list[dict], words: list[pymupdf.Rect]) -> list[tuple]:
+    """Tables read from the rules: each set of touching rules with a closed frame
+    becomes a grid at its rule positions; where a rule between two cells is
+    missing, they are one merged cell. A grid needs words in a cell (an answer
+    key may fill 3 of 10) and no curve or slanted line inside: that is a graph."""
+    hs, vs = _rules(drawings)
+    plotted = [
+        pymupdf.Rect(d["rect"]) for d in drawings
+        if any(it[0] in ("c", "qu") or (it[0] == "l" and abs(it[1].x - it[2].x) > 0.5 and abs(it[1].y - it[2].y) > 0.5)
+               for it in d["items"])
+    ]
+    nodes = [("h", s) for s in hs if s[2] - s[1] > 6] + [("v", s) for s in vs if s[2] - s[1] > 6]
+    parent = list(range(len(nodes)))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i, (ki, a) in enumerate(nodes):
+        for j in range(i + 1, len(nodes)):
+            kj, b = nodes[j]
+            if ki == kj:
+                continue
+            h, v = (a, b) if ki == "h" else (b, a)
+            if h[1] - 1.5 <= v[0] <= h[2] + 1.5 and v[1] - 1.5 <= h[0] <= v[2] + 1.5:
+                parent[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for k in range(len(nodes)):
+        groups.setdefault(find(k), []).append(k)
+    out = []
+    for members in groups.values():
+        gh = [nodes[k][1] for k in members if nodes[k][0] == "h"]
+        gv = [nodes[k][1] for k in members if nodes[k][0] == "v"]
+        if len(gh) < 2 or len(gv) < 2:
+            continue
+        xs, ys = _cluster_values([s[0] for s in gv], 1.5), _cluster_values([s[0] for s in gh], 1.5)
+        if len(xs) < 2 or len(ys) < 2 or (len(xs) - 1) * (len(ys) - 1) < 2:
+            continue
+        x0, x1, y0, y1 = xs[0], xs[-1], ys[0], ys[-1]
+        frame = min(_covered(gh, y0, x0, x1), _covered(gh, y1, x0, x1), _covered(gv, x0, y0, y1), _covered(gv, x1, y0, y1))
+        if frame < 0.9:
+            continue
+        nrows, ncols = len(ys) - 1, len(xs) - 1
+        cell = list(range(nrows * ncols))
+
+        def root(a: int) -> int:
+            while cell[a] != a:
+                cell[a] = cell[cell[a]]
+                a = cell[a]
+            return a
+
+        for r in range(nrows):
+            for c in range(ncols):
+                if c and _covered(gv, xs[c], ys[r], ys[r + 1]) < 0.7:
+                    cell[root(r * ncols + c)] = root(r * ncols + c - 1)
+                if r and _covered(gh, ys[r], xs[c], xs[c + 1]) < 0.7:
+                    cell[root(r * ncols + c)] = root((r - 1) * ncols + c)
+        areas: dict[int, list[tuple[int, int]]] = {}
+        for k in range(nrows * ncols):
+            areas.setdefault(root(k), []).append(divmod(k, ncols))
+        merges, filled = [], 0
+        for spots in areas.values():
+            rs = [r for r, _ in spots]
+            cs = [c for _, c in spots]
+            r0, c0, rn, cn = min(rs), min(cs), max(rs) - min(rs) + 1, max(cs) - min(cs) + 1
+            if len(spots) > 1 and rn * cn == len(spots):
+                merges.append((r0, c0, rn, cn))
+            box = pymupdf.Rect(xs[c0], ys[r0], xs[c0 + cn], ys[r0 + rn])
+            filled += any(box.contains(pymupdf.Point((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2)) for w in words)
+        frame_rect = pymupdf.Rect(x0, y0, x1, y1)
+        inner = pymupdf.Rect(x0 + 1, y0 + 1, x1 - 1, y1 - 1)
+        if not filled or any(not (r & inner).is_empty for r in plotted):
+            continue
+        out.append((frame_rect, xs, ys, merges))
+    return out
+
+
+def _merged_cells(table, xs: list[float], ys: list[float]) -> list[tuple[int, int, int, int]]:
+    """(row, column, rows, columns) of each cell PyMuPDF reports over more than
+    one grid cell (the rows and columns it covers report None there)."""
+    out = []
+    for row in table.rows:
+        for cell in row.cells:
+            if cell is None:
+                continue
+            x0, y0, x1, y1 = cell
+            rs = 1 + sum(y0 + 1 < y < y1 - 1 for y in ys)
+            cs = 1 + sum(x0 + 1 < x < x1 - 1 for x in xs)
+            if rs > 1 or cs > 1:
+                r = min(range(len(ys) - 1), key=lambda k: abs(ys[k] - y0))
+                c = min(range(len(xs) - 1), key=lambda k: abs(xs[k] - x0))
+                out.append((r, c, min(rs, len(ys) - 1 - r), min(cs, len(xs) - 1 - c)))
+    return out
 
 
 def _cluster_values(values: list[float], tol: float) -> list[float]:
@@ -267,11 +429,19 @@ class _Extractor:
 
     # --- spans and rows ---------------------------------------------------
 
+    def _table_rule(self, rule: _Rule) -> bool:
+        """A ruled table's own line: the border under text in a tight row (or
+        under "Đáp án" just above the table) is no underline."""
+        return any(
+            t.x0 - 1.5 <= rule.x0 and rule.x1 <= t.x1 + 1.5 and t.y0 - 1.5 <= rule.y <= t.y1 + 1.5
+            for t in self.table_rects
+        )
+
     def _char_underlined(self, bbox, baseline: float, size: float) -> bool:
         """A thin rule just below the baseline under the character's centre."""
         cx = (bbox[0] + bbox[2]) / 2
         for rule in self.rules:
-            if rule.index in self.formula_drawings:
+            if rule.index in self.formula_drawings or self._table_rule(rule):
                 continue
             if baseline - 0.5 <= rule.y <= baseline + 0.3 * size + 0.6 and rule.x0 - 0.5 <= cx <= rule.x1 + 0.5:
                 self.used_drawings.add(rule.index)
@@ -295,6 +465,8 @@ class _Extractor:
         x0, x1 = bbox[0], bbox[2]
         width = max(x1 - x0, 1e-6)
         for rule in self.rules:
+            if self._table_rule(rule):
+                continue
             if baseline - 0.5 <= rule.y <= baseline + 0.3 * size + 0.6:
                 if min(rule.x1, x1) - max(rule.x0, x0) >= 0.6 * width:
                     self.used_drawings.add(rule.index)
@@ -407,8 +579,10 @@ class _Extractor:
             if any(s["text"].strip() for s in line["spans"]):
                 self.rotated_lines.append(line)
             return None
+        # Text under 4pt cannot be read on paper (a 3pt white "c" left as a marker): dropped.
         spans = [
-            s for s in line["spans"] if s["text"] and not (skip_invisible and s.get("alpha", 255) == 0)
+            s for s in line["spans"]
+            if s["text"] and s["size"] >= 4 and not (skip_invisible and s.get("alpha", 255) == 0)
         ]
         if self.formulas:
             spans = self._place_formulas(spans, hosted)
@@ -710,22 +884,30 @@ class _Extractor:
 
     # --- tables -----------------------------------------------------------
 
-    def tables(self) -> list[tuple[pymupdf.Rect, list[float], list[float]]]:
+    def tables(self) -> list[tuple[pymupdf.Rect, list[float], list[float], list]]:
+        """Ruled tables: grids read from the page's rules first (PyMuPDF misses a
+        one-row answer key and turns a true/false grid with merged "Câu N" cells
+        into one bogus 1×3 table), then PyMuPDF's finds elsewhere."""
+        words = [pymupdf.Rect(w[:4]) for w in self.page.get_text("words")]
+        out = _ruled_grids(self.drawings, words)
         try:
             found = self.page.find_tables().tables
         except Exception:
-            return []
-        out = []
+            found = []
         for t in found:
             if t.row_count * t.col_count < 2:
                 continue
             xs = _cluster_values([c[i] for row in t.rows for c in row.cells if c for i in (0, 2)], 2.0)
-            ys = [t.rows[0].bbox[1]] + [r.bbox[3] for r in t.rows]
+            # Row tops, then the lowest bottom: a row holding a cell merged down
+            # ("Câu 1" over five rows) reports that cell's bottom as its own.
+            ys = _cluster_values([r.bbox[1] for r in t.rows] + [max(r.bbox[3] for r in t.rows)], 1.0)
             if len(xs) >= 2 and len(ys) >= 2:
                 rect = self._ruled_extent(pymupdf.Rect(t.bbox))
+                if any(abs(rect & g[0]) > 0.3 * min(abs(rect), abs(g[0])) for g in out):
+                    continue
                 xs[0], xs[-1] = min(xs[0], rect.x0), max(xs[-1], rect.x1)
                 ys[0], ys[-1] = min(ys[0], rect.y0), max(ys[-1], rect.y1)
-                out.append((rect, xs, ys))
+                out.append((rect, xs, ys, _merged_cells(t, xs, ys)))
         return out
 
     def _ruled_extent(self, rect: pymupdf.Rect) -> pymupdf.Rect:
@@ -756,19 +938,28 @@ class _Extractor:
                 colour = _hex(d["fill"])
         return colour
 
-    def _table_element(self, rect, xs, ys, rows: list[_Row]) -> Table:
+    def _table_element(self, rect, xs, ys, merges, rows: list[_Row]) -> Table:
         nrows, ncols = len(ys) - 1, len(xs) - 1
         content: list[list[list[tuple[float, float, float, list[Run]]]]] = [
             [[] for _ in range(ncols)] for _ in range(nrows)
         ]
+        # A merged cell's text (centred over its rows: "Câu 1") goes to its first grid cell.
+        owner, extent = {}, {}
+        for r0, c0, rs, cs in merges:
+            extent[(r0, c0)] = (r0 + rs, c0 + cs)
+            for rr in range(r0, r0 + rs):
+                for cc in range(c0, c0 + cs):
+                    owner[(rr, cc)] = (r0, c0)
         for row in rows:
             for seg in row.segs:
                 cx = (seg.x0 + seg.x1) / 2
                 r = max(0, min(nrows - 1, sum(y <= row.baseline for y in ys) - 1))
                 c = max(0, min(ncols - 1, sum(x <= cx for x in xs) - 1))
+                r, c = owner.get((r, c), (r, c))
                 content[r][c].append((row.baseline, seg.x0, seg.x1, seg.runs))
         cells = []
         sizes = [run.size for row in rows for seg in row.segs for run in seg.runs if run.size]
+        pads: list[float] = []  # gap from the left rule to left-aligned text
         for r in range(nrows):
             line = []
             for c in range(ncols):
@@ -787,11 +978,15 @@ class _Extractor:
                     last_baseline = baseline
                 if runs:
                     runs[-1].text = runs[-1].text.rstrip()
+                r1, c1 = extent.get((r, c), (r + 1, c + 1))
+                align = cell_align(spans, xs[c], xs[c1])
+                if spans and align is None:
+                    pads.append(min(a for a, _ in spans) - xs[c])
                 line.append(
                     Cell(
                         text="".join(x.text for x in runs), runs=runs,
-                        shading=self._cell_shading(xs[c], ys[r], xs[c + 1], ys[r + 1]),
-                        align=cell_align(spans, xs[c], xs[c + 1]),
+                        shading=self._cell_shading(xs[c], ys[r], xs[c1], ys[r1]),
+                        align=align,
                     )
                 )
             cells.append(line)
@@ -804,6 +999,9 @@ class _Extractor:
             x1=rect.x1,
             y1=rect.y1,
             font_pt=median(sizes) if sizes else 11.0,
+            merges=merges,
+            # Word's default 5.4pt would break words the PDF's narrow columns fit ("Đúng").
+            cell_margin_pt=max(0.5, min(5.4, min(pads) - 0.5)) if pads else 1.5,
         )
 
     # --- figures ------------------------------------------------------------
@@ -860,7 +1058,7 @@ class _Extractor:
             if self.invisible_layer and abs(r) > 0.8 * page_area:
                 continue  # the scan under a searchable PDF's text layer
             out.append(r)
-        return out
+        return _join_strips(out)
 
     def vector_regions(self, table_rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
         page_area = self.width * self.height
@@ -896,7 +1094,10 @@ class _Extractor:
                 continue
             if (not overlap.is_empty and abs(overlap) >= 0.8 * max(abs(rect), 1e-6)) or (near and label):
                 inside.append(i)
-                text_area += abs(rect)
+                # Only sentences make a drawing a background under text; short
+                # labels ("Hình 1", letters filling in a line of image strips) do not.
+                if len(row.text.strip()) > 12:
+                    text_area += abs(rect)
             elif overlap.height >= 0.5 * rect.height:
                 crossing += 1
             else:
