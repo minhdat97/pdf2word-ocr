@@ -1258,6 +1258,8 @@ class _Extractor:
 
     def _classify(self, region: pymupdf.Rect, rows: list[_Row]) -> tuple[str, list[int]]:
         inside, crossing, grazing, text_area = [], 0, 0, 0.0
+        # the last short line of a paragraph ("thể khí." over a footer rule) is text, not a label
+        prose = {row.block for row in rows if len(row.text.strip()) > 12}
         for i, row in enumerate(rows):
             rect = row.rect
             overlap = rect & region
@@ -1273,7 +1275,7 @@ class _Extractor:
             )
             # (a formula picture is one character of text: its width tells a label "𝑡(𝑠)"
             # from a line of working "0,9 = … → 𝑡 = 28,8 ℃" beside a figure)
-            label = len(row.text.strip()) <= 12 and len(row.segs) <= 3 and (
+            label = len(row.text.strip()) <= 12 and len(row.segs) <= 3 and row.block not in prose and (
                 OBJ not in row.text or row.x1 - row.x0 <= 6 * row.size
             )
             if overlap.is_empty and not (near and label):
