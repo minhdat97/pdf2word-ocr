@@ -53,9 +53,10 @@ Thêm `"strip_watermarks": true` vào `options` (ô "Xoá watermark…" trên gi
 - chữ bán trong suốt (dấu đóng của các trang chia sẻ tài liệu); trên trang scan là chữ xám
   nhạt không sắc độ, và chỉ xét ở vùng header/footer vì chữ màu trong scan xám trông giống hệt;
 - link ở header/footer: chữ có link annotation bắt đầu tại nó, hoặc chữ dạng URL/tên miền;
-- phần watermark lộ qua hình minh hoạ có nền trong suốt: biết màu và độ mờ của watermark
-  vector nên chỉ các điểm ảnh nằm đúng trên đường pha trắng → màu watermark mới được tẩy trắng;
-  trên hình cắt từ trang scan thì tẩy trắng các điểm ảnh nhạt.
+- phần watermark lộ qua hình minh hoạ có nền trong suốt: ảnh watermark được bỏ khỏi trang khi
+  vẽ hình (trừ ảnh chính là hình); watermark vector và chữ xoay thì biết màu và độ mờ nên chỉ các
+  điểm ảnh nằm đúng trên đường pha trắng → màu watermark mới được tẩy trắng; trên hình cắt từ
+  trang scan thì tẩy trắng các điểm ảnh nhạt.
 
 Số trang ("Trang 1/2") luôn được giữ; hình minh hoạ và nội dung đề không bị đụng tới. Mặc định
 tắt.
@@ -103,16 +104,18 @@ tắt.
     ảnh. Khối chồng lên nhau gộp làm một, chữ nằm gần trọn trong khối thuộc về khối (không viết lại
     lần nữa cạnh ảnh). Ảnh chỉ có nét của chính công thức trên nền trong suốt: watermark, nền ô,
     chữ xoay chéo phía sau và mép dòng bên cạnh đều không lọt vào. Dấu câu ngay sau công thức
-    (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%" là chữ. Dòng
+    (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%", "(1) 6273." là chữ. Dòng
     bị PDF cắt quanh công thức được nối lại; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
     thức rộng cạnh hình không bị coi là nhãn của hình.
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
     mép (tên trục "s (km)", vạch chia "O", "2 4 5"; ở trên/dưới hình thì phải nằm trong bề ngang
     hình – "PHẦN I." trên bảng là tiêu đề) được render cùng hình; hình lớn đè lên chữ
     (watermark) đặt sau chữ; dòng chỉ chạm mép trên/dưới hình (phương án "A. … D." ngay dưới đồ
-    thị) không làm hình thành nền, trừ khi trong hình có cả câu dài. Hình (có chữ bao quanh) neo
-    vào đoạn đầu tiên nằm ngang mép trên của nó (chung ít nhất 8pt, hoặc nửa đoạn), không có thì
-    đoạn ngay trên nó, và đặt theo **đoạn đó** (không theo trang): hình đi theo câu hỏi cả khi chữ
+    thị) không làm hình thành nền, trừ khi trong hình có cả câu dài; đường kẻ mỏng (kẻ trên chân
+    trang) chỉ nhận chữ sát nó (số trang), không nhận dòng cuối bài ngay trên. Hình (có chữ bao
+    quanh) neo vào đoạn đầu tiên nằm ngang mép trên của nó (chung ít nhất 8pt, hoặc nửa đoạn, và
+    bắt đầu không thấp hơn mép trên quá 8pt – dòng phương án dưới đồ thị không làm neo), không có
+    thì đoạn ngay trên nó, và đặt theo **đoạn đó** (không theo trang): hình đi theo câu hỏi cả khi chữ
     dời sang trang khác. Khoảng trống chứa hình giữ đủ chiều cao (khoảng khác tối đa 72pt). Ảnh nền
     và nét mảnh (không có chữ bao quanh) vẫn neo vào đoạn đầu trang, đặt theo trang. Hình lấn ≤4pt
     vào khung dòng ngay trên/dưới được dời (hay thu nhỏ ≤15%) cho vừa khe, nếu không Word bắt dòng

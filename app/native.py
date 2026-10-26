@@ -58,6 +58,8 @@ def _opaque(text: str) -> bool:
     t = [c for c in text if not c.isspace()]
     if not t or not all(0x21 <= ord(c) <= 0x40 for c in t) or NUMBER_LABEL.match("".join(t)):
         return False
+    if all(NUMBER_LABEL.match(word) for word in text.split()):  # "(1) 6273.", "(4) -183."
+        return False
     return any(c in "!#$%&" for c in t) or len(set(t) & set("\"'()*+")) >= 2
 
 
@@ -459,6 +461,7 @@ class _Extractor:
         self.rotated_lines: list[dict] = []
         self._stripped_doc = None
         self._ground_doc = None
+        self._unmarked_doc = None
         self._ink_refs: tuple[float | None, float | None] | None = None
         self._bold_cache: dict[tuple, bool] = {}
 
@@ -1135,6 +1138,29 @@ class _Extractor:
 
     # --- figures ------------------------------------------------------------
 
+    def _unmarked_page(self, hidden: list[pymupdf.Rect], figures: list[pymupdf.Rect]) -> pymupdf.Page:
+        """This page without the watermark images (raster regions `hidden`; a
+        figure with a transparent ground shows them through). A watermark may
+        span the whole page, so an image inside one is still kept when it is a
+        figure itself."""
+        if self._unmarked_doc is None:
+            inside = lambda r, box: (  # noqa: E731
+                box.x0 - 1 <= r.x0 and r.x1 <= box.x1 + 1 and box.y0 - 1 <= r.y0 and r.y1 <= box.y1 + 1
+            )
+            doc = pymupdf.open()
+            doc.insert_pdf(self.page.parent, from_page=self.page.number, to_page=self.page.number)
+            p = doc[0]
+            xrefs = {
+                info["xref"] for info in p.get_image_info(xrefs=True)
+                if info["xref"]
+                and any(inside(pymupdf.Rect(info["bbox"]), h) for h in hidden)
+                and not any(inside(pymupdf.Rect(info["bbox"]), f) for f in figures)
+            }
+            for xref in xrefs:
+                p.delete_image(xref)
+            self._unmarked_doc = doc
+        return self._unmarked_doc[0]
+
     def _ground_page(self) -> pymupdf.Page:
         """This page with its text and formula strokes removed: what lies
         behind a formula picture."""
@@ -1236,7 +1262,10 @@ class _Extractor:
             # names "s (km)", ticks "O", "24 5") belongs to the figure; above or
             # below it, only within its width ("PHẦN I." over a table is a heading).
             m = 1.2 * row.size
-            near = not (rect & pymupdf.Rect(region.x0 - m, region.y0 - m, region.x1 + m, region.y1 + m)).is_empty and (
+            # a rule (the line over a footer) only takes what touches it: the page number
+            # beside it, not the last line of text above it
+            mv = m if region.height >= 3 else 0.3 * row.size
+            near = not (rect & pymupdf.Rect(region.x0 - m, region.y0 - mv, region.x1 + m, region.y1 + mv)).is_empty and (
                 rect.y1 > region.y0 and rect.y0 < region.y1 or region.x0 - m <= rect.x0 and rect.x1 <= region.x1 + m
             )
             # (a formula picture is one character of text: its width tells a label "𝑡(𝑠)"
@@ -1267,12 +1296,13 @@ class _Extractor:
             return "figure", inside
         return "background", []
 
-    def _render(self, rect: pymupdf.Rect, background: bool, paints=None) -> bytes:
+    def _render(self, rect: pymupdf.Rect, background: bool, paints=None, hidden=(), figures=()) -> bytes:
         clip = _min_size(rect) & self.page.rect
         if background:
             pix = self._stripped_page().get_pixmap(dpi=BACKGROUND_DPI, clip=clip, alpha=True)
             return pix.tobytes("png")
-        pix = self.page.get_pixmap(dpi=FIGURE_DPI, clip=clip, alpha=False)
+        page = self._unmarked_page(hidden, figures) if hidden else self.page
+        pix = page.get_pixmap(dpi=FIGURE_DPI, clip=clip, alpha=False)
         if not paints:
             return pix.tobytes("png")
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)
@@ -1703,23 +1733,29 @@ def native_page(
     consumed: set[int] = set()
     figures: list[pymupdf.Rect] = []
     backgrounds = [pymupdf.Rect(line["bbox"]) & page.rect for line in ex.rotated_lines]
-    for region in rasters + ex.vector_regions(table_rects):
+    behind: list[pymupdf.Rect] = []  # raster images behind the text
+    for n, region in enumerate(rasters + ex.vector_regions(table_rects)):
         kind, inside = ex._classify(region, free_rows)
         if kind == "figure":
             figures.append(region)
             consumed.update(inside)
         else:
             backgrounds.append(region)
+            if n < len(rasters):
+                behind.append(region)
     rotated = [pymupdf.Rect(line["bbox"]) & page.rect for line in ex.rotated_lines]
+    marks: list[pymupdf.Rect] = []  # watermark regions
     for region in _merge_boxes(backgrounds, gap=0):
+        watermark = ex.is_watermark(region, rotated)
         layout.pictures.append(
-            Picture(
-                ex._render(region, background=True), *region, behind_text=True, wrap=False,
-                watermark=ex.is_watermark(region, rotated),
-            )
+            Picture(ex._render(region, background=True), *region, behind_text=True, wrap=False, watermark=watermark)
         )
-    # When watermarks are stripped, figures drop the watermark showing through them.
-    paints = ex.watermark_paints(backgrounds) if strip else None
+        if watermark:
+            marks.append(region)
+    # When watermarks are stripped, figures drop the watermark showing through them: watermark
+    # images are left out, painted ones and rotated text are cleared by their colour.
+    paints = ex.watermark_paints(backgrounds) + ex.rotated_paints() if strip else None
+    hidden = [r for r in behind if any(not (r & m).is_empty for m in marks)] if strip else []
     obstacles: list[pymupdf.Rect] = []  # figures text wraps around
     for region in _merge_boxes(figures, gap=2):
         labels = ex._classify(region, free_rows)[1]
@@ -1728,7 +1764,7 @@ def native_page(
             region |= free_rows[i].rect
         thin = region.width < 6 or region.height < 6
         r = _min_size(region)
-        image = ex._render(region, background=False, paints=paints)
+        image = ex._render(region, background=False, paints=paints, hidden=hidden, figures=figures)
         layout.pictures.append(Picture(image, *r, wrap=not thin))
         if not thin:
             obstacles.append(r)

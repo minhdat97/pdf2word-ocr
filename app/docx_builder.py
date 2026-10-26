@@ -372,10 +372,12 @@ def _anchor_for(pic: Picture, placed: list[tuple[float, float, object]]) -> tupl
     """The paragraph a floating picture belongs to, with its top: the first one
     beside the picture's top (a long paragraph further down shares more height
     with it but comes after the text that refers to it), else the last one above
-    it (a figure below the text that refers to it), else the page's first one."""
+    it (a figure below the text that refers to it), else the page's first one.
+    A paragraph beside only the lower part of the picture (the options under a
+    graph) is not its anchor: hung above it, the picture lands on earlier text."""
     ordered = sorted(placed, key=lambda t: t[0])
     for y0, y1, p in ordered:
-        if min(y1, pic.y1) - max(y0, pic.y0) >= min(8.0, 0.5 * (y1 - y0)):
+        if min(y1, pic.y1) - max(y0, pic.y0) >= min(8.0, 0.5 * (y1 - y0)) and y0 <= pic.y0 + 8:
             return p, y0
     above = [(p, y0) for y0, _, p in ordered if y0 <= pic.y0]
     return above[-1] if above else (ordered[0][2], ordered[0][0])
