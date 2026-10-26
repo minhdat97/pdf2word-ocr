@@ -36,7 +36,7 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 
 `task_id` do client sinh (32 ký tự hex). Mã lỗi `error_fe` cho giao diện: `password`,
 `corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`,
-`internal_server_error`. Mục "Nhật ký API" trên giao diện hiện toàn bộ request/response.
+`internal_server_error`. Mở trang với `?debug` để thấy mục "Nhật ký API" (toàn bộ request/response).
 
 ## Chế độ (`ocr_type`)
 
@@ -46,7 +46,7 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 | `"ocr"` (cũng nhận `"solid-ocr"`) | dựng từ lớp text | OCR | OCR (nếu ≥15 từ, tin cậy ≥70%) |
 | `"ocr-full"` | OCR (bỏ qua lớp text, dùng khi text bị lỗi font) | OCR | – |
 
-Thêm `"strip_watermarks": true` vào `options` (ô "Xoá watermark…" trên giao diện) để bỏ:
+Thêm `"strip_watermarks": true` vào `options` (ô "Bỏ watermark…" trên giao diện, bật sẵn) để bỏ:
 
 - ảnh nền nằm sau chữ là watermark: lớn (từ 2% trang), chứa chữ xoay, hay vẽ màu nhạt / trong
   suốt (`Picture.watermark`); nét mảnh màu đậm sau chữ (gạch phân số, kẻ dòng) giữ lại;
@@ -64,7 +64,8 @@ tắt.
 ## Pipeline
 
 - **analyse-document** (`app/analyze.py`): PyMuPDF đếm ký tự text và diện tích ảnh từng
-  trang, phân loại `text` / `scan` / `mixed`. Giao diện tự chọn OCR khi file là `scan`.
+  trang, phân loại `text` / `scan` / `mixed`. Giao diện tự chọn OCR khi file có trang `scan` (hoặc không có chữ); đề có chữ kèm hình
+  (`mixed`) giữ chữ sẵn có. Ngôn ngữ OCR và OCR cả trang nằm trong "Tuỳ chọn nâng cao".
 - **Trang có text** (`app/native.py`), đọc `rawdict` của PyMuPDF:
   - Mỗi span thành một run giữ font, cỡ, đậm, nghiêng, màu; số mũ/chỉ số dưới nhận theo
     cỡ chữ và độ lệch baseline. Gạch chân và tô nền xét **từng ký tự**: gạch chân là nét kẻ
