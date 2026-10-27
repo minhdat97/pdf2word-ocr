@@ -34,3 +34,9 @@ RATE_TASKS = int(os.environ.get("P2W_RATE_TASKS", 120))
 OCR_DPI = 300
 OCR_MAX_SIDE_PX = 4500
 DEFAULT_OCR_LANGUAGES = ["vie"]
+
+# Formula model (app/mathocr.py, pix2text-mfr-1.5) reads formula regions of OCR pages.
+# On when its files are in MFR_DIR unless P2W_MFR=0; onnxruntime threads per conversion.
+MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
+MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
+MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", 2))
