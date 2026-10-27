@@ -1,0 +1,256 @@
+"""Tests for app.mathocr on recorded outputs of the formula model (no model needed).
+
+Run: python -m unittest discover -s tests
+The readings below are what pix2text-mfr-1.5 wrote for formula regions of two physics
+exams (option regions with units and full stops, and tight formula boxes), with the
+Tesseract text of the same regions.
+"""
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import numpy as np
+
+from app import mathocr as M
+
+
+def as_text(d):
+    """A decision as one string: ^{..} / _{..} around scripts; eq as latex + tail."""
+    return d.as_latex() if d is not None else None
+
+
+class TidyTest(unittest.TestCase):
+    CASES = (
+        ("6 , 4 2 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", "6,42.10^{-21}\\ J."),
+        ("\\mathrm { 7 , 6 6 . 1 0 ^ { \\mu ^ { 2 2 } } \\, J . }", "7,66.10^{\\mu^{22}}\\ J."),
+        ("v _ { { } _ { c q p } } = \\sqrt { \\frac { 3 p } { \\rho } } \\ .", "v_{cqp}=\\sqrt{\\frac{3p}{\\rho}}\\ ."),
+        ("x _ { _ A }", "x_{A}"),
+        ("\\Delta x = \\left| x _ { \\phantom { } _ { A } } \\cdot x _ { B } \\right|", "\\Delta x=|x_{A}\\cdot x_{B}|"),
+        ("\\Delta x = \\left| x _ { \\scriptscriptstyle A } \\cdot x _ { B } \\right|", "\\Delta x=|x_{A}\\cdot x_{B}|"),
+        ("8 , 3 \\; \\mathrm { ^ \\circ C } .", "8,3\\ °C."),
+        ("2 7 \\, \\, \\mathrm { ^ { o } C . }", "27\\ °C."),
+        ("4 0 0 { \\sqrt 2 } ~ \\mathrm { m / s . }", "400\\sqrt{2}\\ m/s."),
+        ("V = \\cfrac { 4 } { 3 } \\pi R ^ { 3 }", "V=\\frac{4}{3}\\pi R^{3}"),
+        ("V = { \\frac { 4 } { 3 } } \\pi R ^ { 3 }", "V=\\frac{4}{3}\\pi R^{3}"),
+        ("\\overline { { L } } = 4 5 , 2 2 \\mathrm { ~ m m }", "\\overline{L}=45,22\\ mm"),
+        ("\\textrm { \\psi } v _ { \\textrm { c q p } } = 1", "\\psi v_{cqp}=1"),
+        ("{ 1 0 } ^ { - 2 1 }", "10^{-21}"),
+        ("^ { 3 \\mathrm { \\ k m } }", "^{3\\ km}"),
+    )
+
+    def test_cases(self):
+        for raw, want in self.CASES:
+            with self.subTest(raw=raw):
+                self.assertEqual(M.tidy(raw), want)
+
+    def test_idempotent(self):
+        for raw, _ in self.CASES:
+            with self.subTest(raw=raw):
+                once = M.tidy(raw)
+                self.assertEqual(M.tidy(once), once)
+
+
+class DecideTest(unittest.TestCase):
+    def test_numbers_with_exponent(self):
+        d = M.decide("6 , 4 2 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", 0.975, "642.107'J.")
+        self.assertEqual(d.kind, "text")
+        self.assertEqual(d.parts, [("6,42.10", None), ("-21", "super"), (" J.", None)])
+
+    def test_unit_spacing_and_full_stop_from_ocr(self):
+        d = M.decide("6 \\mathrm { ~ k P a }", 0.931, "6 kPa.")
+        self.assertEqual(d.parts, [("6 kPa.", None)])
+        d = M.decide("\\mathrm { 1 , } 9 2 . 1 0 ^ { 4 } \\mathrm { m / s . }", 0.967, "1,92.106 m/s.")
+        self.assertEqual(d.parts, [("1,92.10", None), ("4", "super"), (" m/s.", None)])
+
+    def test_decimal_comma_and_degree(self):
+        self.assertEqual(as_text(M.decide("8 , 3 \\; \\mathrm { ^ \\circ C } .", 0.948, "83°C.")), "8,3 °C.")
+        self.assertEqual(as_text(M.decide("1 , 2 2 .", 0.91, "122.")), "1,22.")
+
+    def test_subscripts(self):
+        d = M.decide("7 2 \\mathrm { v _ { O } } = 6 7 \\mathrm { v _ { H } } .", 0.983, "72vo=67vn.")
+        self.assertEqual(d.parts, [("72v", None), ("O", "sub"), ("=67v", None), ("H", "sub"), (".", None)])
+        # Tesseract read the subscript A as ",": no comma is added
+        self.assertEqual(M.decide("x _ { _ A }", 0.94, "x,").parts, [("x", None), ("A", "sub")])
+        self.assertEqual(as_text(M.decide("t _ { 2 } = 0 , 4 0 5 \\mathrm { ~ s }", 0.958, "1, =0,405")), "t_{2}=0,405 s")
+
+    def test_equations(self):
+        d = M.decide("v _ { { } _ { c q p } } = \\sqrt { \\frac { 3 p } { \\rho } } \\ .", 0.97, "Vw")
+        self.assertEqual((d.kind, d.latex, d.tail), ("eq", "v_{cqp}=\\sqrt{\\frac{3p}{\\rho}}", "."))
+        d = M.decide("4 0 0 { \\sqrt 2 } ~ \\mathrm { m / s . }", 0.975, "400/2 m/s.")
+        self.assertEqual((d.kind, d.latex, d.tail), ("eq", "400\\sqrt{2}", " m/s."))
+        d = M.decide("V = { \\frac { 4 } { 3 } } \\pi R ^ { 3 }", 0.97, "Z7 = 1 ZÑ`)")
+        self.assertEqual((d.latex, d.tail), ("V=\\frac{4}{3}\\pi R^{3}", ""))
+        d = M.decide("\\overline { { L } } = 4 5 , 2 2 \\mathrm { ~ m m }", 0.993, "J =45,22 mm,")
+        self.assertEqual((d.kind, d.latex), ("eq", "\\overline{L}=45,22\\ mm"))
+
+    def test_rejected(self):
+        cases = [
+            ("6 , 4 2 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", 0.80, "642.107'J.", "confidence"),
+            ("\\mathrm { 7 , 6 6 . 1 0 ^ { \\mu ^ { 2 2 } } \\, J . }", 0.942, "7,66.1022J.", "symbol \\mu"),
+            ("\\mathrm { \\Gamma , 2 3 . 1 0 ^ { - 2 1 } ~ J . }", 0.872, "423.10”J.", "symbol \\Gamma"),
+            ("\\ldots ~ 1 ~ \\mathrm { k m / s . }", 0.943, "1 km⁄z.", "symbol \\ldots"),
+            ("\\textrm { \\psi } v _ { c q p } = \\sqrt { \\frac { 3 k T } { m _ { 0 } } }", 0.949, "v.= Ea", "symbol \\psi"),
+            ("\\mathcal { V } _ { \\omicron }", 0.92, "", "command \\mathcal"),
+            ("x _ { \\A }", 0.88, "x,", "symbol \\A"),
+            # the whole crop read as an exponent
+            ("^ { 3 \\mathrm { \\ k m } }", 0.877, "3 km,", "script without base"),
+            # "4v_O = 9v_H" printed with small-capital subscripts
+            ("4 _ { \\mathrm { V O } } = 9 _ { \\mathrm { V H } } .", 1.0, "4vo = 9vn.", "subscript after a digit"),
+            # Vietnamese words: "20 phút"
+            ("2 0 \\mathrm { ~ p h u t }", 0.992, "20 phút", "word phut"),
+            ("\\mathrm { t a n g } ~ ~ 2 \\sqrt { 3 } ~ ~ \\mathrm { l \\dot { a } n } .", 0.908, "tăng 2v3 lần.", "command \\dot"),
+            ("\\mathrm { t a n g } ~ 2 \\sqrt { 3 } ~ \\mathrm { l a n } .", 0.95, "tăng 2v3 lần.", "word tang"),
+            # case: Tesseract saw "v", the model "V"
+            ("\\mathrm { V _ { H } }", 0.992, "vụ", "letter case"),
+            ("o _ { x }", 0.982, "Ox.", "letter case"),
+            # digits that Tesseract read otherwise (one of them is wrong)
+            ("\\mathrm { 1 , } 9 2 . 1 0 ^ { 5 } ~ \\mathrm { m / s . }", 0.981, "102.10 m/s.", "digits differ from OCR"),
+            ("\\omega", 0.863, "0", "digits only in OCR"),
+            # plain letters: the OCR text is as good
+            ("O x", 0.869, "Ox.", "letters only"),
+            ("x = \\frac { 1 } { 2", 0.95, "", "unbalanced"),
+        ]
+        for raw, conf, ocr, why in cases:
+            with self.subTest(raw=raw):
+                d, reason = M.judge(raw, conf, ocr)
+                self.assertIsNone(d)
+                self.assertEqual(reason, why)
+
+    def test_label_left_in_ocr_text(self):
+        # "A. " in front of the OCR text does not count as digits of the reading
+        d = M.decide("1 , 9 . 1 0 ^ { 3 } ~ \\mathrm { m / s . }", 0.98, "D. 1,9.106 m/s.")
+        self.assertEqual(as_text(d), "1,9.10^{3} m/s.")
+
+
+class VoteTest(unittest.TestCase):
+    def test_spacing_differences_agree(self):
+        readings = [("2 7 \\, \\, \\mathrm { ^ { o } C . }", 0.859), ("2 7 \\mathrm { ^ \\circ C . }", 0.96)]
+        self.assertEqual(as_text(M.vote(readings, "27°C.")), "27 °C.")
+
+    def test_two_of_three(self):
+        readings = [
+            ("t _ { 5 } = 0 , 4 0 0 \\ \\mathrm { s }", 0.895),
+            ("t _ { s } = 0 , 4 0 0 \\ \\mathrm { s }", 0.879),
+            ("t _ { 5 } = 0 , 4 0 0 \\ \\mathrm { s }", 0.888),
+        ]
+        self.assertEqual(as_text(M.vote(readings, "f, 0,400 s.")), "t_{5}=0,400 s.")
+        self.assertIsNone(M.vote(readings[:2], "f, 0,400 s."))
+
+    def test_one_reading_is_not_enough(self):
+        self.assertIsNone(M.vote([("6 , 4 2 . 1 0 ^ { - 2 1 }", 0.99)], ""))
+        self.assertIsNone(M.vote([("6 , 4 2 . 1 0 ^ { - 2 1 }", 0.99), ("6 , 4 2 . 1 0 ^ { - 2 1 }", 0.7)], ""))
+
+    def test_junk_exponent_counts_for_a_minus(self):
+        junk = [
+            ("\\mathrm { 7 , 6 6 . 1 0 ^ { \\mu ^ { 2 2 } } \\, J . }", 0.942),
+            ("7 , 6 6 . 1 0 ^ { ' 2 2 } ~ J .", 0.93),
+        ]
+        self.assertEqual(M.repaired(junk[0][0]), "7,66.10^{-22}\\ J.")
+        self.assertIsNone(M.vote(junk, "7,66.1022J."))  # nobody read the "-"
+        d = M.vote(junk + [("7 , 6 6 . 1 0 ^ { - 2 2 } ~ \\mathrm { J } .", 0.9)], "7,66.1022J.")
+        self.assertEqual(as_text(d), "7,66.10^{-22} J.")
+        # a repair never makes other digits
+        d = M.vote([junk[0], ("7 , 6 6 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", 0.9)], "7,66.1022J.")
+        self.assertIsNone(d)
+
+
+class FakeReader:
+    """Stands in for FormulaReader: answers by crop width (one script per region) and counts passes."""
+
+    def __init__(self, by_width):
+        self.by_width = by_width
+        self.passes = []
+
+    def read(self, images):
+        self.passes.append(len(images))
+        out = []
+        for im in images:
+            width = next(w for w in self.by_width if abs(im.shape[1] - w) <= 16)
+            answers = self.by_width[width]
+            out.append(answers[min(len(self.passes) - 1, len(answers) - 1)])
+        return out
+
+
+class ReadRegionsTest(unittest.TestCase):
+    def test_votes_and_third_pass(self):
+        gray = np.full((200, 700), 255, np.uint8)
+        gray[50:80, 20:120] = 0
+        gray[50:80, 200:400] = 0
+        gray[50:80, 450:690] = 0
+        reader = FakeReader(
+            {
+                100: [("1 0 ^ { 5 }", 0.99)],  # agree at once
+                200: [("1 , 2 2", 0.95), ("1 2 2", 0.95), ("1 , 2 2", 0.9)],  # third pass decides
+                240: [("\\theta", 0.95)],  # never usable
+            }
+        )
+        boxes = [(10, 40, 130, 90), (190, 40, 410, 90), (440, 40, 695, 90)]
+        ds = M.read_regions(gray, boxes, ["105", "122", ""], reader=reader)
+        self.assertEqual([as_text(d) for d in ds], ["10^{5}", "1,22", None])
+        self.assertEqual(reader.passes, [3, 3, 1])
+
+    def test_model_off(self):
+        with mock.patch.object(M, "get_reader", return_value=None):
+            self.assertEqual(M.read_regions(np.zeros((10, 10), np.uint8), [(0, 0, 5, 5)], [""]), [None])
+
+
+class CutTest(unittest.TestCase):
+    def test_label_dot_removed_and_trimmed(self):
+        gray = np.full((100, 300), 255, np.uint8)
+        gray[60:66, 10:16] = 0  # the "." of a label, 6 px
+        gray[30:70, 40:250] = 0  # the formula
+        crop = M.cut(gray, (0, 0, 300, 100), em=50)
+        self.assertEqual(crop.shape, (40, 210))
+        self.assertEqual(int(crop.min()), 0)
+
+    def test_minus_sign_kept(self):
+        gray = np.full((100, 300), 255, np.uint8)
+        gray[48:52, 10:30] = 0  # a minus sign: wide
+        gray[30:70, 40:250] = 0
+        self.assertEqual(M.cut(gray, (0, 0, 300, 100), em=50).shape[1], 240)
+
+    def test_empty(self):
+        self.assertIsNone(M.cut(np.full((50, 50), 255, np.uint8), (0, 0, 50, 50)))
+
+
+class ModelPartsTest(unittest.TestCase):
+    def test_vocab_decode(self):
+        vocab = {"<pad>": 0, "<s>": 1, "</s>": 2, "\\": 5, "frac": 6, "Ġ": 7, "{": 8, "1": 9, "}": 10, "Ã©": 11}
+        data = {"model": {"type": "BPE", "vocab": vocab},
+                "added_tokens": [{"id": i, "content": c, "special": True} for c, i in vocab.items() if i < 3]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tokenizer.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            v = M.Vocab(path)
+        self.assertEqual(v.decode([1, 5, 6, 7, 8, 9, 10, 2, 0]), "\\frac {1}")
+        self.assertEqual(v.decode([11]), "é")
+
+    def test_resize_bicubic(self):
+        flat = np.full((17, 900), 200, np.uint8)
+        self.assertTrue((M.resize_bicubic(flat, 384, 384) == 200).all())
+        img = (np.arange(384 * 384) % 251).astype(np.uint8).reshape(384, 384)
+        self.assertTrue((M.resize_bicubic(img, 384, 384) == img).all())
+
+    @unittest.skipUnless(__import__("importlib").util.find_spec("PIL"), "Pillow not installed")
+    def test_resize_matches_pillow(self):
+        from PIL import Image
+
+        rng = np.random.RandomState(0)
+        for h, w in [(5, 3), (60, 700), (400, 1200), (384, 384)]:
+            img = (rng.rand(h, w) * 255).astype(np.uint8)
+            want = np.asarray(Image.fromarray(img).resize((384, 384), Image.BICUBIC))
+            self.assertTrue((M.resize_bicubic(img, 384, 384) == want).all())
+
+    def test_no_model_files(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(M, "MFR_DIR", Path(tmp)):
+            self.assertFalse(M.available())
+
+
+if __name__ == "__main__":
+    unittest.main()
