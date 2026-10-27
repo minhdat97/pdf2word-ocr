@@ -238,7 +238,9 @@ tắt.
        "cao": không đọc được thì thành ảnh công thức;
      - chữ trong câu: từ có số mũ hay chỉ số dưới đo theo hình (nét nhỏ cao hơn chữ hoa hay thấp
        hơn đường chân chữ ngay sau nét chữ khác, không phải dấu thanh, dấu phẩy hay dấu độ), từ chỉ
-       có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ.
+       có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ;
+       chữ Δ kèm một chữ cái mà Tesseract đọc thành "Ax", "At", "Aa." (nét đầu là tam giác cao bằng
+       chữ hoa, lỗ trong rộng và kín tới gần đáy; lỗ của chữ A, số 4 chỉ tới nửa chiều cao).
        Hoa/thường của chữ đầu vùng lấy theo chiều cao nét ("Vh" → "vh") ở các chữ chỉ khác nhau
        về cỡ (c o s u v w x z; không có k: nét lên của k cao bằng chữ hoa).
      Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
@@ -352,7 +354,7 @@ sau; "V=4/3πR³)" lấy cả dấu ngoặc đóng của câu); các kết quả
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
   đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
   dùng font Symbol) vẫn là chữ.
-- Đọc công thức (trang scan): chữ cái đứng riêng (p, ρ, k, T, ΔA) và số thường trong câu dẫn vẫn
+- Đọc công thức (trang scan): chữ cái đứng riêng (p, ρ, k, T) và số thường trong câu dẫn vẫn
   là chữ OCR; công thức trong bảng cũng vậy. Không đọc phương án có chữ tiếng Việt Tesseract tin
   ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh, phương án mà một từ OCR chạy sang phương
   án sau ("C. 273 K. D. 373"); kết quả mô hình không chắc thì giữ chữ OCR (thường sai:

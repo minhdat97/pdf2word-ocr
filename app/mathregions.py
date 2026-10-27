@@ -724,6 +724,11 @@ SUB_SIZE = (0.76, 1.25)  # of a subscript (a comma, bold or not, or the foot of 
 BASE_GAP = 1.4  # the glyph a script belongs to ends at most this far left of it
 MARK_GAP = 0.35  # a small glyph this close over (under) another one is its accent (dot below), not a script
 LOW_CONF = 50  # a word of a text line read with less confidence holding a number is read by the model too
+# A Δ (OCR: "Ax", "At", "4s") is a closed triangle: its hole, at least DELTA_HOLE of its box, reaches down to
+# DELTA_BASE of its height (the counter of a capital A ends half way, that of a 4 too); a capital's height.
+DELTA_HOLE = 0.09
+DELTA_BASE = 0.85
+_DELTA_WORD = re.compile(r"^[A4][A-Za-z][.,;:]?$")
 
 
 def _base_glyph(page: _Page, c: int, base: float, xh: float, scripts: list[int]) -> tuple[int, bool] | None:
@@ -788,6 +793,24 @@ def _scripts(page: _Page, w, base: float, xh: float) -> tuple[list[int], list[in
 _MATH_SIGN = re.compile(r"[=+±×÷/°^'\"]|\d[,.]\d")
 
 
+def _delta(page: _Page, w, comps: list[int], xh: float) -> bool:
+    """A word of a Greek capital delta and one letter ("Δx" read "Ax", "ΔA." read "Aa."): its first glyph a
+    triangle closed at the base (DELTA_HOLE, DELTA_BASE)."""
+    if not _DELTA_WORD.match(w.text) or not comps:
+        return False
+    c = min(comps, key=lambda c: page.st[c, 0])
+    x0, y0, x1, y1 = page.box(c)
+    if y1 - y0 < 1.3 * xh:
+        return False
+    paper = np.pad(page.lab[y0:y1, x0:x1] != c, 1, constant_values=True).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(paper, connectivity=4)
+    holes = [k for k in range(1, n) if k != lab[0, 0]]
+    if not holes:
+        return False
+    k = max(holes, key=lambda k: st[k, cv2.CC_STAT_AREA])
+    return st[k, cv2.CC_STAT_AREA] >= DELTA_HOLE * (x1 - x0) * (y1 - y0) and st[k, 1] - 1 + st[k, 3] >= DELTA_BASE * (y1 - y0)
+
+
 def _low_conf_number(w) -> bool:
     """A word read with low confidence holding a digit and a decimal mark or a math sign ("2,5.10°", "J/(mol.K)"
     with a digit): Tesseract garbles exponents and symbols. Plain integers stay OCR's."""
@@ -797,9 +820,9 @@ def _low_conf_number(w) -> bool:
 
 def inline_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
     """Words of running text read by the formula model: those with a superscript or subscript (_scripts), with
-    a word that is only scripts joined to the word before it, and words read with low confidence that hold a
-    digit. A region is the word's ink, tight; words read as prose, labels and words in the regions taken
-    are left alone."""
+    a word that is only scripts joined to the word before it, words read with low confidence that hold a
+    digit, and a Δ with its letter (_delta). A region is the word's ink, tight; words read as prose, labels and
+    words in the regions taken are left alone."""
     boxes = [r.box for r in taken]
     out = []
     for ln in page.lines:
@@ -822,7 +845,7 @@ def inline_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
                     groups[-1].append(item)
                 else:
                     groups.append([prev, item])
-            elif scripts or (text_line and _low_conf_number(w)):
+            elif scripts or (text_line and (_low_conf_number(w) or _delta(page, w, comps, xh))):
                 groups.append([item])
             prev = item
         em = page.em(ln)

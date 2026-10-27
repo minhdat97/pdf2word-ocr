@@ -127,6 +127,10 @@ class DecideTest(unittest.TestCase):
                 self.assertIsNone(d)
                 self.assertEqual(reason, why)
 
+    def test_capital_delta_with_a_letter(self):
+        self.assertEqual(as_text(M.decide("\\Delta x", 0.99, "Ax")), "Δx")
+        self.assertEqual(as_text(M.decide("\\Delta A .", 0.99, "Aa.")), "ΔA.")
+
     def test_label_left_in_ocr_text(self):
         # "A. " in front of the OCR text does not count as digits of the reading
         d = M.decide("1 , 9 . 1 0 ^ { 3 } ~ \\mathrm { m / s . }", 0.98, "D. 1,9.106 m/s.")

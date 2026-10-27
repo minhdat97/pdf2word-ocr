@@ -116,6 +116,19 @@ class ScriptsTest(unittest.TestCase):
         self.assertIn("8,31", texts)
         self.assertNotIn("8", texts)
 
+    def test_delta_read_as_a_letter(self):
+        c = Canvas()
+        words = prose_line(c, [(20, "khí"), (100, "là"), (700, "và")])
+        cv2.polylines(c.rgb, [np.array([[900, 98], [910, 78], [920, 98]], np.int32)], True, (0, 0, 0), 2)  # Δ
+        c.block(924, 86, 936, 100)
+        words.append(word(900, 78, 936, 100, "Ax", conf=91))
+        cv2.polylines(c.rgb, [np.array([[1000, 99], [1010, 78], [1020, 99]], np.int32)], False, (0, 0, 0), 2)
+        cv2.line(c.rgb, (1005, 91), (1015, 91), (0, 0, 0), 2)  # a capital A: its counter ends half way
+        c.block(1024, 86, 1036, 100)
+        words.append(word(1000, 78, 1036, 100, "Ax", conf=91))
+        regions = detect(c, [Line(1, 1, BASE, EM, words)])
+        self.assertEqual([(r.ocr_text, r.box[0]) for r in regions], [("Ax", 899)])
+
     def test_case_of_the_first_letter_from_its_height(self):
         c = Canvas()
         words = prose_line(c, [(20, "khí"), (100, "là"), (700, "và")])
