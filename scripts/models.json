@@ -1,0 +1,10 @@
+{
+  "vietocr": {
+    "about": "VietOCR vgg_transformer (Apache-2.0), exported to ONNX with float16 weights by scripts/export_vietocr.py",
+    "files": [
+      {"name": "encoder.onnx", "url": "", "sha256": "34ee81f63015358f06cd354b0ed7be35bbf2c026e248251426fe3e0b87f89d88", "size": 58325002},
+      {"name": "decoder.onnx", "url": "", "sha256": "cb95b993fd95b8c97e4c2fdaa343079ff57d9c7bc7d17fdf9caab5fdd2a6b02f", "size": 17789735},
+      {"name": "config.json", "url": "", "sha256": "a2cf9c9043dcb49311a447e6bd0f6443a008642dfea241c5068a1733c148c244", "size": 609}
+    ]
+  }
+}

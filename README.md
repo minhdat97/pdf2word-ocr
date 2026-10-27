@@ -20,9 +20,23 @@ cd pdf2word-ocr
 Muốn thêm ngôn ngữ, tải `<lang>.traineddata` từ
 https://github.com/tesseract-ocr/tessdata_best vào `tessdata/`; giao diện tự hiện thêm.
 
+VietOCR (nên có cho file scan tiếng Việt) đọc lại từng từ Tesseract tìm được, sửa dấu và chữ
+Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang ONNX, trọng số float16,
+76 MB, chạy bằng onnxruntime, không cần PyTorch) không nằm trong git, lấy về `models/vietocr/`:
+
+```bash
+.venv/bin/python scripts/fetch_models.py                   # tải theo scripts/models.json
+.venv/bin/python scripts/fetch_models.py --from <thư mục>  # hoặc chép từ thư mục có sẵn 3 file
+.venv/bin/python scripts/fetch_models.py --check           # chỉ kiểm tra
+```
+
+Script kiểm SHA-256 từng file. Không có mô hình (hoặc `P2W_VIETOCR=0`) thì công cụ chạy như
+trước, chỉ Tesseract.
+
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
-`P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`.
+`P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
+`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_THREADS` (2).
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -170,6 +184,13 @@ tắt.
      ngưỡng cộng thêm độ chênh giữa các phía của dải. Căn giữa/phải trong ô như với trang có text.
   3. Tesseract xuất hOCR: block, đoạn, dòng (baseline, `x_size`, ascender/descender), từ;
      bỏ từ rác (dòng chấm dưới watermark, vệt watermark đọc thành chuỗi ký tự lặp).
+     Có mô hình VietOCR và ngôn ngữ có `vie` (`app/vietocr.py`): mỗi từ cắt theo cột của từ, hàng
+     của dòng, đệm 1/4 chiều cao dòng, VietOCR đọc lại (từ cùng chiều rộng đọc chung một lượt).
+     Cùng chữ cái (bỏ qua dấu thanh) thì lấy dấu của VietOCR, giữ chữ hoa/thường của Tesseract,
+     trừ khi VietOCR bỏ dấu của từ Tesseract tin ≥90 ("khí" → "khi" ở từ ngắn); khác chữ thì lấy
+     chữ VietOCR khi Tesseract tin <92, VietOCR ≥0,5, không thêm "?" và giữ đủ ký hiệu
+     `= + ° % / < > ( ) ^` và dấu trừ của Tesseract (VietOCR không học công thức: "R=" → "?";
+     từ điển của nó không có "°", nên "?" đúng chỗ Tesseract có "°" được đọc là "°").
      Sửa lỗi theo cấu trúc đề (`app/ocr_fix.py`), chỉ chỗ cấu trúc tự quyết được, không chọn giữa
      hai từ có thật ("chuyên"/"chuyển"):
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";
@@ -218,6 +239,7 @@ tắt.
 ```bash
 .venv/bin/python scripts/make_test_pdfs.py   # sinh samples/ (cần font Times New Roman của macOS)
 .venv/bin/python scripts/smoke_test.py       # cần server đang chạy
+.venv/bin/python -m unittest discover -s tests  # kiểm thử đơn vị (VietOCR, tải mô hình)
 ```
 
 `exam-like.pdf` kiểm tra các định dạng phải giữ: dòng VNI, số mũ/chỉ số dưới, màu, tab đáp
@@ -243,12 +265,12 @@ Sửa lỗi sau OCR (2026-10-26), đo trên 30 trang scan giả từ 5 đề (30
 khớp theo từ: Tesseract 89,6% / 88,5% → 92,2% / 91,5%. Bảng đáp án scan đúng 62/62 ô (trước
 61/62); đề scan kém đọc lại đúng tổng điểm (trước 6–7/10 vì tiêu đề phần đọc sai).
 
-Thử VietOCR (chưa đưa vào công cụ): Tesseract tìm từ, VietOCR (`vgg_transformer`) đọc lại
-từng từ; giữ dấu của VietOCR khi hai bên cùng chữ cái, lấy chữ VietOCR khi Tesseract tin cậy
-<92 và VietOCR ≥0,5 → 96,3% (Tesseract + sửa lỗi: 91,9%), mọi file đều tăng 2–7 điểm. Cả dòng
-một lần thì kém (VietOCR học trên ảnh ngắn). Chi phí: PyTorch (~1 GB), mô hình 152 MB, thêm
-~2 giây/trang (Apple GPU) hay ~3 giây/trang (CPU M4 Pro), RAM ~1 GB; `vgg_seq2seq` (90 MB)
-nhanh gấp đôi, 95,2%.
+VietOCR đọc lại từ (2026-10-27, mô hình ONNX float16): cùng 30 trang, khớp theo từ
+92,2% / 91,5% → 96,5% / 95,7%, mọi file tăng 1,6–5,6 điểm; đề Vật lí scan 3 trang (300 dpi):
+chữ 96,9% → 98,4%, số 67,5% → 78,1%, không thêm dấu "?" nào. Hai điều kiện an toàn (không "?",
+giữ ký hiệu) bớt ~0,5 điểm: từ điển VietOCR không có số mũ nên "g/cm³" thành "g/cm?". Bản ONNX
+đọc như VietOCR chạy PyTorch: cùng chữ 9325/9329 từ thử (bản float32: 9329/9329). Chi phí trên
+CPU M4 Pro, 2 luồng: thêm ~2 giây/trang (trang dày ~400 từ: ~3 giây), RAM thêm ~400 MB.
 
 ## Giới hạn
 
@@ -277,8 +299,10 @@ nhanh gấp đôi, 95,2%.
   tự đánh số của Word.
 - Text nhiều cột thật sự được đặt vào bảng không viền, chưa dùng section nhiều cột.
 - Chữ có dấu kép (ế, ồ, ấ...) là chỗ Tesseract hay sai nhất; sửa lỗi sau OCR không đụng tới
-  (đọc nhầm thành một từ có thật khác).
-- Dấu phẩy mất hẳn khi nhận dạng ("8,5" → "85") không khôi phục được.
+  (đọc nhầm thành một từ có thật khác). VietOCR sửa phần lớn khi có mô hình; từ Tesseract đã tin
+  ≥92 mà sai chữ cái thì vẫn giữ.
+- Dấu phẩy mất hẳn khi nhận dạng ("8,5" → "85") không khôi phục được (VietOCR lấy lại được một
+  phần khi có mô hình).
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 
@@ -286,8 +310,9 @@ nhanh gấp đôi, 95,2%.
 
 - `storage.py` → presigned URL của S3/R2/MinIO (giữ nguyên contract HTTP).
 - Worker tách riêng (Celery/RQ/Arq + Redis), trạng thái task trong Redis/DB.
-- Engine OCR tốt hơn cho tiếng Việt: PaddleOCR + VietOCR, hoặc dịch vụ (Azure Document
-  Intelligence, Google Document AI, ABBYY), hoặc một SDK chuyển đổi thương mại.
+- Engine OCR tốt hơn cho tiếng Việt: VietOCR đã đọc lại từng từ, còn tìm dòng/từ vẫn là
+  Tesseract (thay bằng PaddleOCR), hoặc dịch vụ (Azure Document Intelligence, Google Document
+  AI, ABBYY), hoặc một SDK chuyển đổi thương mại.
 - Giới hạn CPU/RAM/thời gian cho mỗi task, quét virus file upload, xoá file theo TTL.
 
 ## Giấy phép
@@ -297,5 +322,8 @@ người khác dùng qua mạng thì phải cung cấp mã nguồn (kể cả ph
 
 Thành phần khác: model trong `tessdata/` lấy từ
 [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best) (Apache-2.0);
-Tesseract và OpenCV (Apache-2.0), python-docx và FastAPI (MIT), NumPy (BSD). File PDF mẫu
+Tesseract và OpenCV (Apache-2.0), python-docx và FastAPI (MIT), NumPy (BSD), ONNX Runtime
+(MIT). Mô hình trong `models/vietocr/` là `vgg_transformer` của
+[VietOCR](https://github.com/pbcquoc/vietocr) (Apache-2.0), chuyển sang ONNX bằng
+`scripts/export_vietocr.py` (giữ nguyên trọng số, lưu float16). File PDF mẫu
 không nằm trong repo: `scripts/make_test_pdfs.py` tạo lại vào `samples/`.

@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import pymupdf
 
+from . import vietocr
 from .errors import TaskError
 from .layout import alignment, cell_align, looks_like_link
 from .model import TAB, Cell, PageLayout, Paragraph, Picture, Run, Table
@@ -962,6 +963,9 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     with_light_ink = gray.copy() if whole_page else None
     drop_light_ink(gray)
     lines = tesseract_lines(gray, lang, dpi)
+    reader = vietocr.reader() if "vie" in lang.split("+") else None
+    if reader is not None:
+        vietocr.refine_words(lines, gray, reader)
     fix_lines(lines)
     _, ink = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     _split_labels(lines, ink, rgb)

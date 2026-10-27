@@ -34,3 +34,9 @@ RATE_TASKS = int(os.environ.get("P2W_RATE_TASKS", 120))
 OCR_DPI = 300
 OCR_MAX_SIDE_PX = 4500
 DEFAULT_OCR_LANGUAGES = ["vie"]
+
+# VietOCR re-reads Vietnamese OCR words (app/vietocr.py). On when its model files are in
+# VIETOCR_DIR (scripts/fetch_models.py) unless P2W_VIETOCR=0; threads per conversion.
+VIETOCR_DIR = Path(os.environ.get("P2W_VIETOCR_DIR", BASE_DIR / "models" / "vietocr"))
+VIETOCR_ENABLED = os.environ.get("P2W_VIETOCR", "1") != "0"
+VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", 2))

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Cập nhật bản đang chạy trên máy chủ: lấy mã mới từ GitHub, cài lại thư viện khi requirements.txt đổi,
-# cài lại dịch vụ systemd khi deploy/pdf2word.service đổi, restart chỉ khi mã Python hoặc dịch vụ đổi
-# (giao diện static/ được đọc thẳng từ ổ đĩa, không cần restart).
+# tải mô hình khi scripts/models.json đổi, cài lại dịch vụ systemd khi deploy/pdf2word.service đổi,
+# restart chỉ khi mã Python, mô hình hoặc dịch vụ đổi (giao diện static/ được đọc thẳng từ ổ đĩa,
+# không cần restart).
 #   ./scripts/deploy.sh            cập nhật
 #   ./scripts/deploy.sh --restart  cập nhật và restart dù không có gì đổi
 # Biến môi trường: P2W_SERVICE (tên dịch vụ systemd, mặc định pdf2word), P2W_PORT (mặc định 8000).
@@ -45,6 +46,11 @@ restart=$force
 if printf '%s\n' "$changed" | grep -qx 'requirements.txt'; then
   echo "requirements.txt đổi – cài lại thư viện…"
   .venv/bin/pip install --quiet -r requirements.txt
+  restart=1
+fi
+if printf '%s\n' "$changed" | grep -qx 'scripts/models.json'; then
+  echo "scripts/models.json đổi – tải mô hình vào models/…"
+  .venv/bin/python scripts/fetch_models.py || echo "Chưa tải được mô hình: công cụ chạy không có VietOCR (xem README)."
   restart=1
 fi
 if printf '%s\n' "$changed" | grep -q '^app/'; then
