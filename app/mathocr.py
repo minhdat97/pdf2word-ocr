@@ -899,6 +899,21 @@ def judge(tex: str, conf: float, ocr_text: str = "", min_conf: float = MIN_CONF)
     return MathDecision("text", parts=parts, conf=conf, source=tex), "ok"
 
 
+_EQ_LABEL = re.compile(r"^\*?([A-D])\s*[.)](?:\\ |\s)*")
+
+
+def split_label(decision: MathDecision | None) -> tuple[str, MathDecision] | None:
+    """An equation reading that starts with an answer label ("D.\\frac{3}{2}", "C.\\ W=\\frac{m}{2v}": the region
+    took in a label OCR garbled): ("D.", the equation without it), so the label can stay text; None otherwise."""
+    if decision is None or decision.kind != "eq":
+        return None
+    m = _EQ_LABEL.match(decision.latex)
+    if not m or not decision.latex[m.end() :]:
+        return None
+    rest = MathDecision("eq", latex=decision.latex[m.end() :], tail=decision.tail, conf=decision.conf, source=decision.source)
+    return m.group(1) + ".", rest
+
+
 def decide(tex: str, conf: float, ocr_text: str = "") -> MathDecision | None:
     """How a formula reading goes into Word, or None to keep the OCR text. tex: the model's LaTeX (tidy() is
     applied), conf: its mean token probability, ocr_text: Tesseract's text of the region (its digits must

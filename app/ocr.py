@@ -1114,7 +1114,9 @@ def read_formulas(
     other word centred in its box (not an answer label) give way to one placeholder word on the
     region's line holding the reading; an unread "tall" region becomes a placeholder holding its
     picture; other regions keep their OCR words. A region carrying an answer label OCR garbled or
-    lost (region.label) also gets that label written in place of the words over the label's glyphs.
+    lost (region.label) also gets that label written in place of the words over the label's glyphs;
+    so does an equation read with a label in front ("D.\\frac{3}{2}"): the label is written as text
+    before it, not inside the Word equation.
     Regions in ruled tables are skipped (table cells are plain text). Returns the number of
     placeholders. Nothing happens without the model."""
     if not lines or not mathocr.available():
@@ -1138,6 +1140,7 @@ def read_formulas(
         x0, y0, x1, y1 = region.box = tuple(int(v) for v in region.box)
         replaced = {id(w) for w in region.words}
         label = getattr(region, "label", None)
+        start = x0  # where the reading goes (after a label the region took in)
 
         def taken(w: Word) -> bool:
             if w.math is not None or _LABEL_ONLY.match(w.text):
@@ -1150,6 +1153,13 @@ def read_formulas(
             decision = None
         if decision is not None and _unmarked(decision, [w for ln in lines for w in ln.words if taken(w)]):
             decision = None
+        lead = mathocr.split_label(decision) if label is None else None
+        if lead is not None:  # "D.\frac{3}{2}": the label stays text, in front of the equation
+            box = mathregions.leading_label(ink, region.box, region.em_px or region.line.em_px)
+            if box is None:
+                decision = None
+            else:
+                label, decision, start = mathregions.Label(box, lead[0]), lead[1], box[2] + 1
         if decision is None and region.kind != "tall":
             continue
         gone: list[Word] = []
@@ -1166,8 +1176,8 @@ def read_formulas(
         first = min(gone, key=lambda w: w.x0, default=None)
         line_no = first.line_no if first else (region.line.words[0].line_no if region.line.words else 0)
         em = region.em_px or region.line.em_px
-        holder = Word(x0, y0, x1, y1, conf, _placeholder_text(payload), line_no, em, math=payload)
-        at = next((i for i, w in enumerate(region.line.words) if w.x0 > x0), len(region.line.words))
+        holder = Word(start, y0, x1, y1, conf, _placeholder_text(payload), line_no, em, math=payload)
+        at = next((i for i, w in enumerate(region.line.words) if w.x0 > start), len(region.line.words))
         region.line.words.insert(at, holder)
         if label is not None and not any(_overlaps(w, label.box) for ln in lines for w in ln.words):
             lx0, ly0, lx1, ly1 = label.box

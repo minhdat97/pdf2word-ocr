@@ -235,11 +235,15 @@ tắt.
        hay bỏ sót được tìm trên nét chữ: ở cột nhãn của trang, chữ cao bằng nhãn kèm dấu chấm, trước
        nó là giấy trắng, cùng màu nhãn (nhãn đen: cùng độ đậm); chữ của nhãn lấy theo thứ tự trong
        hàng (hàng có từ hai nhãn trở lên thì nhãn chưa rõ chữ lấy chữ cột của nó luôn có). Từ Tesseract
-       đọc mở đầu bằng chữ số ("2." của dòng đánh số, "1.2,3" của bảng đáp số) không phải nhãn. Vùng đọc được thì nhãn được viết lại đúng ("C.", cả "c." viết thường);
+       đọc mở đầu bằng chữ số ("2." của dòng đánh số, "1.2,3" của bảng đáp số) không phải nhãn. Vùng
+       đọc được thì nhãn được viết lại đúng ("C.", cả "c." viết thường);
      - công thức hai tầng: gạch phân số (nét mảnh, phẳng, có chữ ngay trên và dưới), dấu căn, gạch
        trên chữ (Ā, ΔL̄); nới theo mực sang hai bên tới khoảng trắng 0,6em, dừng ở nhãn và từ
-       Tesseract tin là chữ thường (tiếng Việt, từ ≥3 chữ cái không phải đơn vị); luôn là vùng
-       "cao": không đọc được thì thành ảnh công thức;
+       Tesseract tin là chữ thường (tiếng Việt, từ ≥3 chữ cái không phải đơn vị), cả nhãn Tesseract
+       đọc sai hay thiếu dấu chấm ("c.x=—", "D": chữ hoa kèm dấu chấm sau giấy trắng) – nhãn đó được
+       viết lại thành chữ trước Equation; mô hình vẫn đọc nhãn vào kết quả ("D.\frac{3}{2}") thì nhãn
+       cũng tách ra thành chữ, không nằm trong Equation; luôn là vùng "cao": không đọc được thì thành
+       ảnh công thức;
      - chữ trong câu: từ có số mũ hay chỉ số dưới đo theo hình (nét nhỏ cao hơn chữ hoa hay thấp
        hơn đường chân chữ ngay sau nét chữ khác, không phải dấu thanh, dấu phẩy hay dấu độ), từ chỉ
        có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ;

@@ -188,6 +188,56 @@ class TwoDimensionalTest(unittest.TestCase):
         self.assertEqual([(r.kind, r.ocr_text) for r in regions], [("tall", "2/3")])
         self.assertEqual(regions[0].box[0], 200)  # the "2" before the sign joins
 
+    def labelled_fraction(self, label_text):
+        """ "C. 3/2" after prose: a capital letter and its dot, blank paper, then a fraction; the label read as given."""
+        c = Canvas()
+        words = prose_line(c, [(20, "khí"), (600, "và")])
+        c.block(200, 79, 216, 100)  # "C"
+        c.block(219, 96, 223, 100)  # "."
+        c.block(250, 66, 270, 84)  # numerator
+        c.block(240, 89, 290, 91)  # bar
+        c.block(250, 96, 270, 116)  # denominator
+        if label_text == "c.x=—":  # glued to the fraction
+            words.append(word(200, 66, 290, 116, label_text, conf=40))
+        else:
+            words += [word(200, 79, 223, 100, label_text, conf=40), word(240, 66, 290, 116, "E", conf=20)]
+        return c, [Line(1, 1, BASE, EM, words)]
+
+    def test_garbled_label_stops_a_fraction_and_is_kept(self):
+        for text in ("c.x=—", "C"):
+            with self.subTest(label=text):
+                c, lines = self.labelled_fraction(text)
+                regions = detect(c, lines)
+                self.assertEqual([(r.kind, r.box) for r in regions], [("tall", (240, 66, 290, 116))])
+                self.assertEqual((regions[0].label.text, regions[0].label.box), ("C.", (200, 79, 223, 100)))
+                self.assertNotIn("c.", regions[0].ocr_text)
+
+    def test_label_read_into_an_equation_is_written_as_text(self):
+        c, lines = self.labelled_fraction("p")  # not taken for a label: the fraction grows over it
+        self.assertEqual([r.box for r in detect(c, lines)], [(200, 66, 290, 116)])
+        gray, ink, rgb = c.arrays()
+
+        class Reader:
+            def read(self, images):
+                return [("C . \\frac { 3 } { 2 }", 0.99) for _ in images]
+
+        with mock.patch.object(mathocr, "available", return_value=True), \
+                mock.patch.object(mathocr, "get_reader", return_value=Reader()), \
+                mock.patch.object(mathregions, "MATH_DETECT", "rules"):
+            ocr.read_formulas(lines, [], gray, ink, rgb, 300)
+        row = [w for w in sorted(lines[0].words, key=lambda w: w.x0) if 150 < w.x0 < 300]
+        self.assertEqual([(w.text, w.math is None) for w in row][0], ("C.", True))
+        self.assertEqual(row[1].math.latex, "\\frac{3}{2}")
+        self.assertNotIn("p", [w.text for w in lines[0].words])
+
+    def test_split_label(self):
+        d = mathocr.MathDecision("eq", latex="C.\\ W=\\frac{m}{2v}", tail=" J.", conf=0.9)
+        label, rest = mathocr.split_label(d)
+        self.assertEqual((label, rest.latex, rest.tail), ("C.", "W=\\frac{m}{2v}", " J."))
+        self.assertIsNone(mathocr.split_label(mathocr.MathDecision("eq", latex="\\frac{1}{2}")))
+        self.assertIsNone(mathocr.split_label(mathocr.MathDecision("text", parts=[("A. 3", None)])))
+
+
 class GarbledLabelsTest(unittest.TestCase):
     def page(self):
         """Two option rows at columns 20, 400, 800, 1200: the first read well, the second with "C." glued to

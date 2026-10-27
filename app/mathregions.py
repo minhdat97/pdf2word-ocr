@@ -422,9 +422,9 @@ def _label_style(page: _Page) -> _Style | None:
     return _Style(float(np.median(heights)), float(np.median(weights)), color, columns)
 
 
-def _blob_at(page: _Page, style: _Style, x: float, base: float, em: float) -> tuple[int, int, int, int] | None:
-    """Box of a label drawn at column x of a row with this baseline: a letter as high as the labels' standing
-    on the baseline, then a dot, in the labels' colour (or as bold as they are)."""
+def _label_glyphs(page: _Page, x: float, base: float, em: float) -> tuple[int, tuple[int, int, int, int]] | None:
+    """(letter component, box of the letter and its dot) of a label drawn at x of a row with this baseline: a glyph
+    0.3-1.1em wide standing on the baseline with blank paper before it, then a dot; None if there is none."""
     glyphs = sorted(
         (c for c in page.near(x - LABEL_COLUMN_EM * em, x + 1.5 * em)
          if abs(page.st[c, 1] + page.st[c, 3] - base) <= 0.2 * em and page.st[c, 3] >= 0.3 * em),
@@ -434,21 +434,41 @@ def _blob_at(page: _Page, style: _Style, x: float, base: float, em: float) -> tu
         return None
     c = glyphs[0]
     lx0, ly0, lx1, ly1 = page.box(c)
-    if abs(lx0 - x) > LABEL_COLUMN_EM * em or abs((ly1 - ly0) - style.height) > LABEL_SIZE * style.height:
-        return None
-    if not 0.3 * em <= lx1 - lx0 <= 1.1 * em:
+    if abs(lx0 - x) > LABEL_COLUMN_EM * em or not 0.3 * em <= lx1 - lx0 <= 1.1 * em:
         return None
     before = page.ink[max(0, int(base - 0.8 * em)) : int(base + 0.2 * em), max(0, int(lx0 - LABEL_GAP_EM * em)) : lx0]
     if before.any():
         return None  # a label starts a row or follows a tab gap: "4." of "4,14.10" does not
-    dot = None
     for d in page.near(lx1, lx1 + 0.5 * em):
         dx0, dy0, dx1, dy1 = page.box(d)
         if d != c and 0 <= dx0 - lx1 <= 0.35 * em and dx1 - dx0 <= 0.25 * em and dy1 - dy0 <= 0.25 * em \
                 and abs(dy1 - ly1) <= 0.12 * em:
-            dot = (dx0, dy0, dx1, dy1)
-            break
-    if dot is None:
+            return c, (lx0, min(ly0, dy0), dx1, max(ly1, dy1))
+    return None
+
+
+def leading_label(ink: np.ndarray, box: tuple[int, int, int, int], em: float) -> tuple[int, int, int, int] | None:
+    """Box of a label's glyphs at the left edge of a region (a letter, then a dot within 0.35em), or None."""
+    x0, y0, x1, y1 = (int(v) for v in box)
+    n, _, st, _ = cv2.connectedComponentsWithStats(np.ascontiguousarray(ink[y0:y1, x0:x1], np.uint8), connectivity=8)
+    comps = sorted((tuple(int(v) for v in st[c, :4]) for c in range(1, n)), key=lambda b: b[0])
+    if len(comps) < 3:
+        return None
+    (lx, ly, lw, lh), (dx, dy, dw, dh) = comps[0], comps[1]
+    if not (0.4 * em <= lh <= 1.1 * em and 0.3 * em <= lw <= 1.1 * em and dw <= 0.25 * em and dh <= 0.25 * em
+            and 0 <= dx - (lx + lw) <= 0.35 * em and abs((dy + dh) - (ly + lh)) <= 0.12 * em):
+        return None
+    return x0 + lx, y0 + min(ly, dy), x0 + dx + dw, y0 + max(ly + lh, dy + dh)
+
+
+def _blob_at(page: _Page, style: _Style, x: float, base: float, em: float) -> tuple[int, int, int, int] | None:
+    """Box of a label drawn at column x of a row with this baseline (_label_glyphs): a letter as high as the
+    labels', in the labels' colour (or as bold as they are)."""
+    found = _label_glyphs(page, x, base, em)
+    if found is None:
+        return None
+    c, box = found
+    if abs(int(page.st[c, 3]) - style.height) > LABEL_SIZE * style.height:
         return None
     colour = page.colour(c) if style.color else None
     if colour is not None:
@@ -457,7 +477,7 @@ def _blob_at(page: _Page, style: _Style, x: float, base: float, em: float) -> tu
             return None
     elif page.weight(c, page.body) < LABEL_WEIGHT * style.weight:
         return None
-    return lx0, min(ly0, dot[1]), dot[2], max(ly1, dot[3])
+    return box
 
 
 def _blob_labels(page: _Page, style: _Style | None) -> dict[int, list[tuple]]:
@@ -608,6 +628,9 @@ BAR_LONG_XH = 0.85  # and at least this long
 BAR_REACH_XH = 1.0  # a fraction's numerator and denominator start within this distance of the bar
 OVER_REACH_XH = 0.7  # the letters under a bar over them start within this distance
 ROOT_HIGH_XH = 1.5  # a radical sign is at least this high
+CAP_XH = (1.2, 1.8)  # height of a capital letter (x-heights): a label's letter
+LABEL_REACH_EM = 1.0  # a formula starting this close after a label is its option
+_LONE_LETTER = re.compile(r"^\*?([A-D])$")
 
 
 def _near_ink(page: _Page, c: int, y0: int, y1: int) -> tuple[float, int, list[int]]:
@@ -669,10 +692,31 @@ def _seeds(page: _Page) -> list[tuple[str, tuple[int, int, int, int], float]]:
     return out
 
 
+def _garbled_labels(page: _Page) -> list[tuple[tuple[int, int, int, int], str, object]]:
+    """Answer labels Tesseract garbled ("c.x=—", "C" glued to its option) or read without their dot ("D"), found on
+    their glyphs (_label_glyphs: a capital letter and a dot after blank paper) at the start of such a word:
+    [(box of the glyphs, "C.", the word)]. Unlike _blob_labels, this needs no page style (a page with few labels
+    read, a label never read well at its column)."""
+    out = []
+    for ln in page.lines:
+        em = page.em(ln)
+        base, xh = page.metrics(ln)
+        for w in ln.words:
+            m = _LABEL_START.match(w.text) or _LONE_LETTER.match(w.text)
+            if m is None or _prose(w):
+                continue
+            found = _label_glyphs(page, w.x0, base, em)
+            if found is not None and CAP_XH[0] * xh <= page.st[found[0], 3] <= CAP_XH[1] * xh:
+                out.append((found[1], m.group(1).upper() + ".", w))
+    return out
+
+
 def tall_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
     """Two-dimensional formulas outside the regions taken: each seed (_seeds) grown on ink (up and down
     across the bar, sideways over gaps up to RIGHT_GAP_EM) where words read as prose and labels are
-    blanked, so "v_cqp =" or a unit joins it but "tăng" and "lần" do not. A region whose growth did not
+    blanked, so "v_cqp =" or a unit joins it but "tăng" and "lần" do not. Labels Tesseract garbled or read
+    without their dot (_garbled_labels) are blanked too, and a region starting just after one carries it
+    (MathRegion.label), so the label stays text in front of the equation. A region whose growth did not
     settle, or that holds a prose word, is dropped. The line it is written into is the one whose
     baseline lies where the seed's sits (a fraction bar 0.27em over it). All are "tall": an unread one
     becomes a picture."""
@@ -683,6 +727,9 @@ def tall_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
     free = page.ink.copy()
     for w in stops:
         free[w.y0 : w.y1, w.x0 : w.x1] = 0
+    labels = _garbled_labels(page)
+    for (lx0, ly0, lx1, ly1), _, _ in labels:
+        free[ly0:ly1, lx0:lx1] = 0
     for r in taken:
         free[r.box[1] : r.box[3], r.box[0] : r.box[2]] = 0
     em = page.body
@@ -707,7 +754,15 @@ def tall_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
         if any(_prose(w) for w in inside):
             continue
         words = sorted(inside, key=lambda w: w.x0)
-        out.append(MathRegion(box, words, "tall", " ".join(w.text for w in words), page.em(line), line))
+        texts = [w.text for w in words]
+        fix = None
+        for lbox, text, word in labels:
+            if 0 <= box[0] - lbox[2] <= LABEL_REACH_EM * em and lbox[1] < box[3] and lbox[3] > box[1]:
+                fix = Label(lbox, text, word.color)
+                if word in words:  # "c.x=—": the label's text left out
+                    texts[words.index(word)] = _GARBLED_LABEL.sub("", word.text)
+                break
+        out.append(MathRegion(box, words, "tall", " ".join(t for t in texts if t), page.em(line), line, fix))
     return out
 
 
