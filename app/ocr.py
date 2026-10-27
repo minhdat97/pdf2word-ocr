@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import unicodedata
 from bisect import bisect_right
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from itertools import pairwise
 from statistics import median
@@ -69,6 +69,10 @@ HEADER_ZONE = 0.08  # top/bottom share of the page searched for headers and foot
 # (black at 50% opacity scans as ~128; red and blue text keep their chroma).
 FADED_LUMA = 100
 FADED_CHROMA = 40
+# Coloured text (blue "Câu 1:", red "[ĐNH]"): the darkest ink of a word spreads
+# at least this much across R, G, B; colours of a page this close are one.
+COLOUR_CHROMA = 60
+COLOUR_MERGE = 60
 # A table cell is shaded when its paper, against the paper around the table,
 # is at least this much darker in some channel (0-255): Word's palest grey
 # "Darker 5%" (F2F2F2) is 13; white cells of a scan differ by a few units.
@@ -90,6 +94,7 @@ class Word:
     weight: float = 0.0
     bold: bool = False
     faded: bool = False  # grey ink, much lighter than body text: a stamped overlay
+    color: str | None = None  # "RRGGBB" of coloured ink, None for black
 
     @property
     def cx(self) -> float:
@@ -362,17 +367,49 @@ def tesseract_lines(gray: np.ndarray, lang: str, dpi: int) -> list[Line]:
 
 def _measure_weight(words: list[Word], gray: np.ndarray) -> None:
     _, bw = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    body = median(w.em_px for w in words)
     for wd in words:
         box = bw[wd.y0 : wd.y1, wd.x0 : wd.x1]
         ink = int(box.sum())
         if not ink:
             continue
-        k = max(2, round(0.11 * wd.em_px))
+        # Tesseract sizes a line of short words ("A. 6 kPa.") small; a thinner
+        # erosion then keeps regular stems and the line reads bold.
+        k = max(2, round(0.11 * max(wd.em_px, 0.9 * body)))
         wd.weight = int(cv2.erode(box, np.ones((k, k), np.uint8)).sum()) / ink
     typical = median(w.weight for w in words)
     for wd in words:
         ratio = BOLD_WEIGHT_RATIO_SHORT if len(wd.text) <= 2 else BOLD_WEIGHT_RATIO
         wd.bold = wd.weight >= max(ratio * typical, BOLD_WEIGHT_FLOOR)
+
+
+_NUMBER_WORD = re.compile(r"^[(–-]?\d+(?:[,.]\d+)*[%°]?[.,;:)]?$")
+_ITEM_NUMBER = re.compile(r"^\d+[.:]$")
+_LABEL_ONLY = re.compile(r"^\*?[A-D]\.$")
+_ITEM_WORD = re.compile(r"^(Câu|Bài)$")
+
+
+def _tidy_bold(lines: list[Line]) -> None:
+    """Weight is noisy on short words: answer labels ("A.") and "Câu" of a page
+    share the bold of most of them (an exam styles them alike), a number in
+    plain text ("7,5", "200": Times digits have heavy strokes) is not bold
+    unless most of its line is, and the number of "Câu 3:" is bold exactly
+    when "Câu" is."""
+    for pattern in (_LABEL_ONLY, _ITEM_WORD):
+        alike = [w for ln in lines for w in ln.words if pattern.match(w.text)]
+        if len(alike) >= 3:
+            bold = sum(w.bold for w in alike) * 2 >= len(alike)
+            for wd in alike:
+                wd.bold = bold
+    for ln in lines:
+        words = sorted(ln.words, key=lambda w: w.x0)
+        others = [w for w in words if not _NUMBER_WORD.match(w.text)]
+        mostly_bold = bool(others) and _bold_share(others) >= 0.5
+        for prev, wd in zip([None, *words], words):
+            if prev is not None and _ITEM_NUMBER.match(wd.text) and prev.text in ("Câu", "Bài", "Ví"):
+                wd.bold = prev.bold
+            elif _NUMBER_WORD.match(wd.text) and not mostly_bold:
+                wd.bold = False
 
 
 # --- layout ------------------------------------------------------------------
@@ -446,10 +483,10 @@ def _runs(lines: list[Line]) -> tuple[list[Run], list[list[Word]]]:
                 stamp = len(pieces) > 1 and (
                     all(w.faded for w in piece) or looks_like_link(" ".join(w.text for w in piece))
                 )
-                if runs and runs[-1].text != TAB and (runs[-1].bold, runs[-1].stamp) == (bold, stamp):
+                if runs and runs[-1].text != TAB and (runs[-1].bold, runs[-1].stamp, runs[-1].color) == (bold, stamp, wd.color):
                     runs[-1].text += sep + text
                 else:
-                    runs.append(Run(sep + text, bold=bold, stamp=stamp))
+                    runs.append(Run(sep + text, bold=bold, stamp=stamp, color=wd.color))
     return runs, pieces_of_row if len(pieces_of_row) > 1 else []
 
 
@@ -465,6 +502,75 @@ def _mark_faded(lines: list[Line], rgb: np.ndarray, gray: np.ndarray) -> None:
             color = np.median(rgb[wd.y0 : wd.y1, wd.x0 : wd.x1][mask], axis=0)
             luma = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
             wd.faded = luma >= FADED_LUMA and color.max() - color.min() < FADED_CHROMA
+
+
+_LABEL_WORD = re.compile(r"^(\*?[A-D]\.) (\S.*)$")
+
+
+def _label_cut(wd: Word, ink: np.ndarray, rgb: np.ndarray) -> int | None:
+    """Column where an answer label glued to its option ("A.6kPa.") ends: the
+    middle of the first space-wide blank (>=0.1em; the gap between "A" and its
+    dot is narrower) 0.5-1.8em into the word, else where coloured ink turns
+    black (a blue bold label before plain text); None when neither is seen."""
+    box = ink[wd.y0 : wd.y1, wd.x0 : wd.x1].astype(bool)
+    cols = box.any(axis=0)
+    lo, hi = int(0.5 * wd.em_px), min(int(1.8 * wd.em_px), box.shape[1] - 1)
+    start = None
+    for x in range(lo, hi + 1):
+        if not cols[x] and cols[:x].any():
+            start = x if start is None else start
+        elif start is not None:
+            if x - start >= max(2, 0.1 * wd.em_px) and cols[x:].any():
+                return wd.x0 + (start + x) // 2
+            start = None
+    px = rgb[wd.y0 : wd.y1, wd.x0 : wd.x1].astype(int)
+    chroma = px.max(axis=2) - px.min(axis=2)
+    coloured = [bool(box[:, x].any()) and np.median(chroma[:, x][box[:, x]]) >= COLOUR_CHROMA for x in range(box.shape[1])]
+    for x in range(lo, hi):
+        if cols[x] and not coloured[x] and any(coloured[:x]) and not any(coloured[x : x + int(0.3 * wd.em_px)]):
+            return wd.x0 + x
+    return None
+
+
+def _split_labels(lines: list[Line], ink: np.ndarray, rgb: np.ndarray) -> None:
+    """Split words fix_word found to be a label glued to its option ("A. 6kPa."
+    from one Tesseract word) at the gap or colour change, so the label's weight
+    and colour are measured on their own."""
+    for ln in lines:
+        words = []
+        for wd in ln.words:
+            m = _LABEL_WORD.match(wd.text)
+            cut = _label_cut(wd, ink, rgb) if m else None
+            if cut is None:
+                words.append(wd)
+                continue
+            words += [replace(wd, x1=cut, text=m.group(1)), replace(wd, x0=cut, text=m.group(2))]
+        ln.words = words
+
+
+def _mark_colour(lines: list[Line], ink: np.ndarray, rgb: np.ndarray) -> None:
+    """Colour of each word from its darkest ink (edges blend into the paper);
+    near colours of the page are merged so a line keeps one blue."""
+    found: list[tuple[Word, np.ndarray]] = []
+    for ln in lines:
+        for wd in ln.words:
+            mask = ink[wd.y0 : wd.y1, wd.x0 : wd.x1].astype(bool)
+            if wd.faded or mask.sum() < 10:
+                continue
+            px = rgb[wd.y0 : wd.y1, wd.x0 : wd.x1][mask].astype(float)
+            luma = px @ LUMA
+            core = px[luma <= np.percentile(luma, 40)]
+            colour = np.median(core, axis=0)
+            if colour.max() - colour.min() >= COLOUR_CHROMA:
+                found.append((wd, colour))
+    groups: list[list[tuple[Word, np.ndarray]]] = []
+    for item in found:
+        near = next((g for g in groups if np.abs(np.median([c for _, c in g], axis=0) - item[1]).max() < COLOUR_MERGE), None)
+        (near.append(item) if near else groups.append([item]))
+    for g in groups:
+        colour = np.median([c for _, c in g], axis=0)
+        for wd, _ in g:
+            wd.color = "".join(f"{round(float(v)):02X}" for v in colour)
 
 
 def _bold_share(words: list[Word]) -> float:
@@ -659,6 +765,7 @@ def build_layout(
     if not words:
         return page
     _measure_weight(words, gray)
+    _tidy_bold(lines)
 
     def table_of(wd: Word) -> int | None:
         for i, g in enumerate(grids):
@@ -856,7 +963,10 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     drop_light_ink(gray)
     lines = tesseract_lines(gray, lang, dpi)
     fix_lines(lines)
+    _, ink = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _split_labels(lines, ink, rgb)
     _mark_faded(lines, rgb, gray)
+    _mark_colour(lines, ink, rgb)
     s = 72 / dpi
     pictures = []
     if whole_page:

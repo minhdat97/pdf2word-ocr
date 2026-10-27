@@ -45,14 +45,16 @@ def syllable(s: str) -> tuple[bool, bool]:
 # Loanwords written as one word whose every syllable carries a Vietnamese mark
 # (those with a plain part, "canô", "nitơ", "vectơ", "mômen", are never split).
 LOANWORDS = {"ôtô", "rôbốt", "điốt", "phôtôn", "côngtơ", "tôpô", "pôpơlin"}
+_LOANWORDS_TONELESS = {_toneless(w) for w in LOANWORDS}  # "điốt" was compared toned and split
 
 
 def split_syllables(word: str) -> str:
-    """A run of letters that is no syllable but two or three run together, each
-    with a Vietnamese mark ("phântử", "sựnóngchảy"): the split with the fewest
+    """A run of letters that is no syllable but two to five run together, each
+    with a Vietnamese mark ("phântử", "sựnóngchảy", "nhiệtđộcủakhí" – an answer
+    option whose spaces Tesseract lost): the split with the fewest
     parts, then the fewest parts lacking an onset ("sự nóng", not "sựn óng").
     A part without marks ("ca" in "canô") means a loanword: left alone."""
-    if len(word) > 24 or word.isascii() or syllable(word)[0] or _toneless(word) in LOANWORDS:
+    if len(word) > 24 or word.isascii() or syllable(word)[0] or _toneless(word) in _LOANWORDS_TONELESS:
         return word
     best = None
 
@@ -63,7 +65,7 @@ def split_syllables(word: str) -> str:
             if len(parts) > 1 and (best is None or key < best[0]):
                 best = (key, list(parts))
             return
-        if len(parts) == 3:
+        if len(parts) == 5:
             return
         for end in range(start + 1, len(word) + 1):
             ok, onset = syllable(word[start:end])

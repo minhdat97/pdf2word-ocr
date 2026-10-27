@@ -276,17 +276,32 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
         return None
 
     on: dict[tuple, list[int]] = {}
+    spans: dict[tuple, list[tuple[float, float]]] = {}
     for i, page in enumerate(pages):
-        for k in {key(el, page) for el in page.elements + page.pictures} - {None}:
-            on.setdefault(k, []).append(i)
+        for el in page.elements + page.pictures:
+            if (k := key(el, page)) is not None:
+                spans.setdefault(k, []).append((el.y0, el.y1))
+                if i not in on.setdefault(k, []):
+                    on[k].append(i)
     sides = {k: s for k, pages_on in on.items() if (s := _side(pages_on, len(pages)))}
     if any(s in ("odd", "even") for s in sides.values()):
         # Printed two-sided: what sits on every page of one kind and none of the
-        # other belongs there too, even when that kind has a single page.
+        # other belongs there too, even when that kind has a single page – then
+        # only where the header/footer found so far sits: a 3-page OCR file whose
+        # header was read differently on page 2 made all of page 2's top lines
+        # "even-page headers", the first question with them.
+        band: dict[str, tuple[float, float]] = {}
+        for k in sides:
+            for y0, y1 in spans[k]:
+                lo, hi = band.get(k[1], (y0, y1))
+                band[k[1]] = (min(lo, y0), max(hi, y1))
         kinds = {"odd": {i for i in range(len(pages)) if i % 2 == 0}, "even": {i for i in range(len(pages)) if i % 2}}
         for k, pages_on in on.items():
             for side, members in kinds.items():
                 if k not in sides and members and set(pages_on) == members:
+                    lo, hi = band.get(k[1], (0.0, float("inf")))
+                    if len(members) == 1 and any(y0 > hi + 3 or y1 < lo - 3 for y0, y1 in spans[k]):
+                        continue
                     sides[k] = side
     if not sides:
         return

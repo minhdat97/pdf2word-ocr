@@ -175,8 +175,9 @@ tắt.
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";
      - số đọc thành chữ "I0O" → "100" (cần ≥3 ký tự hoặc mở đầu bằng số: "O2" giữ);
      - số dính đơn vị/chữ "2mol", "4giờ" → "2 mol", "4 giờ" ("2NaN3", "3x" giữ);
-     - âm tiết dính nhau "phântử", "sựnóngchảy" → tách theo cấu tạo âm tiết tiếng Việt, chỉ khi
-       mọi phần đều có dấu tiếng Việt (từ mượn "canô", "nitơ", "vectơ" giữ nguyên);
+     - âm tiết dính nhau "phântử", "sựnóngchảy", "nhiệtđộcủakhí" (tới 5 âm tiết) → tách theo cấu
+       tạo âm tiết tiếng Việt, chỉ khi mọi phần đều có dấu tiếng Việt (từ mượn "canô", "nitơ",
+       "vectơ", "điốt" giữ nguyên);
      - "PHẦN" + số La Mã theo thứ tự các phần ("PHẦN L." → "PHẦN I.", "PHAN H." → "PHẦN II.");
      - thẻ lặp nhiều lần "[ĐNH]" sửa bản lệch một chữ "[ĐNHỊ]";
      - bảng: cột số thứ tự (1, 2, 3…) sửa ô lệch ("1\"" → "11", "l" → "1"), cột đáp án A–D và
@@ -184,12 +185,20 @@ tắt.
   4. Giữ hình: mực không phải chữ đáng tin, không phải nét kẻ mảnh (hình vẽ, ảnh, con dấu,
      chữ ký) thành ảnh nổi cắt từ bản màu; nhãn ngắn sát hình đi cùng hình.
   5. Dựng layout: tách đoạn theo dòng kết thúc sớm / thụt đầu dòng / hết câu + chữ hoa; khoảng
-     trống ≥1em thành tab stop (hàng đáp án); chữ đậm theo từng từ (tỉ lệ nét còn lại sau
-     erosion ~0,11em); cỡ chữ thân bài tính từ bề rộng dòng (thứ quyết định ngắt dòng trong
+     trống ≥1em thành tab stop (hàng đáp án). Nhãn dính phương án ("A.6kPa." một từ Tesseract)
+     tách tại khoảng trống rộng cỡ dấu cách hoặc chỗ mực màu chuyển đen, để đo riêng đậm/màu.
+     Màu chữ theo từng từ, lấy từ phần mực đậm nhất (mép chữ pha giấy); màu gần nhau trong trang
+     gộp một ("Câu" 0000FF, "[ĐNH]" FF0000, nhãn 3366FF như bản gốc). Chữ đậm theo từng từ (tỉ
+     lệ nét còn lại sau erosion ~0,11em, cỡ chữ không nhỏ hơn 0,9 lần cỡ thân bài – Tesseract đo
+     dòng "A. 6 kPa." nhỏ đi nên nét thường còn lại như chữ đậm); nhãn "A."–"D." và "Câu" của một
+     trang đậm theo số đông, số trong câu thường ("7,5", "200") không đậm trừ khi cả dòng đậm, số
+     của "Câu 3:" đậm theo "Câu"; cỡ chữ thân bài tính từ bề rộng dòng (thứ quyết định ngắt dòng trong
      Word), đối chiếu với chiều cao glyph; dòng lặp lại ở đầu/cuối trang bị bỏ như trang có text
      (so khớp bỏ qua khoảng trắng và ký tự gạch chéo OCR đọc lệch như "1⁄2"). Số trang OCR đọc
      sai khác nhau giữa các trang ("Trang" / "Trang 2/2") vẫn được nhận: chữ tĩnh bị bỏ, vị trí
-     của nó là chỗ đặt "Trang x/y".
+     của nó là chỗ đặt "Trang x/y". Đề in hai mặt (tiêu đề trang lẻ khác trang chẵn): khi một loại
+     trang chỉ có một trang, chỉ bỏ dòng nằm trong dải tiêu đề/chân trang đã tìm thấy – đề 3 trang
+     OCR đọc tiêu đề trang 2 khác đi từng làm câu đầu trang 2 bị coi là "tiêu đề trang chẵn".
 - **Ghi DOCX** (`app/docx_builder.py`): khổ giấy, lề, header/footer, ảnh nổi (`wp:anchor`),
   bảng, tab stop, khoảng dòng "at least"/"exactly", tắt widow/orphan control. Lề dưới chừa 10pt
   dưới dòng thấp nhất của trang đầy nhất (Word dàn cao hơn PDF vài pt là dòng cuối đã sang trang
