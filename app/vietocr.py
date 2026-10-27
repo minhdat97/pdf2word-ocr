@@ -208,23 +208,37 @@ class VietOCR:
 
 
 _lock = threading.Lock()
-_loaded = False
 _reader: VietOCR | None = None
+_failed = False
+
+
+def available() -> bool:
+    return VIETOCR_ENABLED and all((VIETOCR_DIR / f).is_file() for f in MODEL_FILES)
 
 
 def reader() -> VietOCR | None:
-    """The process's VietOCR, loaded on first use; None when disabled or not installed."""
-    global _loaded, _reader
-    if not _loaded:
-        with _lock:
-            if not _loaded:
-                if VIETOCR_ENABLED and all((VIETOCR_DIR / f).is_file() for f in MODEL_FILES):
-                    try:
-                        _reader = VietOCR(VIETOCR_DIR, VIETOCR_THREADS)
-                    except Exception:
-                        log.exception("VietOCR not loaded from %s", VIETOCR_DIR)
-                _loaded = True
+    """The process's VietOCR, loaded on first use once its files are there (files fetched while the service
+    runs are found); None when disabled, not installed, or broken."""
+    global _reader, _failed
+    if _reader is not None or _failed or not available():
+        return _reader
+    with _lock:
+        if _reader is None and not _failed:
+            try:
+                _reader = VietOCR(VIETOCR_DIR, VIETOCR_THREADS)
+            except Exception:
+                log.exception("VietOCR not loaded from %s", VIETOCR_DIR)
+                _failed = True
     return _reader
+
+
+def broken() -> None:
+    """Called where reading failed (damaged files, a config.json of another export): VietOCR is off for the rest
+    of the process, Tesseract's words are kept."""
+    global _reader, _failed
+    log.exception("VietOCR failed while reading: off until the service restarts")
+    with _lock:
+        _reader, _failed = None, True
 
 
 # --- choosing between the two readings ----------------------------------------

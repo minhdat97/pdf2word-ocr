@@ -7,8 +7,12 @@
 
 --from DIR takes a model's files from DIR/<model>/ when that folder has them, else from DIR.
 
-Each file is checked against its SHA-256 and size and written atomically
-(temporary file, then rename); files already present and correct are kept.
+Each file is checked against its SHA-256 and size; files already present and
+correct are kept. A model's new files are put in place only once all of them
+are there and correct (fetched into models/.<model>.new/ first): a download
+that fails half way leaves the model's old files as they were, never a mix of
+old and new files (new config.json next to old weights) that loads but cannot
+read.
 """
 
 import argparse
@@ -81,22 +85,38 @@ def main(argv: list[str] | None = None) -> int:
         source = args.source
         if source is not None and (source / model / spec["files"][0]["name"]).is_file():
             source = source / model
+        todo = []
         for entry in spec["files"]:
             dest = args.dest / model / entry["name"]
             label = f"{model}/{entry['name']}"
             if is_ok(dest, entry):
                 print(f"ok       {label}")
-                continue
-            if args.check:
+            elif args.check:
                 print(f"MISSING  {label}" if not dest.exists() else f"BAD      {label}")
                 failed += 1
-                continue
+            else:
+                todo.append(entry)
+        if not todo:
+            continue
+        stage = args.dest / f".{model}.new"
+        shutil.rmtree(stage, ignore_errors=True)
+        bad = 0
+        for entry in todo:
             try:
-                fetch(entry, dest, source)
-                print(f"fetched  {label} ({entry['size'] / 1e6:.1f} MB)")
+                fetch(entry, stage / entry["name"], source)
             except (OSError, RuntimeError, ValueError) as exc:  # report, go on with the other files
-                print(f"FAILED   {label}: {exc}", file=sys.stderr)
-                failed += 1
+                print(f"FAILED   {model}/{entry['name']}: {exc}", file=sys.stderr)
+                bad += 1
+        if bad:
+            shutil.rmtree(stage, ignore_errors=True)
+            print(f"KEPT     {model}: none of its files changed (fix the failures above and run again)", file=sys.stderr)
+            failed += bad
+            continue
+        (args.dest / model).mkdir(parents=True, exist_ok=True)
+        for entry in todo:
+            os.replace(stage / entry["name"], args.dest / model / entry["name"])
+            print(f"fetched  {model}/{entry['name']} ({entry['size'] / 1e6:.1f} MB)")
+        shutil.rmtree(stage, ignore_errors=True)
     return 1 if failed else 0
 
 

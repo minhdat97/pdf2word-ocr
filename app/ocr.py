@@ -1211,7 +1211,10 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     lines = tesseract_lines(gray, lang, dpi)
     reader = vietocr.reader() if "vie" in lang.split("+") else None
     if reader is not None:
-        vietocr.refine_words(lines, gray, reader)
+        try:
+            vietocr.refine_words(lines, gray, reader)  # words change only once all are read
+        except Exception:  # damaged or mismatched model files: Tesseract's words, VietOCR off
+            vietocr.broken()
     fix_lines(lines)
     join_rows(lines, gray.shape[0])
     _, ink = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -1219,7 +1222,10 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     _mark_faded(lines, rgb, gray)
     _mark_colour(lines, ink, rgb)
     # before pictures are cut out, so formula ink is not taken for a figure
-    read_formulas(lines, grids, gray, ink, rgb, dpi)
+    try:
+        read_formulas(lines, grids, gray, ink, rgb, dpi)  # words change only once all regions are read
+    except Exception:  # damaged or mismatched model files: OCR text, formula model off
+        mathocr.broken()
     s = 72 / dpi
     pictures = []
     if whole_page:

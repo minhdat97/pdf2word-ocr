@@ -122,17 +122,38 @@ class RefineTest(unittest.TestCase):
 
 
 class LoaderTest(unittest.TestCase):
+    def setUp(self):
+        vietocr._failed, vietocr._reader = False, None
+
     def tearDown(self):
-        vietocr._loaded, vietocr._reader = False, None
+        vietocr._failed, vietocr._reader = False, None
 
     def test_missing_models_mean_no_reader(self):
-        vietocr._loaded, vietocr._reader = False, None
         with mock.patch.object(vietocr, "VIETOCR_DIR", Path("/nonexistent/models/vietocr")):
             self.assertIsNone(vietocr.reader())
 
     def test_disabled(self):
-        vietocr._loaded, vietocr._reader = False, None
         with mock.patch.object(vietocr, "VIETOCR_ENABLED", False):
+            self.assertIsNone(vietocr.reader())
+
+    def test_files_fetched_later_are_found(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(vietocr, "VIETOCR_DIR", Path(tmp)), \
+                mock.patch.object(vietocr, "VietOCR", lambda d, t: "reader"):
+            self.assertIsNone(vietocr.reader())
+            for name in vietocr.MODEL_FILES:  # fetch_models.py --from DIR while the service runs
+                (Path(tmp) / name).write_bytes(b"x")
+            self.assertEqual(vietocr.reader(), "reader")
+
+    def test_broken_model_is_turned_off(self):
+        vietocr._reader = "reader"
+        with self.assertLogs("pdf2word.vietocr", "ERROR"):
+            try:
+                raise RuntimeError("Got invalid dimensions for input: past_k")
+            except RuntimeError:
+                vietocr.broken()
+        with mock.patch.object(vietocr, "available", return_value=True):
             self.assertIsNone(vietocr.reader())
 
 

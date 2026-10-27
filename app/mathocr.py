@@ -251,6 +251,15 @@ def get_reader() -> FormulaReader | None:
     return _reader
 
 
+def broken() -> None:
+    """Called where reading formulas failed (damaged files, a tokenizer of another revision): the formula model is
+    off for the rest of the process, formulas stay OCR text."""
+    global _reader, _reader_failed
+    log.exception("formula reading failed: off until the service restarts")
+    with _reader_lock:
+        _reader, _reader_failed = None, True
+
+
 # --- LaTeX: a small parser for the model's output ---
 # Nodes: ["t", text] symbol (character, control symbol, control word without
 # arguments; "\\ " is a real space), ["g", items] group, ["f", name, opt, args]

@@ -1,4 +1,5 @@
-"""scripts/fetch_models.py: copy from a folder, SHA-256 check, nothing written on a mismatch."""
+"""scripts/fetch_models.py: copy from a folder, SHA-256 check, nothing written on a mismatch, a model's files
+replaced all together or not at all."""
 
 import contextlib
 import hashlib
@@ -48,7 +49,7 @@ class FetchModelsTest(unittest.TestCase):
         code, out = self.run_script({**self.entry, "sha256": "0" * 64}, "--from", str(self.src))
         self.assertEqual(code, 1)
         self.assertIn("does not match", out)
-        self.assertEqual(list((self.dest / "m").iterdir()), [])
+        self.assertEqual(list(self.dest.iterdir()), [])  # neither the model's folder nor its staging folder
 
     def test_model_folders_and_model_option(self):
         sub = self.src / "m"
@@ -79,6 +80,34 @@ class FetchModelsTest(unittest.TestCase):
                 self.assertGreater(e["size"], 0)
                 if model == "mfr":  # pinned to one revision, never a moving branch
                     self.assertRegex(e["url"], r"^https://huggingface\.co/[\w.-]+/pix2text-mfr-1\.5/resolve/[0-9a-f]{40}/")
+
+    def test_model_changes_whole_or_not_at_all(self):
+        # an update of the model (new config.json and weights) whose weights fail: the old files stay together
+        old_cfg = b"config v1"
+        (self.src / "config.json").write_bytes(old_cfg)
+        cfg = {"name": "config.json", "url": "", "sha256": hashlib.sha256(old_cfg).hexdigest(), "size": len(old_cfg)}
+        self.manifest.write_text(json.dumps({"m": {"files": [cfg, self.entry]}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            self.assertEqual(fetch_models.main(["--manifest", str(self.manifest), "--dest", str(self.dest), "--from", str(self.src)]), 0)
+        new_cfg, new_weights = b"config v2", b"weights v2"
+        (self.src / "config.json").write_bytes(new_cfg)
+        v2 = [{**cfg, "sha256": hashlib.sha256(new_cfg).hexdigest(), "size": len(new_cfg)},
+              {**self.entry, "sha256": hashlib.sha256(new_weights).hexdigest(), "size": len(new_weights)}]
+        self.manifest.write_text(json.dumps({"m": {"files": v2}}))  # a.onnx in src is still v1: does not match
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = fetch_models.main(["--manifest", str(self.manifest), "--dest", str(self.dest), "--from", str(self.src)])
+        self.assertEqual(code, 1)
+        self.assertIn("KEPT", out.getvalue())
+        self.assertEqual((self.dest / "m" / "config.json").read_bytes(), old_cfg)
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir()), ["m"])  # no staging folder left
+        (self.src / "a.onnx").write_bytes(new_weights)  # once every file is right, all are replaced
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = fetch_models.main(["--manifest", str(self.manifest), "--dest", str(self.dest), "--from", str(self.src)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual((self.dest / "m" / "config.json").read_bytes(), new_cfg)
+        self.assertEqual((self.dest / "m" / "a.onnx").read_bytes(), new_weights)
 
     def test_no_url_yet(self):
         code, out = self.run_script(self.entry)

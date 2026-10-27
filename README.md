@@ -31,8 +31,13 @@ Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang O
 .venv/bin/python scripts/fetch_models.py --model mfr       # chỉ một mô hình
 ```
 
-Script kiểm SHA-256 từng file. Không có mô hình (hoặc `P2W_VIETOCR=0`) thì công cụ chạy như
-trước, chỉ Tesseract.
+VietOCR chưa có địa chỉ tải trong `scripts/models.json`: dựng `models/vietocr/` bằng
+`scripts/export_vietocr.py` trên máy có PyTorch rồi đưa lên máy chủ bằng `--from <thư mục>`.
+Script kiểm SHA-256 từng file; các file mới của một mô hình chỉ thay file cũ khi đã đủ và đúng
+cả (tải hỏng giữa chừng thì mô hình giữ nguyên bộ file cũ, không lẫn cũ với mới). Dịch vụ đang
+chạy tự thấy mô hình mới chép vào, không cần restart; mô hình hỏng khi đọc (file lệch nhau) thì
+tắt tới lần restart sau, trang vẫn chuyển bằng chữ Tesseract. Không có mô hình (hoặc
+`P2W_VIETOCR=0`) thì công cụ chạy như trước, chỉ Tesseract.
 
 **Đọc công thức** (nên có cho đề Toán/Lí scan): mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX
 ~120 MB, chạy bằng onnxruntime) đọc vùng công thức của trang OCR thành LaTeX. Kết quả tin được
