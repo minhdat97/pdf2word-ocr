@@ -42,6 +42,9 @@ class TidyTest(unittest.TestCase):
         ("\\textrm { \\psi } v _ { \\textrm { c q p } } = 1", "\\psi v_{cqp}=1"),
         ("{ 1 0 } ^ { - 2 1 }", "10^{-21}"),
         ("^ { 3 \\mathrm { \\ k m } }", "^{3\\ km}"),
+        # the root's degree and "\\left ." with the model's blanks between tokens
+        ("\\sqrt [ 3 ] { a + b }", "\\sqrt[3]{a+b}"),
+        ("x = \\left . \\frac { 1 } { 2 } \\right | _ { 0 } ^ { 1 }", "x=\\frac{1}{2}|_{0}^{1}"),
     )
 
     def test_cases(self):

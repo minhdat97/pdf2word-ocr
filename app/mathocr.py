@@ -354,9 +354,13 @@ class _Parser:
             if node is not None:
                 items.append(node)
 
-    def arg(self) -> list | None:
+    def blanks(self) -> None:
+        """Skips the blanks the model puts between all tokens."""
         while self.peek() == " ":
             self.i += 1
+
+    def arg(self) -> list | None:
+        self.blanks()
         tok = self.peek()
         if tok is None or tok in ("}", "^", "_"):
             return None
@@ -386,8 +390,10 @@ class _Parser:
         if name in SPACES:
             return ["t", "\\ "]
         if name in DROP:
-            if name in ("left", "right", "middle") and self.peek() == ".":
-                self.i += 1
+            if name in ("left", "right", "middle"):
+                self.blanks()
+                if self.peek() == ".":  # "\left ." (no bracket)
+                    self.i += 1
             return None
         if name in DROP_ARG:
             self.arg()
@@ -400,7 +406,8 @@ class _Parser:
             return ["t", "°"]
         if name == "sqrt":
             opt = None
-            if self.peek() == "[":
+            self.blanks()
+            if self.peek() == "[":  # "\sqrt [ 3 ] { x }": the root's degree
                 self.i += 1
                 opt = self.seq("]")
             arg = self.arg()
