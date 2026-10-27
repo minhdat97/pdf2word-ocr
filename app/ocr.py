@@ -23,11 +23,12 @@ import cv2
 import numpy as np
 import pymupdf
 
-from . import vietocr
+from . import mathocr, mathregions, vietocr
 from .errors import TaskError
 from .layout import alignment, cell_align, looks_like_link
 from .model import TAB, Cell, PageLayout, Paragraph, Picture, Run, Table
 from .ocr_fix import fix_lines, fix_table
+from .omml import latex_to_omml
 from .settings import OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
 
 # Tesseract's per-line metrics relative to the font size in pixels, measured
@@ -96,6 +97,9 @@ class Word:
     bold: bool = False
     faded: bool = False  # grey ink, much lighter than body text: a stamped overlay
     color: str | None = None  # "RRGGBB" of coloured ink, None for black
+    # A formula placeholder (added after fix_lines, in place of the OCR words of a formula
+    # region): the formula model's reading (mathocr.MathDecision) or a FormulaPicture.
+    math: object = None
 
     @property
     def cx(self) -> float:
@@ -121,6 +125,19 @@ class Line:
     @property
     def x1(self) -> int:
         return max(w.x1 for w in self.words)
+
+
+@dataclass
+class FormulaPicture:
+    """A formula region kept as an inline picture: PNG, size in points, depth below the baseline."""
+
+    png: bytes
+    w_pt: float
+    h_pt: float
+    depth_pt: float
+
+
+OBJ = "\ufffc"  # text of a run that is an equation or a formula picture
 
 
 @dataclass
@@ -367,6 +384,9 @@ def tesseract_lines(gray: np.ndarray, lang: str, dpi: int) -> list[Line]:
 
 
 def _measure_weight(words: list[Word], gray: np.ndarray) -> None:
+    words = [w for w in words if w.math is None]  # formula placeholders stay regular
+    if not words:
+        return
     _, bw = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     body = median(w.em_px for w in words)
     for wd in words:
@@ -397,16 +417,18 @@ def _tidy_bold(lines: list[Line]) -> None:
     unless most of its line is, and the number of "Câu 3:" is bold exactly
     when "Câu" is."""
     for pattern in (_LABEL_ONLY, _ITEM_WORD):
-        alike = [w for ln in lines for w in ln.words if pattern.match(w.text)]
+        alike = [w for ln in lines for w in ln.words if w.math is None and pattern.match(w.text)]
         if len(alike) >= 3:
             bold = sum(w.bold for w in alike) * 2 >= len(alike)
             for wd in alike:
                 wd.bold = bold
     for ln in lines:
         words = sorted(ln.words, key=lambda w: w.x0)
-        others = [w for w in words if not _NUMBER_WORD.match(w.text)]
+        others = [w for w in words if w.math is None and not _NUMBER_WORD.match(w.text)]
         mostly_bold = bool(others) and _bold_share(others) >= 0.5
         for prev, wd in zip([None, *words], words):
+            if wd.math is not None:
+                continue
             if prev is not None and _ITEM_NUMBER.match(wd.text) and prev.text in ("Câu", "Bài", "Ví"):
                 wd.bold = prev.bold
             elif _NUMBER_WORD.match(wd.text) and not mostly_bold:
@@ -478,17 +500,55 @@ def _runs(lines: list[Line]) -> tuple[list[Run], list[list[Word]]]:
                 runs.append(Run(TAB))
             for wi, wd in enumerate(piece):
                 text, sep = wd.text, "" if wi == 0 and (pi or li == 0) else " "
-                if wi == 0 and li and runs and runs[-1].text.endswith("-") and text[:1].islower():
+                if wd.math is not None:
+                    parts = _formula_runs(wd.math)
+                    if not parts:
+                        continue
+                    if sep and _plain(parts[0]):
+                        parts[0].text = sep + parts[0].text
+                    elif sep:
+                        parts.insert(0, Run(sep, formula=True))
+                    runs += parts
+                    continue
+                hyphen = runs and not runs[-1].formula and runs[-1].text.endswith("-")
+                if wi == 0 and li and hyphen and text[:1].islower():
                     runs[-1].text, sep = runs[-1].text[:-1], ""
                 bold = wd.bold
                 stamp = len(pieces) > 1 and (
                     all(w.faded for w in piece) or looks_like_link(" ".join(w.text for w in piece))
                 )
-                if runs and runs[-1].text != TAB and (runs[-1].bold, runs[-1].stamp, runs[-1].color) == (bold, stamp, wd.color):
+                if (
+                    runs and runs[-1].text != TAB and not runs[-1].formula
+                    and (runs[-1].bold, runs[-1].stamp, runs[-1].color) == (bold, stamp, wd.color)
+                ):
                     runs[-1].text += sep + text
                 else:
                     runs.append(Run(sep + text, bold=bold, stamp=stamp, color=wd.color))
     return runs, pieces_of_row if len(pieces_of_row) > 1 else []
+
+
+def _plain(run: Run) -> bool:
+    return not (run.script or run.math or run.image or run.field)
+
+
+def _formula_runs(m) -> list[Run]:
+    """Runs of a formula placeholder: text with superscripts/subscripts, a Word equation and
+    the text after it (unit, full stop), or a picture. Regular weight, automatic colour."""
+    if isinstance(m, FormulaPicture):
+        return [Run(OBJ, image=m.png, image_w=m.w_pt, image_h=m.h_pt, image_depth=m.depth_pt, formula=True)]
+    if m.kind == "eq":
+        runs = [Run(OBJ, math=m.latex, math_text=m.latex, formula=True)]
+        return runs + ([Run(m.tail, formula=True)] if m.tail else [])
+    return [Run(text, script=script, formula=True) for text, script in m.parts if text]
+
+
+def _placeholder_text(m) -> str:
+    """What a placeholder word reads as for the layout rules (sentence ends, bold share)."""
+    if isinstance(m, FormulaPicture):
+        return OBJ
+    if m.kind == "eq":
+        return OBJ + m.tail
+    return "".join(text for text, _ in m.parts) or OBJ
 
 
 def _mark_faded(lines: list[Line], rgb: np.ndarray, gray: np.ndarray) -> None:
@@ -715,7 +775,7 @@ def _line_width_size(line: Line, s: float) -> float | None:
     """Size at which Times sets this line's text as wide as its ink."""
     words = sorted(line.words, key=lambda w: w.x0)
     text = " ".join(w.text for w in words)
-    if len(text) < 15 or len(_pieces(words)) > 1:
+    if len(text) < 15 or len(_pieces(words)) > 1 or any(w.math is not None for w in words):
         return None
     unit = _TIMES.text_length(_base_letters(text), 1)
     return (words[-1].x1 - words[0].x0) * s / unit if unit else None
@@ -810,7 +870,9 @@ def build_layout(
         p.bold = p.bold or p.font_pt >= 1.2 * body
         for r in p.runs:
             if r.text != TAB:
-                r.size, r.bold = p.font_pt, r.bold or p.bold
+                r.size = p.font_pt
+                if not r.formula:
+                    r.bold = r.bold or p.bold
         if p.tab_stops:
             continue  # tab rows stay left aligned
         p.align, indent_px = alignment(p.line_spans, left, right)
@@ -847,6 +909,8 @@ def build_layout(
 
 
 def _credible(wd: Word) -> bool:
+    if wd.math is not None:
+        return True  # a formula read or kept as a picture: never part of a figure
     return wd.conf >= 85 or (wd.conf >= 50 and sum(ch.isalnum() for ch in wd.text) >= 2)
 
 
@@ -943,6 +1007,107 @@ def _take_pictures(
     return pictures
 
 
+# --- formulas ----------------------------------------------------------------
+
+
+def _converts(latex: str) -> bool:
+    try:
+        latex_to_omml(latex)
+    except ValueError:
+        return False
+    return True
+
+
+_LATEX_COMMAND = re.compile(r"\\[A-Za-z]+")
+_LETTERS = re.compile(r"[^\W\d_]+")
+
+
+def _unmarked(decision, words: list[Word]) -> bool:
+    """The reading spells a Vietnamese word of the region without its marks ("5 và 3." read
+    "5 va 3."): the model has no Vietnamese letters, so the region is text."""
+    if decision.kind == "eq":
+        plain = _LATEX_COMMAND.sub(" ", decision.latex) + " " + decision.tail
+    else:
+        plain = " ".join(text for text, script in decision.parts if script is None)
+    read = {t.lower() for t in _LETTERS.findall(plain)}
+    for w in words:
+        if mathregions.vietnamese(w.text):
+            if any(t.lower() in read for t in _LETTERS.findall(_base_letters(w.text))):
+                return True
+    return False
+
+
+def _formula_picture(region, rgb: np.ndarray, gray: np.ndarray, s: float) -> FormulaPicture:
+    """The region cut from the colour page (paper whitened where the grey page was), sized in
+    points and lowered by how far it reaches below its line's baseline."""
+    x0, y0, x1, y1 = region.box
+    crop = rgb[y0:y1, x0:x1].copy()
+    crop[gray[y0:y1, x0:x1] >= 255] = 255
+    depth = max(0.0, (y1 - region.line.baseline) * s)
+    return FormulaPicture(_png(crop), (x1 - x0) * s, (y1 - y0) * s, depth)
+
+
+def read_formulas(
+    lines: list[Line], grids: list[_Grid], gray: np.ndarray, ink: np.ndarray, rgb: np.ndarray, dpi: int,
+) -> int:
+    """Read the formula regions a detector finds (app/mathregions.py) with the formula model
+    (app/mathocr.py). Where the model's reading is trusted, the region's OCR words and every
+    other word centred in its box (not an answer label) give way to one placeholder word on the
+    region's line holding the reading; an unread "tall" region becomes a placeholder holding its
+    picture; other regions keep their OCR words. Regions in ruled tables are skipped (table cells
+    are plain text). Returns the number of placeholders. Nothing happens without the model."""
+    if not lines or not mathocr.available():
+        return 0
+    def in_table(box) -> bool:
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        return any(g.x0 <= cx <= g.x1 and g.y0 <= cy <= g.y1 for g in grids)
+
+    found = mathregions.find(lines, gray, ink, rgb, dpi)
+    regions = [r for r in found if any(ln is r.line for ln in lines) and not in_table(r.box)]
+    reader = mathocr.get_reader() if regions else None
+    if reader is None:
+        return 0
+    decisions = mathocr.read_regions(
+        gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader
+    )
+    s = 72 / dpi
+    placed = 0
+    for region, decision in zip(regions, decisions, strict=True):
+        x0, y0, x1, y1 = region.box = tuple(int(v) for v in region.box)
+        replaced = {id(w) for w in region.words}
+
+        def taken(w: Word) -> bool:
+            inside = x0 <= w.cx <= x1 and y0 <= w.cy <= y1 and not _LABEL_ONLY.match(w.text)
+            return w.math is None and (id(w) in replaced or inside)
+
+        if decision is not None and decision.kind == "eq" and not _converts(decision.latex):
+            decision = None
+        if decision is not None and _unmarked(decision, [w for ln in lines for w in ln.words if taken(w)]):
+            decision = None
+        if decision is None and region.kind != "tall":
+            continue
+        gone: list[Word] = []
+        for ln in lines:
+            keep = []
+            for w in ln.words:
+                (gone if taken(w) else keep).append(w)
+            ln.words = keep
+        if decision is not None:
+            payload, conf = decision, round(100 * decision.conf, 1)
+        else:
+            payload = _formula_picture(region, rgb, gray, s)
+            conf = round(sum(w.conf for w in gone) / len(gone), 1) if gone else 0.0
+        first = min(gone, key=lambda w: w.x0, default=None)
+        line_no = first.line_no if first else (region.line.words[0].line_no if region.line.words else 0)
+        em = region.em_px or region.line.em_px
+        holder = Word(x0, y0, x1, y1, conf, _placeholder_text(payload), line_no, em, math=payload)
+        at = next((i for i, w in enumerate(region.line.words) if w.x0 > x0), len(region.line.words))
+        region.line.words.insert(at, holder)
+        placed += 1
+    lines[:] = [ln for ln in lines if ln.words]
+    return placed
+
+
 # --- entry points ------------------------------------------------------------
 
 
@@ -971,6 +1136,8 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     _split_labels(lines, ink, rgb)
     _mark_faded(lines, rgb, gray)
     _mark_colour(lines, ink, rgb)
+    # before pictures are cut out, so formula ink is not taken for a figure
+    read_formulas(lines, grids, gray, ink, rgb, dpi)
     s = 72 / dpi
     pictures = []
     if whole_page:

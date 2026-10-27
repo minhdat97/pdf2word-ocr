@@ -26,17 +26,28 @@ Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang O
 
 ```bash
 .venv/bin/python scripts/fetch_models.py                   # tải theo scripts/models.json
-.venv/bin/python scripts/fetch_models.py --from <thư mục>  # hoặc chép từ thư mục có sẵn 3 file
+.venv/bin/python scripts/fetch_models.py --from <thư mục>  # hoặc chép từ thư mục có sẵn các file
 .venv/bin/python scripts/fetch_models.py --check           # chỉ kiểm tra
+.venv/bin/python scripts/fetch_models.py --model mfr       # chỉ một mô hình
 ```
 
 Script kiểm SHA-256 từng file. Không có mô hình (hoặc `P2W_VIETOCR=0`) thì công cụ chạy như
 trước, chỉ Tesseract.
 
+**Đọc công thức** (nên có cho đề Toán/Lí scan): mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX
+~120 MB, chạy bằng onnxruntime) đọc vùng công thức của trang OCR thành LaTeX. Kết quả tin được
+thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới ("6,42.10⁻²¹ J."),
+căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Hiện chỉ tìm
+vùng ở **phương án trả lời** (sau nhãn "A."–"D."), chưa tìm công thức trong câu dẫn. Lấy mô hình
+về `models/mfr/` bằng cùng script (tải từ địa chỉ ghim theo phiên bản trong `scripts/models.json`);
+không có mô hình, `P2W_MFR=0` hoặc `P2W_MATH_DETECT=off` thì trang OCR như trước.
+
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
-`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_THREADS` (2).
+`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_THREADS` (2),
+`P2W_MFR` (`0` để tắt đọc công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_THREADS` (2),
+`P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -203,6 +214,16 @@ tắt.
      - thẻ lặp nhiều lần "[ĐNH]" sửa bản lệch một chữ "[ĐNHỊ]";
      - bảng: cột số thứ tự (1, 2, 3…) sửa ô lệch ("1\"" → "11", "l" → "1"), cột đáp án A–D và
        cột Đ/S ("SDĐĐ" → "SĐĐĐ").
+     Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`: phần sau nhãn
+     "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo mực tới khoảng trắng,
+     qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin ≥80 và vùng tràn sang
+     phương án hay dòng khác), mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
+     các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
+     Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
+     "va", cũng bị bỏ). Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
+     (chữ thường + chỉ số trên/dưới, hay Equation + đơn vị/dấu chấm sau nó); vùng cao (phân số,
+     căn) không đọc được thành ảnh công thức trên dòng chữ như trang có text; vùng khác giữ chữ OCR.
+     Chữ của công thức không đậm, không màu theo đoạn.
   4. Giữ hình: mực không phải chữ đáng tin, không phải nét kẻ mảnh (hình vẽ, ảnh, con dấu,
      chữ ký) thành ảnh nổi cắt từ bản màu; nhãn ngắn sát hình đi cùng hình.
   5. Dựng layout: tách đoạn theo dòng kết thúc sớm / thụt đầu dòng / hết câu + chữ hoa; khoảng
@@ -239,7 +260,7 @@ tắt.
 ```bash
 .venv/bin/python scripts/make_test_pdfs.py   # sinh samples/ (cần font Times New Roman của macOS)
 .venv/bin/python scripts/smoke_test.py       # cần server đang chạy
-.venv/bin/python -m unittest discover -s tests  # kiểm thử đơn vị (VietOCR, tải mô hình)
+.venv/bin/python -m unittest discover -s tests  # kiểm thử đơn vị (VietOCR, công thức, tải mô hình)
 ```
 
 `exam-like.pdf` kiểm tra các định dạng phải giữ: dòng VNI, số mũ/chỉ số dưới, màu, tab đáp
@@ -272,6 +293,14 @@ giữ ký hiệu) bớt ~0,5 điểm: từ điển VietOCR không có số mũ n
 đọc như VietOCR chạy PyTorch: cùng chữ 9325/9329 từ thử (bản float32: 9329/9329). Chi phí trên
 CPU M4 Pro, 2 luồng: thêm ~2 giây/trang (trang dày ~400 từ: ~3 giây), RAM thêm ~400 MB.
 
+Đọc công thức (2026-10-27, cách tìm vùng `rules`, có VietOCR): đề Vật lí scan 3 trang: chữ
+98,4% → 99,1%, số 78,1% → 86,8%, Equation đúng 0 → 13/24 công thức của bản chuẩn (đủ mọi công
+thức ở phương án; 11 còn lại nằm trong câu dẫn, chưa tìm); 30 trang scan giả: khớp theo từ
+96,45% / 95,70% → 96,7% / 96,2%. Trên đề đó và hai bản scan giả của một đề Vật lí khác: 139 kết
+quả đặt vào đề, 103 kết quả ứng với công thức của bộ thử đều đúng, 36 kết quả còn lại là số kèm
+đơn vị ("594 m/s.") cũng đúng. Chi phí trên CPU M4 Pro, 2 luồng: ~0,2 giây mỗi vùng (đề Vật lí
+68 vùng: 16,5 → 30,2 giây cho 3 trang), RAM thêm ~1 GB.
+
 ## Giới hạn
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
@@ -283,7 +312,13 @@ CPU M4 Pro, 2 luồng: thêm ~2 giây/trang (trang dày ~400 từ: ~3 giây), RA
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
   đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
   dùng font Symbol) vẫn là chữ.
-- Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân, số mũ/chỉ số dưới;
+- Đọc công thức (trang scan): chỉ tìm vùng ở phương án trả lời (sau nhãn "A."–"D."); công thức
+  trong câu dẫn và trong bảng vẫn là chữ OCR. Không đọc phương án có chữ tiếng Việt Tesseract tin
+  ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh; kết quả mô hình không chắc thì giữ chữ OCR
+  (thường sai: "642.107'J."), phân số/căn không đọc được thành ảnh. Tesseract để nhãn đứng riêng
+  một dòng (hàng phân số) thì phương án đó thành đoạn riêng ngay sau hàng của nó.
+- Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân; số mũ/chỉ số dưới chỉ có
+  ở phương án mô hình công thức đọc được;
   chữ đậm theo từng từ thỉnh thoảng sai ở từ rời; Tesseract không đọc được dòng gạch dài kiểu
   "------HẾT------"; hình mờ, nét rất mảnh có thể bị cắt sát.
 - Watermark chữ xoay được set lại bằng font serif, không phải font gốc; font Type3 dùng font
@@ -323,7 +358,8 @@ người khác dùng qua mạng thì phải cung cấp mã nguồn (kể cả ph
 Thành phần khác: model trong `tessdata/` lấy từ
 [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best) (Apache-2.0);
 Tesseract và OpenCV (Apache-2.0), python-docx và FastAPI (MIT), NumPy (BSD), ONNX Runtime
-(MIT). Mô hình trong `models/vietocr/` là `vgg_transformer` của
+(MIT). Mô hình trong `models/mfr/` là pix2text-mfr-1.5 (MIT), dùng nguyên các file ONNX đã công
+bố. Mô hình trong `models/vietocr/` là `vgg_transformer` của
 [VietOCR](https://github.com/pbcquoc/vietocr) (Apache-2.0), chuyển sang ONNX bằng
 `scripts/export_vietocr.py` (giữ nguyên trọng số, lưu float16). File PDF mẫu
 không nằm trong repo: `scripts/make_test_pdfs.py` tạo lại vào `samples/`.

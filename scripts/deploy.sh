@@ -50,7 +50,7 @@ if printf '%s\n' "$changed" | grep -qx 'requirements.txt'; then
 fi
 if printf '%s\n' "$changed" | grep -qx 'scripts/models.json'; then
   echo "scripts/models.json đổi – tải mô hình vào models/…"
-  .venv/bin/python scripts/fetch_models.py || echo "Chưa tải được mô hình: công cụ chạy không có VietOCR (xem README)."
+  .venv/bin/python scripts/fetch_models.py || echo "Chưa tải đủ mô hình: công cụ chạy không có mô hình còn thiếu (VietOCR/công thức, xem README)."
   restart=1
 fi
 if printf '%s\n' "$changed" | grep -q '^app/'; then

@@ -25,6 +25,11 @@ class Run:
     image_h: float = 0.0
     image_depth: float = 0.0
     stamp: bool = False  # part of a faded stamp or a link (OCR tab rows)
+    # A Word equation: tidy LaTeX (app/omml.py), text "\ufffc". Should the LaTeX not convert,
+    # the run is written as its picture (image) if it has one, else as math_text.
+    math: str | None = None
+    math_text: str | None = None
+    formula: bool = False  # read by the formula model (OCR): keeps its own weight in a bold paragraph
 
 
 TAB = "\t"

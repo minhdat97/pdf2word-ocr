@@ -14,6 +14,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
 from .model import LINE_BREAK, TAB, Columns, PageLayout, Paragraph, Picture, Run, Table
+from .omml import latex_to_omml
 
 FONT = "Times New Roman"
 EMU_PER_PT = 12700
@@ -147,6 +148,19 @@ def _add_formula(p, r: Run) -> None:
         doc_pr.set("title", FORMULA_ALT)
 
 
+def _add_math(p, r: Run, size: float) -> None:
+    """A formula as a Word equation (m:oMath in the paragraph, between its runs). LaTeX the
+    converter rejects falls back to the run's picture, else to its text."""
+    try:
+        p._p.append(latex_to_omml(r.math, size_pt=r.size or size, text_font=FONT))
+    except ValueError:
+        if r.image:
+            _add_formula(p, r)
+        else:
+            run = p.add_run(r.math_text if r.math_text is not None else r.math)
+            _format(run, r)
+
+
 def _add_field(p, r: Run) -> None:
     # The run text is the value shown until Word computes the field (viewers
     # such as QuickLook never do), e.g. the real page count for NUMPAGES.
@@ -169,6 +183,8 @@ def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
     for r in runs:
         if r.field:
             _add_field(p, r)
+        elif r.math:
+            _add_math(p, r, size)
         elif r.image:
             _add_formula(p, r)
         elif r.text == TAB:

@@ -6,5 +6,13 @@
       {"name": "decoder.onnx", "url": "", "sha256": "cb95b993fd95b8c97e4c2fdaa343079ff57d9c7bc7d17fdf9caab5fdd2a6b02f", "size": 17789735},
       {"name": "config.json", "url": "", "sha256": "a2cf9c9043dcb49311a447e6bd0f6443a008642dfea241c5068a1733c148c244", "size": 609}
     ]
+  },
+  "mfr": {
+    "about": "pix2text-mfr-1.5 formula recognition (MIT), ONNX files as published (revision 1cef9f0bdcd6a4c63df7de1311fb0894593340cc), read by app/mathocr.py",
+    "files": [
+      {"name": "encoder_model.onnx", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/encoder_model.onnx", "sha256": "080a3f660f08bc9ebcacdd96e34be6b6400f8c7e62d7cd0dd8251badc37f610b", "size": 87510770},
+      {"name": "decoder_model.onnx", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/decoder_model.onnx", "sha256": "917deb98e91a0453c5f234f58a0f32f9fb037de8527c7eb4ed394daf9e692f2a", "size": 32026253},
+      {"name": "tokenizer.json", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/tokenizer.json", "sha256": "4ffbeb2143e6a38324bb6111b7a8109530d38a076a8439aa5777535f0a32758a", "size": 113168}
+    ]
   }
 }

@@ -3,6 +3,9 @@
     python scripts/fetch_models.py                 # download from each file's URL
     python scripts/fetch_models.py --from DIR      # copy from a local folder instead
     python scripts/fetch_models.py --check         # only verify what is there
+    python scripts/fetch_models.py --model mfr     # only this model (repeatable)
+
+--from DIR takes a model's files from DIR/<model>/ when that folder has them, else from DIR.
 
 Each file is checked against its SHA-256 and size and written atomically
 (temporary file, then rename); files already present and correct are kept.
@@ -36,7 +39,8 @@ def is_ok(path: Path, entry: dict) -> bool:
 
 
 def fetch(entry: dict, dest: Path, source: Path | None) -> None:
-    """Copy or download one file to dest, verified, replacing dest only when correct."""
+    """Copy or download one file to dest, verified, replacing dest only when correct.
+    source: the folder holding the file (copied instead of downloaded)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{dest.name}.", dir=dest.parent)
     try:
@@ -62,11 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from", dest="source", type=Path, help="local folder holding the files")
     ap.add_argument("--dest", type=Path, default=ROOT / "models", help="models folder (default: models/)")
     ap.add_argument("--check", action="store_true", help="verify only, change nothing")
+    ap.add_argument("--model", action="append", help="only this model of the manifest (repeatable)")
     ap.add_argument("--manifest", type=Path, default=MANIFEST, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    unknown = sorted(set(args.model or []) - set(manifest))
+    if unknown:
+        print(f"unknown model: {', '.join(unknown)} (manifest has {', '.join(manifest)})", file=sys.stderr)
+        return 2
     failed = 0
     for model, spec in manifest.items():
+        if args.model and model not in args.model:
+            continue
+        source = args.source
+        if source is not None and (source / model / spec["files"][0]["name"]).is_file():
+            source = source / model
         for entry in spec["files"]:
             dest = args.dest / model / entry["name"]
             label = f"{model}/{entry['name']}"
@@ -78,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
                 failed += 1
                 continue
             try:
-                fetch(entry, dest, args.source)
+                fetch(entry, dest, source)
                 print(f"fetched  {label} ({entry['size'] / 1e6:.1f} MB)")
             except (OSError, RuntimeError, ValueError) as exc:  # report, go on with the other files
                 print(f"FAILED   {label}: {exc}", file=sys.stderr)

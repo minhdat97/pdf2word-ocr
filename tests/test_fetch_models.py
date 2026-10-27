@@ -50,6 +50,36 @@ class FetchModelsTest(unittest.TestCase):
         self.assertIn("does not match", out)
         self.assertEqual(list((self.dest / "m").iterdir()), [])
 
+    def test_model_folders_and_model_option(self):
+        sub = self.src / "m"
+        sub.mkdir()
+        other = b"other" * 100
+        (sub / "a.onnx").write_bytes((self.src / "a.onnx").read_bytes())
+        (self.src / "a.onnx").write_bytes(b"stale")  # DIR/<model>/ wins over DIR
+        entry_n = {"name": "b.bin", "url": "", "sha256": hashlib.sha256(other).hexdigest(), "size": len(other)}
+        self.manifest.write_text(json.dumps({"m": {"files": [self.entry]}, "n": {"files": [entry_n]}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = fetch_models.main(["--manifest", str(self.manifest), "--dest", str(self.dest), "--from", str(self.src),
+                                      "--model", "m"])
+            bad = fetch_models.main(["--manifest", str(self.manifest), "--dest", str(self.dest), "--model", "x"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(bad, 2)
+        self.assertTrue((self.dest / "m" / "a.onnx").is_file())
+        self.assertFalse((self.dest / "n").exists())
+
+    def test_repo_manifest(self):
+        manifest = json.loads(fetch_models.MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(set(manifest), {"vietocr", "mfr"})
+        names = {e["name"] for e in manifest["mfr"]["files"]}
+        self.assertEqual(names, {"encoder_model.onnx", "decoder_model.onnx", "tokenizer.json"})
+        for model, spec in manifest.items():
+            for e in spec["files"]:
+                self.assertRegex(e["sha256"], r"^[0-9a-f]{64}$")
+                self.assertGreater(e["size"], 0)
+                if model == "mfr":  # pinned to one revision, never a moving branch
+                    self.assertRegex(e["url"], r"^https://huggingface\.co/[\w.-]+/pix2text-mfr-1\.5/resolve/[0-9a-f]{40}/")
+
     def test_no_url_yet(self):
         code, out = self.run_script(self.entry)
         self.assertEqual(code, 1)
