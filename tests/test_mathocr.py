@@ -229,6 +229,18 @@ class ReadRegionsTest(unittest.TestCase):
             self.assertEqual([as_text(d) for d in ds], [want])
             self.assertEqual(reader.passes, [1, 1, 1, 1])
 
+    def test_reading_without_the_final_mark_confirms(self):
+        gray = np.full((100, 200), 255, np.uint8)
+        gray[30:62, 20:50] = 0  # T
+        gray[50:70, 52:58] = 0  # a thin subscript 1
+        gray[40:66, 70:76] = 0  # ";"
+        read = {62: [("T _ { 1 } ;", 0.9), ("T _ { \\i } ;", 0.95)], 44: [("T _ { 1 }", 0.99)]}
+        reader = FakeReader(read)
+        self.assertEqual([as_text(d) for d in M.read_regions(gray, [(10, 20, 90, 80)], ["T,;"], reader=reader)], ["T_{1};"])
+        self.assertEqual(reader.passes, [1, 1, 1, 1])
+        # the ";" only the model saw: not confirmed
+        self.assertEqual(M.read_regions(gray, [(10, 20, 90, 80)], ["T,"], reader=FakeReader(read)), [None])
+
     def test_coefficient_and_case_from_the_ink(self):
         gray = np.full((100, 300), 255, np.uint8)
         for x in (20, 110):

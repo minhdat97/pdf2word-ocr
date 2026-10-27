@@ -18,9 +18,8 @@ for leading junk or a script without base ("^{3km}"), for a subscript right
 after a digit ("4_{VO}" for "4v_O"), for words it cannot spell ("phut"), and
 when Tesseract's digits or first letter's case disagree with it.
 read_regions() reads each region twice (crop cut to the ink, then with 3 px of
-white; with 8 px when the two disagree; the number without its unit when an
-exponent's minus was read as a symbol) and keeps a decision two readings agree
-on. Before that, a reading gets what the ink tells better than the model: a
+white; with 8 px when the two disagree; without its last short word, a unit or
+mark, when they still do not) and keeps a decision two readings agree on. Before that, a reading gets what the ink tells better than the model: a
 coefficient's letter read into a subscript ("4_{VO}") is written out (4v_{O})
 where the ink shows a small letter on the baseline and a lowered glyph after
 the digit, and a first letter whose case only its height tells (v, o, x...)
@@ -921,15 +920,15 @@ def _pad(img: np.ndarray, px: int) -> np.ndarray:
 # Crops of a region given to the model, tuned at 300 dpi: cut to the ink, then 3 px and 8 px of white around it.
 # The third is read only when the first two do not agree.
 PADS = (0, 3, 8)
-# A blank gap this wide (share of the crop's height) before a last word this narrow (share of its width) ends a
-# number: the unit after it ("7,66.10^{-22} J.").
+# A blank gap this wide (share of the crop's height) before a last word this narrow (share of its width): the
+# unit or mark after a number or a symbol ("7,66.10^{-22} J.", "T_1;").
 UNIT_GAP = 0.15
 UNIT_WIDTH = 0.4
 _UNIT_TAIL = re.compile(r"[A-Za-zΩ°%/]*[.,;:]*")
 
 
 def _without_unit(img: np.ndarray) -> np.ndarray | None:
-    """The crop up to the blank gap before its last word when that word is short (a unit), or None."""
+    """The crop up to the blank gap before its last word when that word is short (a unit, a mark), or None."""
     ink = _ink_mask(img)
     cols = ink.any(axis=0)
     w = len(cols)
@@ -945,17 +944,19 @@ def _squeeze(tex: str) -> str:
     return re.sub(r"\\ | ", "", tex)
 
 
-def _minus_confirmed(readings: list[tuple[str, float]], head: tuple[str, float]) -> tuple[str, float] | None:
-    """A junk reading repaired (repaired()) that a reading of the crop without its unit confirms: the latter is the
-    repaired reading up to its unit, "-" included ("7,66.10^{-22}" for "7,66.10^{\\mu^{22}}\\ J."). The repaired
-    reading with the confirming reading's confidence, or None."""
-    start = _squeeze(tidy(head[0]))
-    if "^{-" not in start:
+def _confirmed(readings: list[tuple[str, float]], head: tuple[str, float], ocr_text: str) -> tuple[str, float] | None:
+    """A reading of the region (usable as it is, or repaired()) that a reading of its crop without the last word
+    confirms: the latter is the former up to a unit or mark that Tesseract read at the end too ("T_{1}" for "T_{1};"
+    with OCR "T,;"; "7,66.10^{-22}" for "7,66.10^{\\mu^{22}}\\ J." with OCR "7,66.1022J."). That reading with the
+    confirming reading's confidence, or None."""
+    start, ocr = _squeeze(tidy(head[0])), _squeeze(ocr_text).lower()
+    if not start or start[-1] in ".,;:":
         return None
-    for tex, _ in readings:
-        fixed = repaired(tex)
-        if fixed and _squeeze(fixed).startswith(start) and _UNIT_TAIL.fullmatch(_squeeze(fixed)[len(start) :]):
-            return fixed, head[1]
+    for tex, conf in readings:
+        whole = tidy(tex) if judge(tex, conf, ocr_text, VOTE_MIN_CONF)[0] else repaired(tex)
+        rest = _squeeze(whole)[len(start) :] if whole and _squeeze(whole).startswith(start) else None
+        if rest and _UNIT_TAIL.fullmatch(rest) and ocr.endswith(rest.lower()):
+            return whole, head[1]
     return None
 
 
@@ -997,13 +998,14 @@ def read_regions(
             readings[i].append((checked(i, tex), conf))
         if len(readings[todo[0]]) >= 2:
             todo = [i for i in todo if not _settled(readings[i], ocr_texts[i])]
-    # A minus starting an exponent the model wrote as a symbol in every crop ("7,66.10^{\mu^{22}} J."): the crops
-    # differ in their margin only. Read without its unit, the number often shows the "-"; that reading then counts
-    # as a reading of the whole region, so the junk readings count for it (vote()).
-    parts = {i: _without_unit(crops[i]) for i in todo if any(repaired(tex) for tex, _ in readings[i])}
+    # The crops differ in their margin only, so a misreading may come back in each: a minus starting an exponent
+    # written as a symbol ("7,66.10^{\mu^{22}} J."), a thin subscript "1" beside a ";" read as "\i". Read without
+    # its last short word (unit, mark), the rest is often read right; it then counts as a reading of the whole
+    # region (_confirmed), so the readings that agree with it count with it (vote()).
+    parts = {i: _without_unit(crops[i]) for i in todo}  # todo: unsettled, some reading usable or repairable
     again = [i for i, part in parts.items() if part is not None]
     for i, head in zip(again, reader.read([_pad(parts[i], PADS[1]) for i in again]) if again else []):
-        confirmed = _minus_confirmed(readings[i], head)
+        confirmed = _confirmed(readings[i], head, ocr_texts[i])
         if confirmed:
             readings[i].append(confirmed)
     return [vote(readings[i], ocr_texts[i]) if i in readings else None for i in range(n)]

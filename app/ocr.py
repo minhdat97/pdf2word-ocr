@@ -48,6 +48,12 @@ BOLD_SHARE = 0.7
 # Paragraph sizes within this share of the body size are taken as body text:
 # per-line size estimates are noisy, real size changes are larger.
 BODY_SIZE_TOLERANCE = 0.35
+# Two Tesseract lines side by side (not overlapping horizontally) are one printed row when their word
+# boxes share at least ROW_SHARE of the shorter line's height and ROW_SHARE_TALL of the taller one's, and
+# their baselines are at most ROW_BASELINE_EM apart.
+ROW_SHARE = 0.5
+ROW_SHARE_TALL = 0.4
+ROW_BASELINE_EM = 0.15
 # Baseline pitch above this multiple of x_size starts a new paragraph
 # (single spacing is ~1.26x, a blank line or paragraph gap adds ~0.6em).
 PARAGRAPH_PITCH = 1.6
@@ -381,6 +387,55 @@ def tesseract_lines(gray: np.ndarray, lang: str, dpi: int) -> list[Line]:
                 for w in piece:
                     ln.words.remove(w)
     return [ln for ln in parser.lines if ln.words]
+
+
+def join_rows(lines: list[Line], height: int) -> None:
+    """Join lines Tesseract split off a printed row ("A." alone as a block of its own, read after the rest of
+    its row "B. ... C. ... D. ..."): two lines side by side (ROW_SHARE, ROW_BASELINE_EM), one of them the only
+    line of its block and lying within the other's column (the other line's block spans it horizontally, or is
+    one line too: columns of text are blocks of many lines). The words of the line with fewer words join the
+    other line in x order; that line keeps its place in the reading order. Lines in the header and footer bands
+    of the page (HEADER_ZONE) are left alone. Words keep their line_no."""
+    blocks: dict[int, list[Line]] = {}
+    for ln in lines:
+        blocks.setdefault(ln.block, []).append(ln)
+    span = {b: (min(ln.x0 for ln in ls), max(ln.x1 for ln in ls)) for b, ls in blocks.items()}
+
+    def rows(ln: Line) -> tuple[int, int]:
+        return min(w.y0 for w in ln.words), max(w.y1 for w in ln.words)
+
+    def within(ln: Line, other: Line) -> bool:  # ln alone in its block, in the other's column
+        x0, x1 = span[other.block]
+        return len(blocks[ln.block]) == 1 and (len(blocks[other.block]) == 1 or x0 <= ln.x0 and ln.x1 <= x1)
+
+    def side_by_side(a: Line, b: Line) -> bool:
+        (ay0, ay1), (by0, by1) = rows(a), rows(b)
+        if a.block == b.block or min(a.x1, b.x1) >= max(a.x0, b.x0):
+            return False
+        if min(ay0, by0) < HEADER_ZONE * height or max(ay1, by1) > (1 - HEADER_ZONE) * height:
+            return False
+        share = min(ay1, by1) - max(ay0, by0)
+        short, tall = sorted((ay1 - ay0, by1 - by0))
+        return (
+            share >= ROW_SHARE * short and share >= ROW_SHARE_TALL * tall
+            and abs(a.baseline - b.baseline) <= ROW_BASELINE_EM * min(a.em_px, b.em_px)
+            and (within(a, b) or within(b, a))
+        )
+
+    pairs = sorted(
+        ((abs(a.baseline - b.baseline), i, j) for i, a in enumerate(lines) for j, b in enumerate(lines) if i < j and side_by_side(a, b)),
+    )
+    gone: set[int] = set()
+    for _, i, j in pairs:
+        if i in gone or j in gone:
+            continue
+        a, b = lines[i], lines[j]
+        if min(a.x1, b.x1) >= max(a.x0, b.x0):  # a line that took words already may reach the other one now
+            continue
+        keep, part = (a, j) if (len(a.words), a.x1 - a.x0) >= (len(b.words), b.x1 - b.x0) else (b, i)
+        keep.words = sorted(keep.words + lines[part].words, key=lambda w: w.x0)
+        gone.add(part)
+    lines[:] = [ln for k, ln in enumerate(lines) if k not in gone]
 
 
 def _measure_weight(words: list[Word], gray: np.ndarray) -> None:
@@ -1148,6 +1203,7 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     if reader is not None:
         vietocr.refine_words(lines, gray, reader)
     fix_lines(lines)
+    join_rows(lines, gray.shape[0])
     _, ink = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     _split_labels(lines, ink, rgb)
     _mark_faded(lines, rgb, gray)

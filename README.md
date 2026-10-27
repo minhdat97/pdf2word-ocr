@@ -220,6 +220,11 @@ tắt.
      - thẻ lặp nhiều lần "[ĐNH]" sửa bản lệch một chữ "[ĐNHỊ]";
      - bảng: cột số thứ tự (1, 2, 3…) sửa ô lệch ("1\"" → "11", "l" → "1"), cột đáp án A–D và
        cột Đ/S ("SDĐĐ" → "SĐĐĐ").
+     Dòng Tesseract tách khỏi một hàng in ("A." thành khối riêng, đứng sau hàng "B. … C. … D.")
+     được nhập lại theo thứ tự x: hai dòng cạnh nhau (không chồng theo chiều ngang, chung ≥ 1/2
+     chiều cao dòng thấp và ≥ 40% dòng cao, đường chân chữ lệch ≤ 0,15em), một dòng là cả khối của
+     nó và nằm trong cột của dòng kia (khối dòng kia trải qua nó, hay cũng chỉ một dòng: cột chữ là
+     khối nhiều dòng); dải đầu/chân trang giữ nguyên.
      Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`, theo thứ tự ưu tiên):
      - phương án: phần sau nhãn "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo
        mực tới khoảng trắng, qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin
@@ -239,9 +244,11 @@ tắt.
      Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
-     "va", cũng bị bỏ). Dấu trừ đầu số mũ mà mọi lần đọc đều viết thành ký hiệu lạ
-     ("7,66.10^{\mu^{22}} J.": các lần cắt chỉ khác lề nên sai giống nhau) thì đọc thêm phần số bỏ
-     đơn vị cuối: lần đọc đó có "-" và khớp phần còn lại thì các lần kia tính phiếu cho nó. Trước
+     "va", cũng bị bỏ). Các lần cắt chỉ khác lề nên mô hình có thể sai giống nhau ở mọi lần: dấu
+     trừ đầu số mũ thành ký hiệu lạ ("7,66.10^{\mu^{22}} J."), chỉ số "1" mảnh cạnh dấu ";" thành
+     "\i" ("T_{\i};"). Vùng chưa có kết quả mà có lần đọc dùng được (hay sửa được: ký hiệu lạ → "-")
+     thì đọc thêm phần trước từ ngắn cuối cùng (đơn vị, dấu câu): lần đọc đó trùng lần đọc kia tới
+     chỗ đơn vị/dấu, và Tesseract cũng đọc được đơn vị/dấu đó ở cuối, thì tính là một phiếu. Trước
      khi bỏ phiếu, mỗi lần đọc nhận điều nét chữ cho biết rõ hơn mô hình (mô hình thấy vùng cắt bị
      kéo thành hình vuông): hệ số mà mô hình đọc chữ sau nó vào chỉ số ("4_{VO}") được viết lại
      "4v_{O}" khi nét chữ có đúng chừng ấy cụm số, chữ cao bằng chữ thường đứng trên đường chân chữ,
@@ -349,7 +356,8 @@ sau; "V=4/3πR³)" lấy cả dấu ngoặc đóng của câu); các kết quả
   ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh, phương án mà một từ OCR chạy sang phương
   án sau ("C. 273 K. D. 373"); kết quả mô hình không chắc thì giữ chữ OCR (thường sai:
   "642.107'J."), phân số/căn/gạch trên không đọc được thành ảnh. Tesseract để nhãn đứng riêng
-  một dòng (hàng phân số) thì phương án đó thành đoạn riêng ngay sau hàng của nó. Số mũ chỉ
+  một dòng mà đường chân chữ lệch hàng của nó quá 0,15em thì phương án đó vẫn thành đoạn riêng
+  ngay sau hàng. Số mũ chỉ
   nhận theo hình khi tách khỏi nét chữ trước nó (scan nhoè dính liền thì không thấy).
 - Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân; số mũ/chỉ số dưới chỉ có
   ở chỗ mô hình công thức đọc được;
