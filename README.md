@@ -343,6 +343,14 @@ sau; "V=4/3πR³)" lấy cả dấu ngoặc đóng của câu); các kết quả
 ("594 m/s.") cũng đúng. Chi phí trên CPU M4 Pro, 2 luồng: ~0,2 giây mỗi vùng (đề Vật lí 86 vùng:
 16,5 → 34 giây cho 3 trang khi máy bận), RAM thêm ~1 GB.
 
+Sửa các chỗ sai thấy khi mở trong Word (2026-10-27): đề Vật lí scan 3 trang: chữ 99,3% → 99,6%,
+số 92,1% → 93,4%, bộ thử 41/51 → 47/51 ("7,66.10^{-22} J.", "v_H", ba phương án "4v_O = 9v_H",
+"T_1"; còn thiếu chữ cái đứng riêng p, ρ, k, T), 47/47 kết quả ứng với bộ thử đúng; Câu 6 "lần."
+và hàng "A. … D." của Câu 19 đúng. Hai bản scan giả của đề Vật lí kia: kết quả ứng với bộ thử 101
+đúng, 3 đúng một phần, 2 sai (")" trong Equation) → 111 đúng (thêm Δx, ΔA., Δt, Δs), 3 đúng một
+phần, 0 sai. 30 trang scan giả 97,56% / 96,96% → 97,73% / 97,09%, không trang nào mất từ đúng;
+PDF có text không đổi; tắt mô hình thì VL1212 chỉ khác main ở nhãn "A." vào lại hàng của nó.
+
 ## Giới hạn
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
