@@ -188,6 +188,22 @@ class TwoDimensionalTest(unittest.TestCase):
         self.assertEqual([(r.kind, r.ocr_text) for r in regions], [("tall", "2/3")])
         self.assertEqual(regions[0].box[0], 200)  # the "2" before the sign joins
 
+    def test_fraction_goes_into_its_own_column_line(self):
+        # two columns: "... tỉ số A/Q" ends the left line, the right column starts 2.2em after the fraction; the
+        # right line's baseline may be the nearer one to the fraction's
+        for right_base in (198, 200, 201, 202):
+            with self.subTest(right_base=right_base):
+                c = Canvas(1400, 400)
+                left = prose_line(c, [(100 + 80 * i, t) for i, t in enumerate(["hiệu", "suất", "tỉ", "số"])], base=200)
+                c.block(400, 187, 460, 190)  # bar
+                c.block(418, 155, 442, 182)  # numerator
+                c.block(418, 195, 442, 222)  # denominator
+                right = prose_line(c, [(526 + 80 * i, t) for i, t in enumerate(["nhiệt", "lượng", "tỏa"])], base=right_base)
+                lines = [Line(1, 1, 200, EM, left), Line(2, 2, right_base, EM, right)]
+                regions = detect(c, lines)
+                self.assertEqual([(r.kind, r.box) for r in regions], [("tall", (400, 155, 460, 222))])
+                self.assertIs(regions[0].line, lines[0])
+
     def labelled_fraction(self, label_text):
         """ "C. 3/2" after prose: a capital letter and its dot, blank paper, then a fraction; the label read as given."""
         c = Canvas()

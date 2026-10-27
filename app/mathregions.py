@@ -629,6 +629,9 @@ BAR_REACH_XH = 1.0  # a fraction's numerator and denominator start within this d
 OVER_REACH_XH = 0.7  # the letters under a bar over them start within this distance
 ROOT_HIGH_XH = 1.5  # a radical sign is at least this high
 CAP_XH = (1.2, 1.8)  # height of a capital letter (x-heights): a label's letter
+# A 2-D formula is written into the line nearest to it sideways among those whose baseline lies this close (em) to
+# where the seed's sits: on a two-column page the other column's line may sit nearer that height.
+BASELINE_EM = 0.3
 LABEL_REACH_EM = 1.0  # a formula starting this close after a label is its option
 _LONE_LETTER = re.compile(r"^\*?([A-D])$")
 
@@ -718,8 +721,9 @@ def tall_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
     without their dot (_garbled_labels) are blanked too, and a region starting just after one carries it
     (MathRegion.label), so the label stays text in front of the equation. A region whose growth did not
     settle, or that holds a prose word, is dropped. The line it is written into is the one whose
-    baseline lies where the seed's sits (a fraction bar 0.27em over it). All are "tall": an unread one
-    becomes a picture."""
+    baseline lies where the seed's sits (a fraction bar 0.27em over it): of the lines at about that
+    height, the one with a word nearest to the box sideways (two columns: not the other column's line).
+    All are "tall": an unread one becomes a picture."""
     seeds = [s for s in _seeds(page) if not _overlap_any(s[1], [r.box for r in taken])]
     if not seeds:
         return []
@@ -749,7 +753,14 @@ def tall_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
                 and any(w.x1 >= box[0] - 3 * em and w.x0 <= box[2] + 3 * em for w in ln.words)]
         if not near:
             continue
-        line = min(near, key=lambda ln: abs(ln.baseline - want))
+
+        def fit(ln, box=box, want=want) -> tuple[bool, float, float]:
+            off = abs(ln.baseline - want)
+            if off > BASELINE_EM * em:
+                return True, 0.0, off
+            return False, min(max(0, w.x0 - box[2], box[0] - w.x1) for w in ln.words), off
+
+        line = min(near, key=fit)
         inside = [w for ln in page.lines for w in ln.words if _centred(w, box)]
         if any(_prose(w) for w in inside):
             continue

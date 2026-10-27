@@ -242,8 +242,9 @@ tắt.
        Tesseract tin là chữ thường (tiếng Việt, từ ≥3 chữ cái không phải đơn vị), cả nhãn Tesseract
        đọc sai hay thiếu dấu chấm ("c.x=—", "D": chữ hoa kèm dấu chấm sau giấy trắng) – nhãn đó được
        viết lại thành chữ trước Equation; mô hình vẫn đọc nhãn vào kết quả ("D.\frac{3}{2}") thì nhãn
-       cũng tách ra thành chữ, không nằm trong Equation; luôn là vùng "cao": không đọc được thì thành
-       ảnh công thức;
+       cũng tách ra thành chữ, không nằm trong Equation; kết quả vào dòng ngang tầm gạch phân số có chữ
+       gần vùng nhất theo chiều ngang (trang hai cột: không vào dòng của cột bên kia dù đường chân chữ
+       của dòng đó sát hơn); luôn là vùng "cao": không đọc được thì thành ảnh công thức;
      - chữ trong câu: từ có số mũ hay chỉ số dưới đo theo hình (nét nhỏ cao hơn chữ hoa hay thấp
        hơn đường chân chữ ngay sau nét chữ khác, không phải dấu thanh, dấu phẩy hay dấu độ), từ chỉ
        có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ;
