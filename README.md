@@ -84,6 +84,10 @@ thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
 | Poll | `GET /v1/tasks/<task_id>` → `status`, `progress`, `result.output_files`, `result.error_fe` |
 | Tải về | `GET /v1/files/<token>?name=...` |
 
+Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
+trang nào xong thêm; thời gian chờ trong hàng đợi không tính, nên file scan dài có đọc công thức vẫn
+nhận được kết quả.
+
 `task_id` do client sinh (32 ký tự hex). Mã lỗi `error_fe` cho giao diện: `password`,
 `corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`,
 `internal_server_error`. Mở trang với `?debug` để thấy mục "Nhật ký API" (toàn bộ request/response).

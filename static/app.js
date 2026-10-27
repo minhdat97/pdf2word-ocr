@@ -69,10 +69,15 @@ function putFile(url, file, onProgress) {
 
 const newTaskId = () => crypto.randomUUID().replaceAll("-", "");
 
+// Bỏ cuộc khi 10 phút không có tin mới: thời gian chờ trong hàng đợi không tính, file scan dài có đọc công
+// thức (mỗi trang vài chục giây) không bị dừng giữa chừng khi các trang vẫn đang xong dần.
+const PATIENCE_MS = 10 * 60 * 1000;
+
 async function runTask(tool, options, label) {
   const task_id = newTaskId();
   await api("POST", "/v1/tasks", { tool, task_id, input_tokens: [state.token], options });
-  const deadline = Date.now() + 10 * 60 * 1000;
+  let deadline = Date.now() + PATIENCE_MS;
+  let seen = "";
   let logged = false;
   while (true) {
     if (Date.now() > deadline) throw Object.assign(new Error("timeout"), { code: "timeout" });
@@ -86,6 +91,9 @@ async function runTask(tool, options, label) {
     const data = res.data;
     if (!data) throw new Error(res.error || "Không lấy được trạng thái");
     const { current, total } = data.progress;
+    const step = `${data.status} ${current}`;
+    if (data.status === "queued" || step !== seen) deadline = Date.now() + PATIENCE_MS;
+    seen = step;
     if (total && label) setProgress(current / total, `${label} trang ${Math.min(current + 1, total)}/${total}…`);
     if (data.status === "done" || data.status === "failed") {
       log("GET", `/v1/tasks/${task_id}`, null, res);
