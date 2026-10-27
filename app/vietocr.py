@@ -67,13 +67,15 @@ def _lanczos(x: np.ndarray) -> np.ndarray:
 
 
 @lru_cache(maxsize=1024)
-def _weights(in_size: int, out_size: int) -> np.ndarray:
-    """[out, in] resampling matrix, coefficients scaled by 2^22 and rounded as Pillow does."""
+def _weights(in_size: int, out_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Resampling filter, coefficients scaled by 2^22 and rounded as Pillow does: the first input pixel of each output
+    pixel [out] and its taps [out, k] (zero past the filter's end). Kept per output pixel, not as a dense [out, in]
+    matrix: the cache stays small (≤ ~0.2 MB an entry) however wide the crops are."""
     scale = in_size / out_size
     filterscale = max(scale, 1.0)
     support = 3.0 * filterscale
     ss = 1.0 / filterscale
-    m = np.zeros((out_size, in_size))
+    rows = []
     for xx in range(out_size):
         center = (xx + 0.5) * scale
         xmin = max(int(center - support + 0.5), 0)
@@ -82,15 +84,22 @@ def _weights(in_size: int, out_size: int) -> np.ndarray:
         total = k.sum()
         if total != 0.0:
             k = k / total
-        m[xx, xmin:xmax] = np.trunc(k * (1 << 22) + np.where(k < 0, -0.5, 0.5))
-    return m
+        rows.append((xmin, np.trunc(k * (1 << 22) + np.where(k < 0, -0.5, 0.5))))
+    taps = np.zeros((out_size, max(len(k) for _, k in rows)), np.int32)
+    for xx, (_, k) in enumerate(rows):
+        taps[xx, : len(k)] = k
+    return np.array([xmin for xmin, _ in rows], np.intp), taps
 
 
-def _resample(img: np.ndarray, m: np.ndarray, axis: int) -> np.ndarray:
-    # float64 holds the integer sums exactly (< 2^53)
-    acc = np.tensordot(img.astype(np.float64), m, axes=([axis], [1]))
+def _resample(img: np.ndarray, weights: tuple[np.ndarray, np.ndarray], axis: int) -> np.ndarray:
+    starts, taps = weights
+    src = np.moveaxis(img, axis, -1)
+    acc = np.zeros(src.shape[:-1] + (len(starts),), np.int64)  # Pillow's sums in integers: exact, in any order
+    last = src.shape[-1] - 1
+    for k in range(taps.shape[1]):
+        acc += src[..., np.minimum(starts + k, last)] * taps[:, k].astype(np.int64)
     acc = np.moveaxis(acc, -1, axis)
-    return np.clip((acc + (1 << 21)) // (1 << 22), 0, 255).astype(np.uint8)
+    return np.clip((acc + (1 << 21)) >> 22, 0, 255).astype(np.uint8)
 
 
 def resize(img: np.ndarray, width: int, height: int) -> np.ndarray:

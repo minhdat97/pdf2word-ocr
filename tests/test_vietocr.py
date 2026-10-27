@@ -93,6 +93,11 @@ class ResizeTest(unittest.TestCase):
             rgb = np.repeat(img[:, :, None], 3, axis=2)
             self.assertTrue((vietocr.resize(rgb, nw, nh)[:, :, 1] == np.array(expected)).all())
 
+    def test_filters_stay_small(self):
+        # cached for the process's life: per output pixel, not a dense [512, width] matrix (18 MB at 4500 px)
+        starts, taps = vietocr._weights(4500, 512)
+        self.assertLess(starts.nbytes + taps.nbytes, 300_000)
+
 
 class FakeReader:
     def __init__(self, reads):

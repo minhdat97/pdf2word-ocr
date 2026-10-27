@@ -345,6 +345,18 @@ class ModelPartsTest(unittest.TestCase):
         img = (np.arange(384 * 384) % 251).astype(np.uint8).reshape(384, 384)
         self.assertTrue((M.resize_bicubic(img, 384, 384) == img).all())
 
+    def test_resize_filters_stay_small(self):
+        # cached for the process's life: per output pixel, not a dense [384, width] matrix (13.8 MB at 4500 px)
+        starts, taps = M._weights(4500, 384)
+        self.assertLess(starts.nbytes + taps.nbytes, 200_000)
+        img = (np.arange(40 * 4500) % 253).astype(np.uint8).reshape(40, 4500)
+        dense = np.zeros((384, 4500))
+        for row, (x, t) in enumerate(zip(starts, taps)):
+            n = min(len(t), 4500 - x)
+            dense[row, x : x + n] = t[:n]
+        want = np.clip(np.floor((img.astype(np.float64) @ dense.T + (1 << 21)) / (1 << 22)), 0, 255).astype(np.uint8)
+        self.assertTrue((M._resample(img, (starts, taps), 1) == want).all())
+
     @unittest.skipUnless(__import__("importlib").util.find_spec("PIL"), "Pillow not installed")
     def test_resize_matches_pillow(self):
         from PIL import Image
