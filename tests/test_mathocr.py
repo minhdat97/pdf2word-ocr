@@ -160,6 +160,25 @@ class VoteTest(unittest.TestCase):
         self.assertIsNone(d)
 
 
+class CoefficientTest(unittest.TestCase):
+    def test_letter_read_into_the_subscript_of_a_digit(self):
+        self.assertEqual(M.coefficients("4 _ { \\mathrm { V O } } = 9 _ { \\mathrm { V H } } ."), "4v_{O}=9v_{H}.")
+        self.assertEqual(M.coefficients("8 _ { \\mathrm { V _ { O } } } = 3 \\mathrm { v _ { H } } ."), "8v_{O}=3v_{H}.")
+        self.assertIsNone(M.coefficients("1 0 _ { 2 }"))  # a digit: no letter to take out
+        self.assertIsNone(M.coefficients("4 _ { A B }"))  # its case is not told by its height
+        self.assertIsNone(M.coefficients("7 2 v _ { O }"))
+
+    def test_ink_of_letters_with_subscripts(self):
+        gray = np.full((60, 200), 255, np.uint8)
+        for x in (10, 100):
+            gray[10:42, x : x + 18] = 0  # a digit
+            gray[21:42, x + 22 : x + 40] = 0  # "v" at x-height on the baseline
+            gray[26:46, x + 43 : x + 60] = 0  # its subscript, lowered
+        self.assertEqual(M._letter_subscripts(gray), 2)
+        gray[42:46, :] = 255  # nothing lowered
+        self.assertEqual(M._letter_subscripts(gray), 0)
+
+
 class FakeReader:
     """Stands in for FormulaReader: answers by crop width (one script per region) and counts passes."""
 
@@ -209,6 +228,28 @@ class ReadRegionsTest(unittest.TestCase):
             ds = M.read_regions(gray, [(10, 20, 200, 70)], ["7,66.1022J."], reader=reader)
             self.assertEqual([as_text(d) for d in ds], [want])
             self.assertEqual(reader.passes, [1, 1, 1, 1])
+
+    def test_coefficient_and_case_from_the_ink(self):
+        gray = np.full((100, 300), 255, np.uint8)
+        for x in (20, 110):
+            gray[30:62, x : x + 18] = 0
+            gray[41:62, x + 22 : x + 40] = 0
+            gray[46:66, x + 43 : x + 60] = 0
+        coef = ("4 _ { \\mathrm { V O } } = 9 _ { \\mathrm { V H } } .", 1.0)
+        reader = FakeReader({158: [coef]})
+        ds = M.read_regions(gray, [(10, 20, 200, 80)], ["4vo = 9vH."], reader=reader)
+        self.assertEqual([as_text(d) for d in ds], ["4v_{O}=9v_{H}."])
+        gray[62:66, :] = 255  # the ink shows no subscripts: the reading stays refused
+        ds = M.read_regions(gray, [(10, 20, 200, 80)], ["4vo = 9vH."], reader=FakeReader({158: [coef]}))
+        self.assertEqual(ds, [None])
+        # "V_{H}" for v_H: the glyph's case when it was measured, else refused
+        small = np.full((100, 100), 255, np.uint8)
+        small[41:62, 20:38] = 0
+        small[46:66, 41:58] = 0
+        read = {44: [("\\mathrm { V _ { H } }", 0.99)]}
+        ds = M.read_regions(small, [(10, 20, 70, 80)], ["vh"], reader=FakeReader(read), case_from_ink=[True])
+        self.assertEqual([as_text(d) for d in ds], ["v_{H}"])
+        self.assertEqual(M.read_regions(small, [(10, 20, 70, 80)], ["vh"], reader=FakeReader(read)), [None])
 
     def test_model_off(self):
         with mock.patch.object(M, "get_reader", return_value=None):

@@ -19,8 +19,14 @@ after a digit ("4_{VO}" for "4v_O"), for words it cannot spell ("phut"), and
 when Tesseract's digits or first letter's case disagree with it.
 read_regions() reads each region twice (crop cut to the ink, then with 3 px of
 white; with 8 px when the two disagree; the number without its unit when an
-exponent's minus was read as a symbol) and keeps a decision two readings agree on. On 522 formula boxes of two physics exams (one real scan, a native
-PDF and two simulated scans of it) it kept 394, none wrong.
+exponent's minus was read as a symbol) and keeps a decision two readings agree
+on. Before that, a reading gets what the ink tells better than the model: a
+coefficient's letter read into a subscript ("4_{VO}") is written out (4v_{O})
+where the ink shows a small letter on the baseline and a lowered glyph after
+the digit, and a first letter whose case only its height tells (v, o, x...)
+takes the case measured on the glyph. On 522 formula boxes of two physics
+exams (one real scan, a native PDF and two simulated scans of it) it kept 394,
+none wrong.
 
 Without the model files (or with P2W_MFR=0) read_regions() returns Nones.
 Decoding needs only the vocabulary of tokenizer.json (byte-level BPE), and the
@@ -680,7 +686,7 @@ def _junk(items) -> str | None:
             if base is not None and base[0] == "t" and base[1] in (".", ",", "=", "+", "-", "/", ":", ";", "(", "\\ "):
                 return "script after punctuation"
             if node[2] is not None and base is not None and base[0] == "t" and base[1].isdigit():
-                return "subscript after a digit"  # "4_{VO}": the model's reading of "4v_O"
+                return "subscript after a digit"  # "4_{VO}": the model's reading of "4v_O" (see coefficients())
             for slot in (2, 3):
                 if node[slot] is not None and not node[slot]:
                     return "empty script"
@@ -829,6 +835,55 @@ def repaired(tex: str) -> str | None:
     return fixed if fixed != tex else None
 
 
+# Letters whose capital is the small letter drawn larger: only the glyph's height tells their case (not k:
+# its ascender is as tall as the capital).
+CASE_BY_HEIGHT = set("COSUVWXZ")
+# What the model writes for a coefficient, a letter at x-height and its subscript, 4v_O: 4_{VO} (or 4_{V_{O}}).
+_COEFFICIENT_SUB = re.compile(r"(\d)_\{([%s])(?:_\{([^{}]+)\}|([^{}_^\\]+))\}" % "".join(sorted(CASE_BY_HEIGHT)), re.I)
+_LETTER_SUB = re.compile(r"\d[A-Za-z]_\{")
+
+
+def coefficients(tex: str) -> str | None:
+    """tex with each coefficient whose letter the model read into a subscript written out (4_{VO} -> 4v_{O}),
+    or None if it has none. Only with the ink's word for it (_letter_subscripts)."""
+    tex = tidy(tex)
+    fixed = _COEFFICIENT_SUB.sub(lambda m: m.group(1) + m.group(2).lower() + "_{" + (m.group(3) or m.group(4)) + "}", tex)
+    return fixed if fixed != tex else None
+
+
+def _letter_subscripts(img: np.ndarray) -> int:
+    """How many times the ink of a one-line crop shows a tall glyph (a digit), a glyph of x-height standing on the
+    baseline and a lowered glyph in a row: a coefficient, a small letter and its subscript (4v_O)."""
+    n, _, st, _ = cv2.connectedComponentsWithStats(_ink_mask(img).astype(np.uint8), connectivity=8)
+    boxes = sorted((tuple(int(v) for v in st[c, :4]) for c in range(1, n) if st[c, cv2.CC_STAT_AREA] >= 4), key=lambda b: b[0])
+    if len(boxes) < 3:
+        return 0
+    top = max(b[3] for b in boxes)
+    tall = [b for b in boxes if b[3] >= 0.8 * top]
+    size, base = float(np.median([b[3] for b in tall])), float(np.median([b[1] + b[3] for b in tall]))
+    count = 0
+    for a, b, c in zip(boxes, boxes[1:], boxes[2:]):
+        near = b[0] - (a[0] + a[2]) <= 0.3 * size and c[0] - (b[0] + b[2]) <= 0.3 * size
+        small = 0.5 * size <= b[3] <= 0.8 * size and abs(b[1] + b[3] - base) <= 0.08 * size
+        lowered = c[1] + c[3] >= base + 0.08 * size and c[1] > b[1]
+        count += a[3] >= 0.8 * top and near and small and lowered
+    return count
+
+
+def _ink_case(tex: str, ocr_text: str) -> str:
+    """tex with its first letter in the case of the OCR text's first letter when the two differ only in case and
+    the letter's case is told by its height: the OCR text's case was measured on the glyph (app/mathregions.py),
+    the model sees the crop stretched to a square ("V_{H}" for v_H)."""
+    tex, seen = tidy(tex), _letters(_LABEL.sub("", ocr_text or ""))[:1]
+    for m in re.finditer(r"\\[A-Za-z]+|[A-Za-z]", tex):
+        if m.group().startswith("\\"):
+            continue
+        if seen.upper() in CASE_BY_HEIGHT and m.group() != seen and m.group().lower() == seen.lower():
+            return tex[: m.start()] + seen + tex[m.end() :]
+        break
+    return tex
+
+
 def vote(readings: list[tuple[str, float]], ocr_text: str = "", min_conf: float | None = None) -> MathDecision | None:
     """The decision two readings of a region (different crops of it) agree on, or None.
     A reading whose exponent starts with junk where another reading has "-" counts for that reading."""
@@ -910,9 +965,11 @@ def read_regions(
     ocr_texts: list[str],
     em_px: list[float] | None = None,
     reader: FormulaReader | None = None,
+    case_from_ink: list[bool] | None = None,
 ) -> list[MathDecision | None]:
     """Decisions for formula regions of a page image (grey, uint8; boxes x0, y0, x1, y1 in its pixels;
-    ocr_texts: Tesseract's text of each region; em_px: font size of each region, for the label dot).
+    ocr_texts: Tesseract's text of each region; em_px: font size of each region, for the label dot;
+    case_from_ink: the case of the OCR text's first letter was measured on its glyph).
     None for a region whose reading is not trusted, and for all when the model is off."""
     n = len(boxes)
     reader = reader or get_reader()
@@ -921,11 +978,23 @@ def read_regions(
     crops = [cut(gray, box, em_px[i] if em_px else None) for i, box in enumerate(boxes)]
     todo = [i for i, c in enumerate(crops) if c is not None and c.shape[0] >= 6 and c.shape[1] >= 4 and c.size <= MAX_CROP_PIXELS]
     readings: dict[int, list[tuple[str, float]]] = {i: [] for i in todo}
+    shown: dict[int, int] = {}
+
+    def checked(i: int, tex: str) -> str:
+        """The reading with what the ink says: coefficients (4_{VO} -> 4v_{O}) where the ink shows as many letters
+        with a subscript after a digit, the first letter's case from the glyph."""
+        fixed = coefficients(tex)
+        if fixed:
+            if i not in shown:
+                shown[i] = _letter_subscripts(crops[i])
+            tex = fixed if shown[i] == len(_LETTER_SUB.findall(fixed)) else tex
+        return _ink_case(tex, ocr_texts[i]) if case_from_ink and case_from_ink[i] else tex
+
     for pad in PADS:
         if not todo:
             break
-        for i, r in zip(todo, reader.read([_pad(crops[i], pad) for i in todo])):
-            readings[i].append(r)
+        for i, (tex, conf) in zip(todo, reader.read([_pad(crops[i], pad) for i in todo])):
+            readings[i].append((checked(i, tex), conf))
         if len(readings[todo[0]]) >= 2:
             todo = [i for i in todo if not _settled(readings[i], ocr_texts[i])]
     # A minus starting an exponent the model wrote as a symbol in every crop ("7,66.10^{\mu^{22}} J."): the crops

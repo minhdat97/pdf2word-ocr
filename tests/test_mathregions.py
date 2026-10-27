@@ -124,6 +124,7 @@ class ScriptsTest(unittest.TestCase):
         words.append(word(300, 86, 326, 104, "Vh", conf=80))
         regions = detect(c, [Line(1, 1, BASE, EM, words)])
         self.assertEqual([r.ocr_text for r in regions], ["vh"])
+        self.assertEqual([r.case_from_ink for r in regions], [True])
 
 
 class TwoDimensionalTest(unittest.TestCase):

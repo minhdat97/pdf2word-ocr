@@ -60,6 +60,7 @@ import cv2
 import numpy as np
 
 from . import ocr as _ocr
+from .mathocr import CASE_BY_HEIGHT
 from .ocr_fix import syllable
 from .settings import MATH_DETECT
 
@@ -86,6 +87,7 @@ class MathRegion:
     em_px: float = 0.0  # font size in pixels (the line's)
     line: object = None  # the app.ocr.Line the result is written into
     label: Label | None = None  # an answer label to write in front of the result (see above)
+    case_from_ink: bool = False  # ocr_text's first letter got its case from the glyph's height (_case_by_height)
 
 
 Detector = Callable[[list, np.ndarray, np.ndarray, np.ndarray, int], list[MathRegion]]
@@ -833,16 +835,12 @@ def inline_regions(page: _Page, taken: list[MathRegion]) -> list[MathRegion]:
     return out
 
 
-# Letters whose small form is the capital drawn at x-height: their case is read from the glyph's height.
-_CASE_BY_HEIGHT = set("CKOSUVWXZ")
-
-
 def _case_by_height(page: _Page, region: MathRegion) -> None:
     """Tesseract's case of a region's first letter set from its glyph when the text starts with a letter
     whose two cases differ in size only ("Vh" for v_H, "XA" for x_A): mathocr refuses a reading whose first
-    letter's case differs from the OCR text's."""
+    letter's case differs from the OCR text's, or, measured so (case_from_ink), gives it the glyph's case."""
     text = region.ocr_text
-    if not text or text[0].upper() not in _CASE_BY_HEIGHT or not region.words:
+    if not text or text[0].upper() not in CASE_BY_HEIGHT or not region.words:
         return
     _, xh = page.metrics(region.line)
     x0 = region.box[0]
@@ -852,9 +850,9 @@ def _case_by_height(page: _Page, region: MathRegion) -> None:
         return
     h = int(page.st[min(glyphs, key=lambda c: page.st[c, 0]), 3])
     if h <= 1.2 * xh:
-        region.ocr_text = text[0].lower() + text[1:]
+        region.ocr_text, region.case_from_ink = text[0].lower() + text[1:], True
     elif h >= 1.35 * xh:
-        region.ocr_text = text[0].upper() + text[1:]
+        region.ocr_text, region.case_from_ink = text[0].upper() + text[1:], True
 
 
 def rules(lines: list, gray: np.ndarray, ink: np.ndarray, rgb: np.ndarray | None, dpi: int) -> list[MathRegion]:

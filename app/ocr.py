@@ -1074,7 +1074,8 @@ def read_formulas(
     if reader is None:
         return 0
     decisions = mathocr.read_regions(
-        gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader
+        gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader,
+        [r.case_from_ink for r in regions],
     )
     s = 72 / dpi
     placed = 0

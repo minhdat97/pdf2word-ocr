@@ -234,15 +234,19 @@ tắt.
      - chữ trong câu: từ có số mũ hay chỉ số dưới đo theo hình (nét nhỏ cao hơn chữ hoa hay thấp
        hơn đường chân chữ ngay sau nét chữ khác, không phải dấu thanh, dấu phẩy hay dấu độ), từ chỉ
        có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ.
-       Hoa/thường của chữ đầu vùng lấy theo chiều cao nét ("Vh" → "vh") để mô hình không đổi
-       v thành V.
+       Hoa/thường của chữ đầu vùng lấy theo chiều cao nét ("Vh" → "vh") ở các chữ chỉ khác nhau
+       về cỡ (c o s u v w x z; không có k: nét lên của k cao bằng chữ hoa).
      Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
      "va", cũng bị bỏ). Dấu trừ đầu số mũ mà mọi lần đọc đều viết thành ký hiệu lạ
      ("7,66.10^{\mu^{22}} J.": các lần cắt chỉ khác lề nên sai giống nhau) thì đọc thêm phần số bỏ
-     đơn vị cuối: lần đọc đó có "-" và khớp phần còn lại thì các lần kia tính phiếu cho nó. Vùng
-     đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
+     đơn vị cuối: lần đọc đó có "-" và khớp phần còn lại thì các lần kia tính phiếu cho nó. Trước
+     khi bỏ phiếu, mỗi lần đọc nhận điều nét chữ cho biết rõ hơn mô hình (mô hình thấy vùng cắt bị
+     kéo thành hình vuông): hệ số mà mô hình đọc chữ sau nó vào chỉ số ("4_{VO}") được viết lại
+     "4v_{O}" khi nét chữ có đúng chừng ấy cụm số, chữ cao bằng chữ thường đứng trên đường chân chữ,
+     nét hạ thấp; chữ đầu vùng mà chiều cao nét đã cho biết hoa/thường lấy theo nét ("V_{H}" →
+     "v_{H}"), không bị bỏ vì khác Tesseract. Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
      (chữ thường + chỉ số trên/dưới, hay Equation + đơn vị/dấu chấm sau nó); vùng cao (phân số,
      căn) không đọc được thành ảnh công thức trên dòng chữ như trang có text; vùng khác giữ chữ OCR.
      Chữ của công thức không đậm, không màu theo đoạn.
