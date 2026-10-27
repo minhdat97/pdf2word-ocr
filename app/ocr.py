@@ -1037,6 +1037,10 @@ def _unmarked(decision, words: list[Word]) -> bool:
     return False
 
 
+def _overlaps(w: Word, box: tuple) -> bool:
+    return min(w.x1, box[2]) > max(w.x0, box[0]) and min(w.y1, box[3]) > max(w.y0, box[1])
+
+
 def _formula_picture(region, rgb: np.ndarray, gray: np.ndarray, s: float) -> FormulaPicture:
     """The region cut from the colour page (paper whitened where the grey page was), sized in
     points and lowered by how far it reaches below its line's baseline."""
@@ -1054,8 +1058,10 @@ def read_formulas(
     (app/mathocr.py). Where the model's reading is trusted, the region's OCR words and every
     other word centred in its box (not an answer label) give way to one placeholder word on the
     region's line holding the reading; an unread "tall" region becomes a placeholder holding its
-    picture; other regions keep their OCR words. Regions in ruled tables are skipped (table cells
-    are plain text). Returns the number of placeholders. Nothing happens without the model."""
+    picture; other regions keep their OCR words. A region carrying an answer label OCR garbled or
+    lost (region.label) also gets that label written in place of the words over the label's glyphs.
+    Regions in ruled tables are skipped (table cells are plain text). Returns the number of
+    placeholders. Nothing happens without the model."""
     if not lines or not mathocr.available():
         return 0
     def in_table(box) -> bool:
@@ -1075,10 +1081,14 @@ def read_formulas(
     for region, decision in zip(regions, decisions, strict=True):
         x0, y0, x1, y1 = region.box = tuple(int(v) for v in region.box)
         replaced = {id(w) for w in region.words}
+        label = getattr(region, "label", None)
 
         def taken(w: Word) -> bool:
-            inside = x0 <= w.cx <= x1 and y0 <= w.cy <= y1 and not _LABEL_ONLY.match(w.text)
-            return w.math is None and (id(w) in replaced or inside)
+            if w.math is not None or _LABEL_ONLY.match(w.text):
+                return False
+            inside = x0 <= w.cx <= x1 and y0 <= w.cy <= y1
+            on_label = label is not None and _overlaps(w, label.box)
+            return id(w) in replaced or inside or on_label
 
         if decision is not None and decision.kind == "eq" and not _converts(decision.latex):
             decision = None
@@ -1103,6 +1113,11 @@ def read_formulas(
         holder = Word(x0, y0, x1, y1, conf, _placeholder_text(payload), line_no, em, math=payload)
         at = next((i for i, w in enumerate(region.line.words) if w.x0 > x0), len(region.line.words))
         region.line.words.insert(at, holder)
+        if label is not None and not any(_overlaps(w, label.box) for ln in lines for w in ln.words):
+            lx0, ly0, lx1, ly1 = label.box
+            mark = Word(lx0, ly0, lx1, ly1, 90.0, label.text, line_no, em, color=label.color)
+            at = next((i for i, w in enumerate(region.line.words) if w.x0 > lx0), len(region.line.words))
+            region.line.words.insert(at, mark)
         placed += 1
     lines[:] = [ln for ln in lines if ln.words]
     return placed

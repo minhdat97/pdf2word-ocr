@@ -37,8 +37,10 @@ trước, chỉ Tesseract.
 **Đọc công thức** (nên có cho đề Toán/Lí scan): mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX
 ~120 MB, chạy bằng onnxruntime) đọc vùng công thức của trang OCR thành LaTeX. Kết quả tin được
 thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới ("6,42.10⁻²¹ J."),
-căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Hiện chỉ tìm
-vùng ở **phương án trả lời** (sau nhãn "A."–"D."), chưa tìm công thức trong câu dẫn. Lấy mô hình
+căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Tìm vùng ở
+**phương án trả lời** (sau nhãn "A."–"D.", kể cả nhãn Tesseract đọc sai hay bỏ sót), **công thức hai
+tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có số mũ/chỉ số dưới trong câu dẫn**
+("6,02.10²³ mol⁻¹", "g/m³", "n₁", "x_A"); chữ cái đứng một mình ("p", "k", "T") vẫn là chữ OCR. Lấy mô hình
 về `models/mfr/` bằng cùng script (tải từ địa chỉ ghim theo phiên bản trong `scripts/models.json`);
 không có mô hình, `P2W_MFR=0` hoặc `P2W_MATH_DETECT=off` thì trang OCR như trước.
 
@@ -214,10 +216,23 @@ tắt.
      - thẻ lặp nhiều lần "[ĐNH]" sửa bản lệch một chữ "[ĐNHỊ]";
      - bảng: cột số thứ tự (1, 2, 3…) sửa ô lệch ("1\"" → "11", "l" → "1"), cột đáp án A–D và
        cột Đ/S ("SDĐĐ" → "SĐĐĐ").
-     Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`: phần sau nhãn
-     "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo mực tới khoảng trắng,
-     qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin ≥80 và vùng tràn sang
-     phương án hay dòng khác), mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
+     Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`, theo thứ tự ưu tiên):
+     - phương án: phần sau nhãn "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo
+       mực tới khoảng trắng, qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin
+       ≥80 và vùng tràn sang phương án hay dòng khác. Nhãn Tesseract đọc sai ("c.v=a.", "p.v=—.")
+       hay bỏ sót được tìm trên nét chữ: ở cột nhãn của trang, chữ cao bằng nhãn kèm dấu chấm, trước
+       nó là giấy trắng, cùng màu nhãn (nhãn đen: cùng độ đậm); chữ của nhãn lấy theo thứ tự trong
+       hàng. Vùng đọc được thì nhãn được viết lại đúng ("C.", cả "c." viết thường);
+     - công thức hai tầng: gạch phân số (nét mảnh, phẳng, có chữ ngay trên và dưới), dấu căn, gạch
+       trên chữ (Ā, ΔL̄); nới theo mực sang hai bên tới khoảng trắng 0,6em, dừng ở nhãn và từ
+       Tesseract tin là chữ thường (tiếng Việt, từ ≥3 chữ cái không phải đơn vị); luôn là vùng
+       "cao": không đọc được thì thành ảnh công thức;
+     - chữ trong câu: từ có số mũ hay chỉ số dưới đo theo hình (nét nhỏ cao hơn chữ hoa hay thấp
+       hơn đường chân chữ ngay sau nét chữ khác, không phải dấu thanh, dấu phẩy hay dấu độ), từ chỉ
+       có số mũ ghép vào từ trước; từ Tesseract tin <50 có số thập phân hay dấu toán trên dòng chữ.
+       Hoa/thường của chữ đầu vùng lấy theo chiều cao nét ("Vh" → "vh") để mô hình không đổi
+       v thành V.
+     Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
      "va", cũng bị bỏ). Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
@@ -294,12 +309,16 @@ giữ ký hiệu) bớt ~0,5 điểm: từ điển VietOCR không có số mũ n
 CPU M4 Pro, 2 luồng: thêm ~2 giây/trang (trang dày ~400 từ: ~3 giây), RAM thêm ~400 MB.
 
 Đọc công thức (2026-10-27, cách tìm vùng `rules`, có VietOCR): đề Vật lí scan 3 trang: chữ
-98,4% → 99,1%, số 78,1% → 86,8%, Equation đúng 0 → 13/24 công thức của bản chuẩn (đủ mọi công
-thức ở phương án; 11 còn lại nằm trong câu dẫn, chưa tìm); 30 trang scan giả: khớp theo từ
-96,45% / 95,70% → 96,7% / 96,2%. Trên đề đó và hai bản scan giả của một đề Vật lí khác: 139 kết
-quả đặt vào đề, 103 kết quả ứng với công thức của bộ thử đều đúng, 36 kết quả còn lại là số kèm
-đơn vị ("594 m/s.") cũng đúng. Chi phí trên CPU M4 Pro, 2 luồng: ~0,2 giây mỗi vùng (đề Vật lí
-68 vùng: 16,5 → 30,2 giây cho 3 trang), RAM thêm ~1 GB.
+98,4% → 99,3%, số 78,1% → 92,1%, Equation đúng 0 → 13/24 công thức của bản chuẩn (15/24 khi coi
+dấu trừ Word viết "−" là "-"); 41/51 công thức và số mũ/chỉ số của bộ thử đúng (chỉ tìm ở phương
+án: 27/51). Còn thiếu: chữ cái đứng riêng (p, ρ, k, T), ba phương án "4v_O = 9v_H" mô hình không
+đọc được, v_H và T_1 mô hình đọc sai nên giữ chữ OCR. 30 trang scan giả: khớp theo từ 96,45% /
+95,70% (chỉ VietOCR) → 97,56% / 96,96% (chỉ tìm ở phương án: 96,72% / 96,20%), không trang nào
+mất từ đúng. Trên đề đó và hai bản scan giả của một đề Vật lí khác: 192 kết quả đặt vào đề, 147
+ứng với công thức của bộ thử: 142 đúng hẳn, 5 đúng một phần ("t_2=0,405" còn " s" là chữ ngay
+sau; "V=4/3πR³)" lấy cả dấu ngoặc đóng của câu); các kết quả còn lại là số kèm đơn vị
+("594 m/s.") cũng đúng. Chi phí trên CPU M4 Pro, 2 luồng: ~0,2 giây mỗi vùng (đề Vật lí 86 vùng:
+16,5 → 34 giây cho 3 trang khi máy bận), RAM thêm ~1 GB.
 
 ## Giới hạn
 
@@ -312,13 +331,15 @@ quả đặt vào đề, 103 kết quả ứng với công thức của bộ th�
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
   đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
   dùng font Symbol) vẫn là chữ.
-- Đọc công thức (trang scan): chỉ tìm vùng ở phương án trả lời (sau nhãn "A."–"D."); công thức
-  trong câu dẫn và trong bảng vẫn là chữ OCR. Không đọc phương án có chữ tiếng Việt Tesseract tin
-  ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh; kết quả mô hình không chắc thì giữ chữ OCR
-  (thường sai: "642.107'J."), phân số/căn không đọc được thành ảnh. Tesseract để nhãn đứng riêng
-  một dòng (hàng phân số) thì phương án đó thành đoạn riêng ngay sau hàng của nó.
+- Đọc công thức (trang scan): chữ cái đứng riêng (p, ρ, k, T, ΔA) và số thường trong câu dẫn vẫn
+  là chữ OCR; công thức trong bảng cũng vậy. Không đọc phương án có chữ tiếng Việt Tesseract tin
+  ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh, phương án mà một từ OCR chạy sang phương
+  án sau ("C. 273 K. D. 373"); kết quả mô hình không chắc thì giữ chữ OCR (thường sai:
+  "642.107'J."), phân số/căn/gạch trên không đọc được thành ảnh. Tesseract để nhãn đứng riêng
+  một dòng (hàng phân số) thì phương án đó thành đoạn riêng ngay sau hàng của nó. Số mũ chỉ
+  nhận theo hình khi tách khỏi nét chữ trước nó (scan nhoè dính liền thì không thấy).
 - Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân; số mũ/chỉ số dưới chỉ có
-  ở phương án mô hình công thức đọc được;
+  ở chỗ mô hình công thức đọc được;
   chữ đậm theo từng từ thỉnh thoảng sai ở từ rời; Tesseract không đọc được dòng gạch dài kiểu
   "------HẾT------"; hình mờ, nét rất mảnh có thể bị cắt sát.
 - Watermark chữ xoay được set lại bằng font serif, không phải font gốc; font Type3 dùng font

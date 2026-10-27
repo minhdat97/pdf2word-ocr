@@ -46,6 +46,7 @@ VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", 2))
 MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
 MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
 MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", 2))
-# Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer
-# options after "A."-"D." labels), "off", or another detector registered in mathregions.DETECTORS.
+# Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
+# fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
+# detector registered in mathregions.DETECTORS.
 MATH_DETECT = os.environ.get("P2W_MATH_DETECT", "rules").strip().lower() or "rules"
