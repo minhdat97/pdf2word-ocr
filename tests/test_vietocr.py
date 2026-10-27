@@ -40,6 +40,22 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(vietocr.choose("A.83°C.", 88, "A.8,3 ?C.", 0.92), "A.8,3 °C.")  # VietOCR has no "°"
         self.assertEqual(vietocr.choose("c.-3°C.", 73, "C.3 ?C", 0.82), "c.-3°C.")  # would lose the minus
 
+    def test_case_and_punctuation_of_a_sure_word_stay(self):
+        # a word crop shows neither the line's capitals nor the end of its sentence
+        self.assertEqual(vietocr.choose("lần.", 86, "Lần", 0.85), "lần.")
+        self.assertEqual(vietocr.choose("B.3kPa.", 91, "B.3 kpa.", 0.88), "B.3 kPa.")
+        self.assertEqual(vietocr.choose("NaNs.", 70, "Nan3", 0.70), "NaN3.")
+        self.assertEqual(vietocr.choose("c.9km.", 50, "C.9 km.", 0.85), "C.9 km.")  # unsure: VietOCR's case
+        # the final mark goes back only where VietOCR read the word up to it
+        self.assertEqual(vietocr.choose("10.", 37, "10:3", 0.83), "10:3")
+        self.assertEqual(vietocr.choose("x.10?", 13, "x.10-9", 0.88), "x.10-9")  # "?" for an exponent
+        # a mark VietOCR leaves out elsewhere: Tesseract's word
+        self.assertEqual(vietocr.choose("T,;", 63, "T,", 0.62), "T,;")
+        self.assertEqual(vietocr.choose("[ĐNH]", 79, "ĐNH", 0.75), "[ĐNH]")
+        # a mark read as another, or as a letter: VietOCR's word
+        self.assertEqual(vietocr.choose("0.25", 68, "0,25", 0.93), "0,25")
+        self.assertEqual(vietocr.choose("II.", 62, "III", 0.90), "III")
+
 
 # expected values from Pillow 13: Image.fromarray(img).resize((w, h), Image.LANCZOS)
 PILLOW_CASES = {

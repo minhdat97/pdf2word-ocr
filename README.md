@@ -203,7 +203,11 @@ tắt.
      trừ khi VietOCR bỏ dấu của từ Tesseract tin ≥90 ("khí" → "khi" ở từ ngắn); khác chữ thì lấy
      chữ VietOCR khi Tesseract tin <92, VietOCR ≥0,5, không thêm "?" và giữ đủ ký hiệu
      `= + ° % / < > ( ) ^` và dấu trừ của Tesseract (VietOCR không học công thức: "R=" → "?";
-     từ điển của nó không có "°", nên "?" đúng chỗ Tesseract có "°" được đọc là "°").
+     từ điển của nó không có "°", nên "?" đúng chỗ Tesseract có "°" được đọc là "°"). Ô cắt một
+     từ không cho thấy đầu câu hay cuối câu ("lần." → "Lần"): chữ VietOCR giữ hoa/thường của các
+     chữ cái trùng với chữ Tesseract tin ≥60, không bỏ dấu câu hay ngoặc Tesseract đọc được
+     ("T,;" → "T,": giữ chữ Tesseract; dấu đọc thành dấu khác hay thành chữ, "0.25" → "0,25", thì
+     được), dấu . , ; : cuối từ VietOCR bỏ sót thì thêm lại ("Lần" → "lần.", "Nan3" → "NaN3.").
      Sửa lỗi theo cấu trúc đề (`app/ocr_fix.py`), chỉ chỗ cấu trúc tự quyết được, không chọn giữa
      hai từ có thật ("chuyên"/"chuyển"):
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";
@@ -307,6 +311,8 @@ chữ 96,9% → 98,4%, số 67,5% → 78,1%, không thêm dấu "?" nào. Hai đ
 giữ ký hiệu) bớt ~0,5 điểm: từ điển VietOCR không có số mũ nên "g/cm³" thành "g/cm?". Bản ONNX
 đọc như VietOCR chạy PyTorch: cùng chữ 9325/9329 từ thử (bản float32: 9329/9329). Chi phí trên
 CPU M4 Pro, 2 luồng: thêm ~2 giây/trang (trang dày ~400 từ: ~3 giây), RAM thêm ~400 MB.
+Giữ hoa/thường và dấu câu của Tesseract (2026-10-27, có đọc công thức): 30 trang 97,56% /
+96,96% → 97,68% / 97,06% ("lần", "NaN3"), không trang nào mất từ đúng.
 
 Đọc công thức (2026-10-27, cách tìm vùng `rules`, có VietOCR): đề Vật lí scan 3 trang: chữ
 98,4% → 99,3%, số 78,1% → 92,1%, Equation đúng 0 → 13/24 công thức của bản chuẩn (15/24 khi coi

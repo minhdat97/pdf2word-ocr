@@ -17,8 +17,10 @@ Without the model files (or with P2W_VIETOCR=0) nothing changes.
 import json
 import logging
 import math
+import re
 import threading
 import unicodedata
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
@@ -41,6 +43,15 @@ VOCR_SURE = 0.5  # VietOCR's mean character probability needed to take its word
 # as "?t(?C) % 273". Its word is only taken when it keeps these characters of Tesseract's
 # (and the minus: "c.-3°C." read "C.3 ?C" would change the value).
 MATH_CHARS = set("=+°%/<>()^-–")
+# A word crop shows neither the line's capitals nor the end of its sentence: VietOCR reads
+# "lần." as "Lần". Where Tesseract was this sure of the word, VietOCR's word keeps the case
+# of the letters it shares with Tesseract's ("lần." at 86 is not "Lần"; a label "c." read at
+# 54 may be "C.") and may not leave out a punctuation mark Tesseract read ("T,;" -> "T,").
+CASE_CONF = 60
+MARKS = set(".,;:!?")
+# A full stop, comma, semicolon or colon ending Tesseract's word is put back on VietOCR's when
+# VietOCR left it out; "?" and "!" there are often an exponent misread ("x.10?" is "x.10-9").
+END_MARKS = set(".,;:")
 
 
 # --- Pillow's LANCZOS resize (8-bit fixed point), so crops match vietocr's ---
@@ -221,6 +232,52 @@ def _with_case(src: str, marks: str) -> str:
     return "".join(m.upper() if s.isupper() else m.lower() if s.islower() else m for s, m in zip(src, marks))
 
 
+def _base(s: str) -> str:
+    """Each character as its lower-case base letter (marks and đ's stroke gone), one for one."""
+    return "".join("d" if c in "đĐ" else unicodedata.normalize("NFD", c)[0].lower() for c in s)
+
+
+def _blocks(a: str, b: str) -> list[tuple]:
+    """Matching of two readings character by character on their base letters (difflib opcodes)."""
+    return SequenceMatcher(None, _base(a), _base(b), autojunk=False).get_opcodes()
+
+
+def _case_of(tess: str, vocr: str) -> str:
+    """vocr with the case of each letter that lines up with the same letter in tess ("Lần" + "lân." -> "lần";
+    "B.3 kpa." + "B.3kPa." -> "B.3 kPa."); its other letters as VietOCR read them."""
+    out = list(vocr)
+    for tag, i0, i1, j0, j1 in _blocks(tess, vocr):
+        if tag == "equal":
+            for s, j in zip(tess[i0:i1], range(j0, j1)):
+                out[j] = out[j].upper() if s.isupper() else out[j].lower() if s.islower() else out[j]
+    return "".join(out)
+
+
+def _end_mark(tess: str, vocr: str) -> str:
+    """vocr with Tesseract's final mark when VietOCR read the word up to it and left the mark out ("Lần" for
+    "lần.", "Nan3" for "NaNs."); not when VietOCR read something else in its place ("10:3" for "10.")."""
+    if tess[-1:] not in END_MARKS or not vocr or vocr[-1] in MARKS:
+        return vocr
+    tag, i0, i1, j0, j1 = _blocks(tess, vocr)[-1]
+    if tag == "delete" or (tag == "replace" and i1 - i0 > j1 - j0 and not MARKS & set(vocr[j0:j1])):
+        return vocr + tess[-1]
+    return vocr
+
+
+def _drops_marks(tess: str, vocr: str) -> bool:
+    """VietOCR's word leaves out a punctuation mark of Tesseract's ("T,;" read "T,"), or a bracket of a pair
+    ("[ĐNH]" read "ĐNH"). A mark read as another one ("0.25" as "0,25", "2026.2027" as "2026-2027") or as a
+    letter or digit ("II." as "III", "NaN:" as "Nan3": which reading is right is not known) stays; so does a
+    repeated mark read once ("K.." as "K.")."""
+    tess, vocr = re.sub(r"([.,;:!?])\1+", r"\1", tess), re.sub(r"([.,;:!?])\1+", r"\1", vocr)
+    for tag, i0, i1, j0, j1 in _blocks(tess, vocr):
+        if tag == "equal" or i1 - i0 <= j1 - j0:
+            continue
+        if sum(c in MARKS for c in tess[i0:i1]) > sum(not c.isalnum() and not c.isspace() for c in vocr[j0:j1]):
+            return True
+    return any(p in tess and q in tess[tess.index(p) :] and (p not in vocr or q not in vocr) for p, q in ("[]", "{}"))
+
+
 def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
     """The word to keep from Tesseract's reading (confidence 0-100) and VietOCR's (probability 0-1)."""
     if not vocr.strip():
@@ -228,6 +285,7 @@ def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
     # "°" is not in VietOCR's vocabulary: it writes "?" ("A.8,3 ?C." for "A.83°C.").
     if "?" not in tess and 0 < tess.count("°") == vocr.count("?"):
         vocr = vocr.replace("?", "°")
+    vocr = _end_mark(tess, vocr)
     if _toneless(tess) == _toneless(vocr):
         # Same letters: VietOCR's tone marks, except that it may not drop one from a word
         # Tesseract was sure of (word crops of short words lose marks: "khí" -> "khi").
@@ -240,7 +298,9 @@ def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
         return tess
     if any(vocr.count(ch) < tess.count(ch) for ch in MATH_CHARS & set(tess)):
         return tess
-    return vocr
+    if _drops_marks(tess, vocr):
+        return tess
+    return _case_of(tess, vocr) if conf >= CASE_CONF else vocr
 
 
 def word_crops(lines: list, gray: np.ndarray) -> list[np.ndarray]:
