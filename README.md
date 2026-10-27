@@ -373,6 +373,13 @@ và hàng "A. … D." của Câu 19 đúng. Hai bản scan giả của đề V�
 phần, 0 sai. 30 trang scan giả 97,56% / 96,96% → 97,73% / 97,09%, không trang nào mất từ đúng;
 PDF có text không đổi; tắt mô hình thì VL1212 chỉ khác main ở nhãn "A." vào lại hàng của nó.
 
+Sửa theo rà soát mã (2026-10-27): kết quả trên đề Vật lí scan và hai bản scan giả như trước (chữ
+99,6%, số 93,4%, 47/51; 47 + 111 kết quả ứng với bộ thử đúng, 0 sai), 30 trang scan giả 97,73% /
+97,09%, không trang nào mất từ đúng, bớt chữ thừa VietOCR đọc từ từ bên cạnh ("về về", "PHẦN I. I.",
+"ố chuyên"); PDF có text và VL1212 tắt mô hình không đổi. Trên trang thử dựng riêng: nhãn đọc sai
+không còn nằm trong Equation, số thứ tự ở cột nhãn không thành "A.", căn bậc ba ra đúng, mô hình bớt
+hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 393/522 kết quả nhận, 0 sai).
+
 ## Giới hạn
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
@@ -413,6 +420,12 @@ PDF có text không đổi; tắt mô hình thì VL1212 chỉ khác main ở nh�
   ≥92 mà sai chữ cái thì vẫn giữ.
 - Dấu phẩy mất hẳn khi nhận dạng ("8,5" → "85") không khôi phục được (VietOCR lấy lại được một
   phần khi có mô hình).
+- Đọc công thức: chỉ số bậc căn mô hình bỏ sót thì căn bậc ba thành căn bậc hai ("√(a−b)" cho
+  "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
+  (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
+  lộn xộn).
+- File scan dài có đọc công thức chạy lâu (trên M4 Pro ~9 giây/trang khi chỉ có mô hình công thức):
+  máy chủ chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc.
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 
