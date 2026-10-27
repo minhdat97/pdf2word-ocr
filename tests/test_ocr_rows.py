@@ -41,10 +41,45 @@ class JoinRowsTest(unittest.TestCase):
         lines = left + right
         join_rows(lines, HEIGHT)
         self.assertEqual(len(lines), 10)
-        # a heading alone in its block beside a column's line: the column does not span it
+        # a heading alone in its block beside a column's line: not an option row
         lines = left + [line(3, 520, (1100, 1500, "PHẦN II."))]
         join_rows(lines, HEIGHT)
         self.assertEqual(len(lines), 6)
+
+    def test_single_line_columns_stay_apart(self):
+        # each line of both columns a block of its own
+        lines = []
+        for k in range(4):
+            base = 400 + 140 * k
+            lines += [line(2 * k + 1, base, (100, 1000, f"Hiệu suất {k}"))]
+            lines += [line(2 * k + 2, base, (1100, 1900, f"Nhiệt lượng {k}"))]
+        join_rows(lines, HEIGHT)
+        self.assertEqual(len(lines), 8)
+        left = line(1, 900, (100, 130, "A."), (140, 400, "5 m/s."))
+        right = line(2, 900, (1100, 1130, "B."), (1140, 1400, "20 J."))
+        lines = [left, right]
+        join_rows(lines, HEIGHT)
+        self.assertEqual(len(lines), 2)
+
+    def test_only_one_option_row_joins(self):
+        stem = line(1, 2300, (100, 1900, "Câu 7: nội dung câu hỏi trải hết bề ngang"))
+
+        def pair(row_words, lone_words):
+            row = line(1, 2420, *row_words, par=2)
+            lone = line(4, 2420, *lone_words)
+            lines = [stem, row, lone]
+            join_rows(lines, HEIGHT)
+            return len(lines)
+
+        self.assertEqual(pair([(730, 760, "B."), (1210, 1240, "C,")], [(275, 315, "A.")]), 2)  # label read "C,"
+        self.assertEqual(pair([(250, 280, "C."), (700, 730, "D.")], [(1300, 1330, "A."), (1340, 1500, "5 m/s.")]), 3)
+        self.assertEqual(pair([(730, 760, "B."), (1210, 1240, "C.")], [(275, 315, "B.")]), 3)
+        self.assertEqual(pair([(730, 760, "C."), (1210, 1240, "D.")], [(150, 180, "A."), (400, 430, "B.")]), 3)
+        self.assertEqual(pair([(730, 760, "B."), (1210, 1240, "C.")], [(275, 600, "nhiệt độ")]), 3)
+        self.assertEqual(pair([(730, 760, "B,"), (1210, 1240, "c."), (1690, 1720, "Đ.")], [(275, 315, "A.")]), 2)
+        self.assertEqual(pair([(1210, 1240, "C."), (1250, 1400, "25 N.")], [(275, 315, "A."), (325, 500, "10 m.")]), 3)
+        # units after a number are not labels: "B. 1 A." is one label, the row reads A B
+        self.assertEqual(pair([(730, 760, "B."), (770, 800, "1"), (810, 840, "A.")], [(275, 315, "A.")]), 2)
 
     def test_footer_band_baseline_and_height(self):
         page = line(1, 1000, (100, 2000, "Câu 1: nội dung"))

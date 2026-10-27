@@ -237,8 +237,12 @@ tắt.
      Dòng Tesseract tách khỏi một hàng in ("A." thành khối riêng, đứng sau hàng "B. … C. … D.")
      được nhập lại theo thứ tự x: hai dòng cạnh nhau (không chồng theo chiều ngang, chung ≥ 1/2
      chiều cao dòng thấp và ≥ 40% dòng cao, đường chân chữ lệch ≤ 0,15em), một dòng là cả khối của
-     nó và nằm trong cột của dòng kia (khối dòng kia trải qua nó, hay cũng chỉ một dòng: cột chữ là
-     khối nhiều dòng); dải đầu/chân trang giữ nguyên.
+     nó và nằm trong cột của dòng kia (dòng ngay trên nó thuộc khối dòng kia, hay cả hai đều là khối
+     một dòng và đủ A–D), và hai dòng ghép lại là một hàng phương án: dòng lẻ mở đầu bằng một nhãn
+     (kể cả đọc sai "B,", "c.", "Đ."), không có nhãn khác, nhãn hai dòng đọc liền nhau theo chiều
+     ngang ("A" + "BCD"). Dòng hai cột, kể cả hàng phương án của hai câu cạnh nhau ("A. 10 m." bên
+     "C. 25 N."), giữ riêng; đơn vị sau số ("1 A.", "2.10⁻⁶ C.") không phải nhãn; dải đầu/chân
+     trang giữ nguyên.
      Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`, theo thứ tự ưu tiên):
      - phương án: phần sau nhãn "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo
        mực tới khoảng trắng, qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin

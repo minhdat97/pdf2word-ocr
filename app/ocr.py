@@ -389,24 +389,55 @@ def tesseract_lines(gray: np.ndarray, lang: str, dpi: int) -> list[Line]:
     return [ln for ln in parser.lines if ln.words]
 
 
+_ROW_LABEL = re.compile(r"^\*?([A-DĐc])[.,]")
+_ROW_LETTER = {"Đ": "D", "c": "C"}
+
+
+def _row_labels(ln: Line) -> list[tuple[int, str]]:
+    """(x, letter) of the answer labels of a line: words starting one of its pieces (_pieces) with a label, also
+    as Tesseract misreads it ("A.", "*B.", "C.6kPa.", "B,", "c.", "Đ."). A unit after a number ("1 A.",
+    "2.10⁻⁶ C.") sits inside its piece and is not a label."""
+    found = []
+    for piece in _pieces(ln.words):
+        if m := _ROW_LABEL.match(piece[0].text):
+            found.append((piece[0].x0, _ROW_LETTER.get(m.group(1), m.group(1))))
+    return found
+
+
 def join_rows(lines: list[Line], height: int) -> None:
     """Join lines Tesseract split off a printed row ("A." alone as a block of its own, read after the rest of
     its row "B. ... C. ... D. ..."): two lines side by side (ROW_SHARE, ROW_BASELINE_EM), one of them the only
-    line of its block and lying within the other's column (the other line's block spans it horizontally, or is
-    one line too: columns of text are blocks of many lines). The words of the line with fewer words join the
-    other line in x order; that line keeps its place in the reading order. Lines in the header and footer bands
-    of the page (HEADER_ZONE) are left alone. Words keep their line_no."""
+    line of its block and lying within the other's column (the line above it belongs to the other line's
+    block, or both lines are blocks of one line reading A-D whole), and together one row of answer options:
+    the lone line starts with a label and holds no other, and the labels of both read consecutive letters left
+    to right ("A" + "BCD", "C" + "D"). Lines of two columns, also option rows of two questions side by side
+    ("A. 10 m." beside "C. 25 N."), stay apart. The words of the line with fewer words join the other line in x
+    order; that line keeps its place in the reading order. Lines in the header and footer bands of the page
+    (HEADER_ZONE) are left alone. Words keep their line_no."""
     blocks: dict[int, list[Line]] = {}
     for ln in lines:
         blocks.setdefault(ln.block, []).append(ln)
-    span = {b: (min(ln.x0 for ln in ls), max(ln.x1 for ln in ls)) for b, ls in blocks.items()}
 
     def rows(ln: Line) -> tuple[int, int]:
         return min(w.y0 for w in ln.words), max(w.y1 for w in ln.words)
 
-    def within(ln: Line, other: Line) -> bool:  # ln alone in its block, in the other's column
-        x0, x1 = span[other.block]
-        return len(blocks[ln.block]) == 1 and (len(blocks[other.block]) == 1 or x0 <= ln.x0 and ln.x1 <= x1)
+    def within(ln: Line, other: Line) -> bool:  # ln alone in its block, in the other's column, one option row
+        if len(blocks[ln.block]) != 1:
+            return False
+        own, theirs = _row_labels(ln), _row_labels(other)
+        if len(own) != 1 or not theirs or own[0][0] != min(w.x0 for w in ln.words):
+            return False
+        letters = "".join(c for _, c in sorted(own + theirs))
+        if letters not in "ABCD":  # consecutive: "A." beside "C." is another column
+            return False
+        # the line just above ln belongs to the other line's block (ln is a hole in that block, not the top of
+        # another column under its own question); or the row is a block of one line too and reads A-D whole
+        top = rows(ln)[0]
+        above = [o for o in lines if o is not ln and o.x0 < ln.x1 and ln.x0 < o.x1 and rows(o)[1] <= top]
+        nearest = max(above, key=lambda o: rows(o)[1], default=None)
+        if nearest is not None and nearest.block == other.block:
+            return True
+        return len(blocks[other.block]) == 1 and letters == "ABCD"
 
     def side_by_side(a: Line, b: Line) -> bool:
         (ay0, ay1), (by0, by1) = rows(a), rows(b)
