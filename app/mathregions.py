@@ -488,6 +488,8 @@ def _blob_labels(page: _Page, style: _Style | None) -> dict[int, list[tuple]]:
                 continue
             word = next((w for w in ln.words if w.x0 <= box[0] + 2 and w.x1 >= box[2] - 2), None)
             starts = word is not None and abs(word.x0 - box[0]) <= 0.3 * em
+            if starts and word.text.lstrip("*")[:1].isdigit():
+                continue  # a number and its dot ("2." of a numbered line, "1.2,3" of an answer key), not a letter
             m = _LABEL_START.match(word.text) if starts else None
             found.append((box, m.group(1).upper() if m else None, word if starts else None))
         if found:
@@ -497,7 +499,8 @@ def _blob_labels(page: _Page, style: _Style | None) -> dict[int, list[tuple]]:
 
 def _letters_of(row: list[tuple[float, str | None]], style: _Style, em: float) -> list[str | None]:
     """Letters of a row's labels (x, letter read or None) from those read: consecutive from left to right; a
-    label alone takes the letter its column always has on the page."""
+    label without one in a row of several takes the letter its column always has on the page (one glyph alone
+    at a column is too little to make it a label)."""
     known = [(i, t) for i, (_, t) in enumerate(row) if t]
     out = []
     for i, (x, t) in enumerate(row):
@@ -505,7 +508,7 @@ def _letters_of(row: list[tuple[float, str | None]], style: _Style, em: float) -
             j, a = min(known, key=lambda k: abs(k[0] - i))
             guess = chr(ord(a) + i - j)
             t = guess if "A" <= guess <= "D" else None
-        if t is None:
+        if t is None and len(row) >= 2:
             col = min(style.columns, key=lambda c: abs(c[0] - x))
             total = sum(col[1].values())
             letter, n = max(col[1].items(), key=lambda kv: kv[1])

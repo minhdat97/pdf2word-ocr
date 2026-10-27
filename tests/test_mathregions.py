@@ -233,6 +233,30 @@ class GarbledLabelsTest(unittest.TestCase):
         regions = [r for r in detect(c, lines) if r.line is lines[1] and r.label is not None]
         self.assertEqual([r.label.text for r in regions], ["C."])
 
+    def test_numbers_at_the_label_columns_are_no_labels(self):
+        c, lines = self.page()
+        c.rgb[(c.rgb == BLUE).all(axis=2)] = 0  # black labels: found by their weight
+        for ln in lines:
+            for w in ln.words:
+                w.color = None
+        base, words = 300, []
+        for x, n in ((20, "2"), (400, "3")):  # "2. 2,5 km | 3. 4,0 km": a numbered answer line
+            c.block(x, base - 21, x + 16, base)  # the digit, as high and bold as a label's letter
+            c.block(x + 19, base - 4, x + 23, base)  # its dot
+            c.block(x + 40, base - 21, x + 50, base)
+            c.letters(x + 60, 2, base)
+            words += [word(x, base - 21, x + 50, base, n + ".2,5" if x == 20 else n + ".", conf=60),
+                      word(x + 60, base - XH, x + 84, base, "km", conf=60)]
+            if x == 400:
+                words.insert(-1, word(x + 40, base - 21, x + 50, base, "4,0", conf=60))
+        lines.append(Line(1, 3, base, EM, words))
+        self.assertEqual([r for r in detect(c, lines) if r.line is lines[2] and r.label is not None], [])
+
+    def test_a_lone_glyph_takes_no_letter_from_its_column(self):
+        style = mathregions._Style(21.0, 0.5, None, [(20.0, {"A": 2}), (400.0, {"B": 2})])
+        self.assertEqual(mathregions._letters_of([(20.0, None)], style, EM), [None])
+        self.assertEqual(mathregions._letters_of([(20.0, None), (400.0, None)], style, EM), ["A", "B"])
+
     def test_label_is_written_when_read(self):
         c, lines = self.page()
         gray, ink, rgb = c.arrays()

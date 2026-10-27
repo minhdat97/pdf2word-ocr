@@ -234,7 +234,8 @@ tắt.
        ≥80 và vùng tràn sang phương án hay dòng khác. Nhãn Tesseract đọc sai ("c.v=a.", "p.v=—.")
        hay bỏ sót được tìm trên nét chữ: ở cột nhãn của trang, chữ cao bằng nhãn kèm dấu chấm, trước
        nó là giấy trắng, cùng màu nhãn (nhãn đen: cùng độ đậm); chữ của nhãn lấy theo thứ tự trong
-       hàng. Vùng đọc được thì nhãn được viết lại đúng ("C.", cả "c." viết thường);
+       hàng (hàng có từ hai nhãn trở lên thì nhãn chưa rõ chữ lấy chữ cột của nó luôn có). Từ Tesseract
+       đọc mở đầu bằng chữ số ("2." của dòng đánh số, "1.2,3" của bảng đáp số) không phải nhãn. Vùng đọc được thì nhãn được viết lại đúng ("C.", cả "c." viết thường);
      - công thức hai tầng: gạch phân số (nét mảnh, phẳng, có chữ ngay trên và dưới), dấu căn, gạch
        trên chữ (Ā, ΔL̄); nới theo mực sang hai bên tới khoảng trắng 0,6em, dừng ở nhãn và từ
        Tesseract tin là chữ thường (tiếng Việt, từ ≥3 chữ cái không phải đơn vị); luôn là vùng
