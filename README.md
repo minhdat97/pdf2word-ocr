@@ -245,7 +245,9 @@ tắt.
        về cỡ (c o s u v w x z; không có k: nét lên của k cao bằng chữ hoa).
      Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
-     Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
+     Tesseract theo thứ tự – mô hình bớt hay thêm một chữ số ("200" cho "2000", "500 00" cho
+     "500 000", "2ω" cho "20"), kể cả chữ số ngoài phân số/căn ("7√3" cho "2/3"), là bỏ; số mũ
+     Tesseract đọc thành chữ số thường, dấu độ đọc thành "0" thì không…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
      "va", cũng bị bỏ). Các lần cắt chỉ khác lề nên mô hình có thể sai giống nhau ở mọi lần: dấu
      trừ đầu số mũ thành ký hiệu lạ ("7,66.10^{\mu^{22}} J."), chỉ số "1" mảnh cạnh dấu ";" thành
      "\i" ("T_{\i};"). Vùng chưa có kết quả mà có lần đọc dùng được (hay sửa được: ký hiệu lạ → "-")

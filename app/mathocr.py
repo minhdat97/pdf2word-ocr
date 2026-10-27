@@ -16,7 +16,8 @@ keeps the OCR text. A reading is dropped for low confidence, for symbols the
 model writes when it cannot read the ink (\\theta \\mu \\Gamma \\ldots ...),
 for leading junk or a script without base ("^{3km}"), for a subscript right
 after a digit ("4_{VO}" for "4v_O"), for words it cannot spell ("phut"), and
-when Tesseract's digits or first letter's case disagree with it.
+when Tesseract's digits (number by number, outside fractions and roots too) or
+first letter's case disagree with it.
 read_regions() reads each region twice (crop cut to the ink, then with 3 px of
 white; with 8 px when the two disagree; without its last short word, a unit or
 mark, when they still do not) and keeps a decision two readings agree on. Before that, a reading gets what the ink tells better than the model: a
@@ -24,7 +25,7 @@ coefficient's letter read into a subscript ("4_{VO}") is written out (4v_{O})
 where the ink shows a small letter on the baseline and a lowered glyph after
 the digit, and a first letter whose case only its height tells (v, o, x...)
 takes the case measured on the glyph. On 522 formula boxes of two physics
-exams (one real scan, a native PDF and two simulated scans of it) it kept 394,
+exams (one real scan, a native PDF and two simulated scans of it) it kept 393,
 none wrong.
 
 Without the model files (or with P2W_MFR=0) read_regions() returns Nones.
@@ -641,17 +642,90 @@ def _parts(items) -> list[tuple[str, str | None]] | None:
     return merged
 
 
-def _base_digits(items) -> str:
-    """Digits outside scripts, in order."""
-    out = ""
+# Letters one reader may write for a digit the other reads ("2O0O" for 2000, "S" for 5)
+_DIGIT_LOOK = {"0": "oODQ", "1": "lIiLtjf|", "2": "zZ", "4": "A", "5": "sS", "6": "bG", "7": "T", "8": "B", "9": "gq"}
+
+
+def _skeleton(items, script: bool = False, out: list | None = None) -> list[tuple[str, str]]:
+    """What the digit check compares of a reading, in order: ("D", d) a digit outside scripts and 2-D parts,
+    ("S", c) a character of a script, ("L", c) a letter, ("G", "°") a degree sign, ("W", "") a 2-D part
+    (fraction, root: Tesseract reads its ink in any order). Other signs are left out."""
+    out = [] if out is None else out
     for node in items or []:
-        if node[0] == "t" and node[1].isdigit():
-            out += node[1]
+        if node[0] == "t":
+            for c in SYMBOL_TEXT.get(node[1], node[1]):
+                if c.isdigit() or (script and not c.isspace()):
+                    out.append(("S" if script else "D", c))
+                elif c.isalpha():
+                    out.append(("L", c))
+                elif c == "°":
+                    out.append(("G", c))
         elif node[0] == "g":
-            out += _base_digits(node[1])
-        elif node[0] == "s" and node[1] is not None:
-            out += _base_digits([node[1]])
+            _skeleton(node[1], script, out)
+        elif node[0] == "f":
+            out.append(("W", ""))
+        elif node[0] == "s":
+            if node[1] is not None:
+                _skeleton([node[1]], script, out)
+            for slot in (2, 3):
+                _skeleton(node[slot], True, out)
     return out
+
+
+def _ocr_skeleton(ocr: str) -> list[tuple[str, str]]:
+    """The OCR text as the digit check sees it: ("D", d) digits, ("L", c) letters, ("X", c) other signs and a digit
+    between two letters (a letter misread: "ó6ms" for "m/s")."""
+    out = []
+    for k, c in enumerate(ocr):
+        if c.isspace() or c in ".,;:":
+            continue
+        if c.isdigit() and not (0 < k < len(ocr) - 1 and ocr[k - 1].isalpha() and ocr[k + 1].isalpha()):
+            out.append(("D", c))
+        else:
+            out.append(("L" if c.isalpha() else "X", c))
+    return out
+
+
+_MATH_SIGNS = set("/=+-–−()%°<>×±")  # signs Tesseract reads as they are, not for a digit
+
+
+def _pairs(r: tuple[str, str], o: tuple[str, str], degree: bool) -> bool:
+    (kr, cr), (ko, co) = r, o
+    if kr == "D":  # a digit of the reading is Tesseract's digit, or a letter or mark Tesseract read for it
+        return (ko == "D" and co == cr) or (ko == "L" and co in _DIGIT_LOOK.get(cr, "")) or (ko == "X" and co not in _MATH_SIGNS)
+    if kr == "L":  # a letter is anything but a digit, unless the digit looks like it
+        return ko != "D" or cr in _DIGIT_LOOK.get(co, "")
+    if kr == "G":  # a degree sign Tesseract read as "0" or "9" (unless it read one as "°")
+        return ko != "D" or (not degree and co in "09")
+    return kr == "S"  # Tesseract reads scripts as anything
+
+
+def _digits_agree(reading: list[tuple[str, str]], ocr: list[tuple[str, str]]) -> bool:
+    """Every digit of the reading outside scripts is a digit Tesseract read in the same order (or a letter or sign
+    it read in its place), and every digit Tesseract read is one of the reading's digits, scripts, degree signs or
+    look-alike letters, or lies in a 2-D part. So a digit the model left out or added is caught ("200" for OCR
+    "2000", "500 00" for "500 000", "11111" for "1111", "2ω" for "20"), while Tesseract's exponent read as digits
+    ("642.107'J." for 6,42.10^{-21} J.) and its letters read for digits ("t_{2}" read "1,") are not."""
+    n, m = len(reading), len(ocr)
+    degree = ("X", "°") in ocr
+    seen, todo = set(), [(0, 0)]
+    while todo:
+        i, j = todo.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == n and j == m:
+            return True
+        if i < n and reading[i][0] != "D":
+            todo.append((i + 1, j))  # nothing of Tesseract's for it (an empty 2-D part)
+        if j < m and ocr[j][0] != "D":
+            todo.append((i, j + 1))  # a letter or sign Tesseract read in excess
+        if i < n and j < m:
+            if reading[i][0] == "W":
+                todo.append((i, j + 1))  # Tesseract's reading of the 2-D part
+            elif _pairs(reading[i], ocr[j], degree):
+                todo.append((i + 1, j + 1))
+    return False
 
 
 def _letters(text: str) -> str:
@@ -795,6 +869,11 @@ def judge(tex: str, conf: float, ocr_text: str = "", min_conf: float = MIN_CONF)
         return None, f"word {word}"  # text the model cannot read ("phút" -> "phut")
     ocr = _LABEL.sub("", ocr_text or "")
     nodes = list(_walk(items))
+    # Tesseract drops commas and exponents and reads letters as digits ("t_2=0,405" -> "1, =0,405"), but each
+    # digit it reads on the line is one of the model's (outside a fraction or root, whose ink it reads in any order)
+    mine, theirs = _skeleton(items), _ocr_skeleton(ocr)
+    if any(k == "D" for k, _ in mine) and any(k == "D" for k, _ in theirs) and not _digits_agree(mine, theirs):
+        return None, "digits differ from OCR"
     if any(n[0] == "f" for n in nodes):
         body, tail = _split_tail(items)
         if not body:
@@ -810,12 +889,7 @@ def judge(tex: str, conf: float, ocr_text: str = "", min_conf: float = MIN_CONF)
         return None, "letters only"  # OCR reads plain letters as well
     if _bad_case(parts, ocr):
         return None, "letter case"
-    base = _base_digits(items)
     seen = re.sub(r"\D", "", ocr)
-    # Tesseract drops commas and exponents and reads letters as digits ("t_2=0,405" -> "1, =0,405"),
-    # but the digits it does read in a row are the model's digits in a row
-    if base and seen and base not in seen and seen not in base:
-        return None, "digits differ from OCR"
     if seen and not any(c.isdigit() for t, _ in parts for c in t):
         return None, "digits only in OCR"  # "0" read as \omega
     parts = _respace(parts, ocr)

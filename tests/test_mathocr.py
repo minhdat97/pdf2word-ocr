@@ -130,6 +130,34 @@ class DecideTest(unittest.TestCase):
                 self.assertIsNone(d)
                 self.assertEqual(reason, why)
 
+    def test_digits_against_ocr(self):
+        # a digit the model left out or added, or read as a letter, is caught
+        for raw, ocr in (
+            ("2 0 0 \\mathrm { ~ m / s . }", "2000 m/s."),
+            ("2 0 0 0 0 \\mathrm { ~ m / s . }", "2000 m/s."),
+            ("1 3 2 ~ ^ { \\circ } \\mathrm { C } .", "1323 °C."),
+            ("5 0 0 ~ 0 0 ~ \\mathrm { N } .", "500 000 N."),
+            ("1 1 1 1 1 ~ \\mathrm { J } .", "1111 J."),
+            ("+ 0 , 0 0 + s .", "40,004 s."),
+            ("v = 2 \\omega ~ m / s", "v=20 m/s"),
+            ("7 \\sqrt { 3 }", "2/3"),  # digits outside a root or fraction are checked too
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(M.judge(raw, 0.95, ocr), (None, "digits differ from OCR"))
+        # Tesseract's exponents, degree signs and letters read as digits, and its reading of a fraction, are not
+        for raw, ocr, want in (
+            ("6 , 4 2 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", "642.107'J.", "6,42.10^{-21} J."),
+            ("7 , 4 3 . 1 0 ^ { - 2 1 } ~ \\mathrm { J } .", "743.10”7.", "7,43.10^{-21} J."),
+            ("1 , 1 . 1 0 ^ { 3 } ~ \\mathrm { m / s } .", "1,1.106 m/s.", "1,1.10^{3} m/s."),
+            ("t _ { 2 } = 0 , 4 0 5", "1, =0,405", "t_{2}=0,405"),
+            ("L = 4 5 , 2 2 \\pm 0 , 0 3 ~ ( \\mathrm { m m } )", "1=45,22+0,03 (mm).", "L=45,22±0,03 (mm)."),
+            ("6 ~ \\mathrm { m / s }", "6 ó6ms.", "6 m/s."),
+            ("2 7 ~ ^ { \\circ } \\mathrm { C } .", "270C.", "27 °C."),
+            ("2 \\frac { 1 } { 3 }", "21 3", "2\\frac{1}{3}"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(as_text(M.decide(raw, 0.95, ocr)), want)
+
     def test_capital_delta_with_a_letter(self):
         self.assertEqual(as_text(M.decide("\\Delta x", 0.99, "Ax")), "Δx")
         self.assertEqual(as_text(M.decide("\\Delta A .", 0.99, "Aa.")), "ΔA.")
