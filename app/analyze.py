@@ -9,7 +9,7 @@ from pathlib import Path
 import pymupdf
 
 from .errors import TaskError
-from .settings import MAX_PAGES
+from .settings import MAX_PAGE_PT, MAX_PAGES
 
 MIN_TEXT_CHARS = 20
 MIN_IMAGE_COVERAGE = 0.05
@@ -27,6 +27,9 @@ def open_pdf(path: Path, check_limits: bool = True) -> pymupdf.Document:
             raise TaskError("no_pages_in_pdf")
         if doc.page_count > MAX_PAGES:
             raise TaskError("too_many_pages", f"{doc.page_count} > {MAX_PAGES}")
+        for page in doc:
+            if max(page.rect.width, page.rect.height) > MAX_PAGE_PT:
+                raise TaskError("page_too_large", f"page {page.number + 1}: {page.rect}")
     return doc
 
 
@@ -68,6 +71,11 @@ def analyse(path: Path) -> dict:
     }
     if doc.needs_pass:
         return {**base, "contains_text": None, "contains_image": None, "kind": None, "pages": []}
+    # tell at once what the conversion would refuse
+    if doc.page_count > MAX_PAGES:
+        raise TaskError("too_many_pages", f"{doc.page_count} > {MAX_PAGES}")
+    if any(max(p.rect.width, p.rect.height) > MAX_PAGE_PT for p in doc):
+        raise TaskError("page_too_large")
 
     pages = [{"index": i, **page_kind(p)} for i, p in enumerate(doc) if i < 200]
     kinds = {p["kind"] for p in pages} - {"empty"}

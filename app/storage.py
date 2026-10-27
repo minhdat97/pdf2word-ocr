@@ -65,6 +65,10 @@ def store_output(src: Path, ext: str) -> str:
     return token
 
 
+def used_bytes() -> int:
+    return sum(f.stat().st_size for f in DATA_DIR.iterdir() if f.is_file())
+
+
 def cleanup_expired(now: float | None = None) -> int:
     now = now or time.time()
     removed = 0

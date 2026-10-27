@@ -1,0 +1,101 @@
+/* Màu và kiểu của các trang Trợ lý Giáo viên (trang chủ, tạo quiz Canvas); sáng/tối theo máy. */
+:root {
+  --bg: #f7f7fb; --card: #ffffff; --surface-2: #fafafd; --text: #1f2330; --muted: #5d6273;
+  --line: #e2e3ec; --line-strong: #c9cbd8;
+  --accent: #5b5fd6; --accent-hover: #4b4fc4; --accent-soft: #eef0ff; --on-accent: #ffffff;
+  --ok: #157a3c; --ok-bg: #e8f5ec;
+  --bad: #c42b1c; --bad-bg: #fdecea; --bad-stroke: #f0b3ac;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 0 1px rgb(0 0 0 / 0.08);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1c22; --card: #24252d; --surface-2: #2a2b34; --text: #e9e9ef; --muted: #a3a6b4;
+    --line: #383946; --line-strong: #4c4e5e;
+    --accent: #8b8ff0; --accent-hover: #a1a4f4; --accent-soft: #2c2e48; --on-accent: #12132a;
+    --ok: #5fd08a; --ok-bg: #19362a;
+    --bad: #ff8a7a; --bad-bg: #3f1d19; --bad-stroke: #7d3128;
+    --shadow: 0 1px 3px rgb(0 0 0 / 0.4);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 16px/1.55 -apple-system, "Segoe UI", system-ui, Roboto, sans-serif; }
+a { color: var(--accent); }
+[hidden] { display: none !important; }
+.wrap { max-width: 680px; margin: 0 auto; padding: 0 16px; }
+
+header.wrap { padding-top: 36px; padding-bottom: 22px; }
+.brand { display: inline-block; font-weight: 600; font-size: 14px; text-decoration: none; margin-bottom: 6px; }
+.brand:hover { text-decoration: underline; }
+h1 { font-size: clamp(26px, 5vw, 32px); line-height: 1.2; margin: 0 0 6px; }
+.lead { color: var(--muted); margin: 0; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px;
+        box-shadow: var(--shadow); }
+.drop { display: block; width: 100%; border: 2px dashed var(--line-strong); border-radius: 12px;
+        padding: 36px 16px; text-align: center; cursor: pointer; background: var(--surface-2);
+        color: inherit; font: inherit; transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over, .drop:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.drop svg { width: 44px; height: 44px; color: var(--accent); }
+.drop .meta { display: block; margin-top: 10px; }
+.drop .big { display: block; font-size: 18px; font-weight: 600; margin: 8px 0 12px; }
+.meta { color: var(--muted); font-size: 14px; }
+.privacy { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 14px 0 0; }
+.privacy svg { width: 16px; height: 16px; flex: none; }
+
+.btn { font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: 10px; padding: 10px 18px;
+       cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+       gap: 8px; background: var(--card); color: var(--text); border-color: var(--line-strong); }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.big { padding: 13px 22px; font-size: 17px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 18px; }
+@media (max-width: 480px) { .actions .btn { flex: 1 1 100%; } }
+
+.file { display: flex; gap: 12px; align-items: center; }
+.file svg { width: 36px; height: 36px; flex: none; color: var(--accent); }
+.file .name { font-weight: 600; word-break: break-word; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 13px; font-weight: 600;
+         background: var(--accent-soft); color: var(--accent); margin-left: 4px; }
+
+.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 18px 0 8px; }
+.bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+/* chưa biết tiến độ (đang chờ máy chủ): vệt chạy qua lại */
+.bar.wait > div { width: 30%; animation: wait 1.3s ease-in-out infinite alternate; }
+@keyframes wait { from { margin-left: 0; } to { margin-left: 70%; } }
+@media (prefers-reduced-motion: reduce) { .bar.wait > div { animation: none; width: 100%; opacity: .35; } }
+
+.note { margin: 16px 0 0; }
+.check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--accent); flex: none; }
+details.more { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+details.more summary { cursor: pointer; color: var(--muted); font-size: 15px; }
+.radio { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; cursor: pointer; }
+.radio input { margin: 5px 0 0; accent-color: var(--accent); flex: none; }
+.lang { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+select { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
+         background: var(--card); color: var(--text); }
+
+.done-head { display: flex; gap: 10px; align-items: center; margin: 20px 0 4px; font-size: 20px; color: var(--ok); }
+.done-head svg { width: 26px; height: 26px; }
+ul.notes { margin: 12px 0 0; padding-left: 20px; }
+ul.notes li { margin: 2px 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+.stats div { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+.stats small { color: var(--muted); display: block; font-size: 12px; }
+.tip { margin: 16px 0 0; }
+
+.error { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad-stroke); border-radius: 10px;
+         padding: 12px 14px; margin-bottom: 14px; }
+
+footer.wrap { padding-top: 24px; padding-bottom: 40px; text-align: center; font-size: 14px; color: var(--muted); }
+footer a { color: var(--muted); }
+#log { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all;
+       background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; max-height: 420px;
+       overflow: auto; text-align: left; }
+#log .req { color: var(--accent); font-weight: 600; }

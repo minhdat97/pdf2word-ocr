@@ -27,6 +27,7 @@ from .layout import canonical, looks_like_page_label, looks_like_page_number
 from .model import TAB, PageLayout, Paragraph, Picture, Run
 from .native import HEADER_ZONE, image_page, native_page
 from .ocr import ocr_page
+from .settings import MAX_DRAWINGS
 
 MODES = ("basic", "ocr", "ocr-full")
 
@@ -384,7 +385,8 @@ def convert(
         kind = page_kind(page)["kind"]
         if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
             layout = ocr_page(page, languages)
-        elif kind == "scan":
+        elif kind == "scan" or len(page.get_cdrawings()) > MAX_DRAWINGS:
+            # (tens of thousands of vector paths would take the layout analysis hours)
             layout = image_page(page)
         else:
             layout = native_page(page, languages if mode == "ocr" else None, strip=strip)

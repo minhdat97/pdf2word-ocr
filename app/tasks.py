@@ -16,7 +16,14 @@ from . import storage
 from .analyze import analyse
 from .convert import convert
 from .errors import TaskError
-from .settings import DEFAULT_OCR_LANGUAGES, TASK_TTL_SECONDS, TESSDATA_DIR, WORKERS
+from .settings import (
+    DEFAULT_OCR_LANGUAGES,
+    MAX_PENDING_TASKS,
+    MAX_TASKS_PER_FILE,
+    TASK_TTL_SECONDS,
+    TESSDATA_DIR,
+    WORKERS,
+)
 
 log = logging.getLogger("pdf2word.tasks")
 
@@ -24,6 +31,15 @@ TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 TOOLS = ("analyse-document", "pdf-to-word")
 # ocr_type -> conversion mode ("solid-ocr" is accepted as another name for "ocr").
 OCR_TYPES = {"": "basic", "ocr": "ocr", "solid-ocr": "ocr", "ocr-full": "ocr-full"}
+
+
+class Busy(Exception):
+    """A task refused for load: `code` is "busy" (the queue is full) or
+    "too_many_tasks" (this file already has one running, or has had enough)."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 def available_languages() -> list[str]:
@@ -118,6 +134,12 @@ class TaskManager:
         with self._lock:
             if task.task_id in self._tasks:
                 raise ValueError("duplicate task_id")
+            unfinished = [t for t in self._tasks.values() if t.status in ("queued", "processing")]
+            same_file = [t for t in self._tasks.values() if t.input_tokens == task.input_tokens]
+            if len(same_file) >= MAX_TASKS_PER_FILE or any(t.input_tokens == task.input_tokens for t in unfinished):
+                raise Busy("too_many_tasks")
+            if len(unfinished) >= MAX_PENDING_TASKS:
+                raise Busy("busy")
             self._tasks[task.task_id] = task
         self._pool.submit(self._run, task)
         return task

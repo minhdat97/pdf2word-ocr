@@ -19,6 +19,18 @@ MAX_UPLOAD_BYTES = int(os.environ.get("P2W_MAX_UPLOAD_MB", 50)) * 1024 * 1024
 MAX_PAGES = int(os.environ.get("P2W_MAX_PAGES", 50))
 WORKERS = int(os.environ.get("P2W_WORKERS", 2))
 
+# Limits against abuse (a public service on a small server). Exam PDFs are A4/B5 with at
+# most a few hundred drawings per page; the limits are far above that.
+MAX_PAGE_PT = 3000  # longest page side (A0 is 3370pt; renders of bigger pages exhaust memory)
+MAX_DRAWINGS = 20000  # vector paths on one page; more is kept as a picture of the page
+MAX_STORAGE_BYTES = int(os.environ.get("P2W_MAX_STORAGE_MB", 4096)) * 1024 * 1024  # all files in DATA_DIR
+MAX_PENDING_TASKS = int(os.environ.get("P2W_MAX_PENDING", 20))  # queued or running, all users
+MAX_TASKS_PER_FILE = 6  # analyse + conversions with other options
+# requests per client IP in RATE_WINDOW_SECONDS (a school shares one IP: generous)
+RATE_WINDOW_SECONDS = 10 * 60
+RATE_UPLOADS = int(os.environ.get("P2W_RATE_UPLOADS", 40))
+RATE_TASKS = int(os.environ.get("P2W_RATE_TASKS", 120))
+
 OCR_DPI = 300
 OCR_MAX_SIDE_PX = 4500
 DEFAULT_OCR_LANGUAGES = ["vie"]

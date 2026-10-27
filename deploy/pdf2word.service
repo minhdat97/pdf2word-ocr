@@ -1,0 +1,44 @@
+# Dịch vụ systemd của pdf2word trên máy chủ (Ubuntu, người dùng ubuntu, mã ở ~/pdf2word-ocr).
+# scripts/deploy.sh cài lại file này vào /etc/systemd/system/ mỗi khi nó đổi.
+[Unit]
+Description=pdf2word-ocr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/pdf2word-ocr
+Environment=P2W_WORKERS=2
+# Chỉ nghe nội bộ: người dùng vào qua Cloudflare Tunnel.
+ExecStart=/home/ubuntu/pdf2word-ocr/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-server-header --limit-concurrency 200
+Restart=always
+RestartSec=3
+
+# Một file độc làm tốn RAM/CPU thì chỉ dịch vụ này bị dừng rồi tự chạy lại, máy vẫn SSH được.
+MemoryMax=80%
+TasksMax=512
+LimitNOFILE=4096
+
+# Hộp cát: không ghi được đâu ngoài thư mục data, không leo quyền, không thấy /tmp của tiến trình khác.
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/pdf2word-ocr/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

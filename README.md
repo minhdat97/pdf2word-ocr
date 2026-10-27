@@ -21,11 +21,25 @@ Muốn thêm ngôn ngữ, tải `<lang>.traineddata` từ
 https://github.com/tesseract-ocr/tessdata_best vào `tessdata/`; giao diện tự hiện thêm.
 
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
-`P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `TESSERACT_CMD`.
+`P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
+`P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`.
+
+Bảo vệ khi chạy công khai:
+- Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
+  127.0.0.1): 40 lần tải lên, 120 lần xử lý mỗi 10 phút. Hàng đợi tối đa 20 việc; mỗi file một
+  việc chạy cùng lúc, tối đa 6 lần. Tổng file lưu tối đa 4 GB. Trang dài hơn 3000pt bị từ chối;
+  trang hơn 20.000 nét vẽ giữ thành ảnh.
+- Header: CSP chỉ cho script/CSS của chính trang (`static/app.js`, `app.css`), cấm nhúng iframe,
+  nosniff, HSTS; `/v1/*` có `Cache-Control: no-store` (Cloudflare mặc định lưu đệm .pdf/.docx).
+  Không có `/docs`, `/openapi.json`. File lưu với quyền 600.
+- `deploy/pdf2word.service`: hộp cát systemd (chỉ ghi được `data/`, `PrivateTmp`,
+  `NoNewPrivileges`…) và `MemoryMax=80%`; `scripts/deploy.sh` cài lại file này khi nó đổi và tự trả
+  lại bản cũ nếu dịch vụ mới không lên.
 
 Cập nhật bản chạy trên máy chủ (dịch vụ systemd `pdf2word`): `./scripts/deploy.sh`. Script
-`git pull`, cài lại thư viện khi `requirements.txt` đổi và chỉ restart khi `app/` đổi (giao diện
-`static/` đọc thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
+`git pull`, cài lại thư viện khi `requirements.txt` đổi, cài lại dịch vụ khi
+`deploy/pdf2word.service` đổi và chỉ restart khi `app/` hoặc dịch vụ đổi (giao diện `static/` đọc
+thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
 
 ## Luồng API
 
