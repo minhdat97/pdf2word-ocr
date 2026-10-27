@@ -719,14 +719,20 @@ def _unknown_word(items) -> str | None:
 
 
 def _split_tail(items):
-    """(equation items, tail text): a unit and the final punctuation after the last 2-D part leave the equation."""
+    """(equation items, tail text): a unit and the final punctuation after the last 2-D part leave the equation,
+    and so does a closing bracket at the end that opens nowhere in it (the sentence's: "(V=\\frac{4}{3}\\pi R^3)")."""
     last = max((i for i, n in enumerate(items) if any(m[0] == "f" and m[1] in TWO_D for m in _walk([n]))), default=-1)
     rest = _text(items[last + 1 :])
     m = re.fullmatch(r"\s*([A-Za-zΩ°%/]*)\s*([.,;:]*)", rest) if rest is not None else None
     if m:
         return items[: last + 1], (" " + m.group(1) if m.group(1) else "") + m.group(2)
+    unopened = sum(n == ["t", ")"] for n in _walk(items)) - sum(n == ["t", "("] for n in _walk(items))
     k = len(items)
-    while k > last + 1 and items[k - 1] in (["t", "."], ["t", ","], ["t", ";"], ["t", ":"], ["t", "\\ "]):
+    while k > last + 1 and (
+        items[k - 1] in (["t", "."], ["t", ","], ["t", ";"], ["t", ":"], ["t", "\\ "])
+        or items[k - 1] == ["t", ")"] and unopened > 0
+    ):
+        unopened -= items[k - 1] == ["t", ")"]
         k -= 1
     return items[:k], (_text(items[k:]) or "").strip()
 

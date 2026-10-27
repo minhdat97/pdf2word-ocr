@@ -86,6 +86,11 @@ class DecideTest(unittest.TestCase):
         self.assertEqual((d.kind, d.latex, d.tail), ("eq", "400\\sqrt{2}", " m/s."))
         d = M.decide("V = { \\frac { 4 } { 3 } } \\pi R ^ { 3 }", 0.97, "Z7 = 1 ZÑ`)")
         self.assertEqual((d.latex, d.tail), ("V=\\frac{4}{3}\\pi R^{3}", ""))
+        # the sentence's closing bracket stays text after the equation; brackets of the formula stay in it
+        d = M.decide("V = \\frac { 4 } { 3 } \\pi R ^ { 3 } )", 0.97, "V = 15R) 4")
+        self.assertEqual((d.latex, d.tail), ("V=\\frac{4}{3}\\pi R^{3}", ")"))
+        d = M.decide("f ( \\frac { 1 } { 2 } ) .", 0.97, "")
+        self.assertEqual((d.latex, d.tail), ("f(\\frac{1}{2})", "."))
         d = M.decide("\\overline { { L } } = 4 5 , 2 2 \\mathrm { ~ m m }", 0.993, "J =45,22 mm,")
         self.assertEqual((d.kind, d.latex), ("eq", "\\overline{L}=45,22\\ mm"))
 

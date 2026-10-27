@@ -253,9 +253,10 @@ tắt.
      kéo thành hình vuông): hệ số mà mô hình đọc chữ sau nó vào chỉ số ("4_{VO}") được viết lại
      "4v_{O}" khi nét chữ có đúng chừng ấy cụm số, chữ cao bằng chữ thường đứng trên đường chân chữ,
      nét hạ thấp; chữ đầu vùng mà chiều cao nét đã cho biết hoa/thường lấy theo nét ("V_{H}" →
-     "v_{H}"), không bị bỏ vì khác Tesseract. Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
-     (chữ thường + chỉ số trên/dưới, hay Equation + đơn vị/dấu chấm sau nó); vùng cao (phân số,
-     căn) không đọc được thành ảnh công thức trên dòng chữ như trang có text; vùng khác giữ chữ OCR.
+     "v_{H}"), không bị bỏ vì khác Tesseract. Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ
+     nhãn), đặt kết quả vào chỗ đó (chữ thường + chỉ số trên/dưới, hay Equation + đơn vị, dấu chấm,
+     dấu ngoặc đóng của câu sau nó); vùng cao (phân số, căn) không đọc được thành ảnh công thức
+     trên dòng chữ như trang có text; vùng khác giữ chữ OCR.
      Chữ của công thức không đậm, không màu theo đoạn.
   4. Giữ hình: mực không phải chữ đáng tin, không phải nét kẻ mảnh (hình vẽ, ảnh, con dấu,
      chữ ký) thành ảnh nổi cắt từ bản màu; nhãn ngắn sát hình đi cùng hình.
