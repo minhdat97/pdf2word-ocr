@@ -66,6 +66,16 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(vietocr.choose("B.343m/s.", 58, "B. 343 m/s.", 0.88), "B. 343 m/s.")
         self.assertEqual(vietocr.choose("C.621.102T.", 52, "C.6,21.10-23 J.", 0.90), "C.6,21.10-23 J.")
         self.assertEqual(vietocr.choose("d)ở", 85, "d) ở", 0.93), "d) ở")
+        # no word beside it: a glyph Tesseract's box holds but it did not read
+        self.assertEqual(vietocr.choose("B.", 68, "B. V", 0.89, (False, False)), "B. V")
+        self.assertEqual(vietocr.choose("B.", 68, "B. V", 0.89, (False, True)), "B.")
+        self.assertEqual(vietocr.choose("chuyển", 87, "ố chuyên", 0.82, (False, True)), "ố chuyên")
+
+    def test_words_beside(self):
+        ln = Line(block=1, par=1, baseline=60.0, em_px=40.0)  # line 40 px high: crops padded 10 px
+        ln.words = [Word(0, 30, 50, 70, 90.0, "từ", 0, 40.0), Word(58, 30, 120, 70, 90.0, "8m", 0, 40.0),
+                    Word(100, 30, 130, 70, 90.0, "về", 0, 40.0), Word(200, 30, 230, 70, 90.0, "B.", 0, 40.0)]
+        self.assertEqual(vietocr.word_sides([ln]), [(False, True), (True, True), (True, False), (False, False)])
 
 
 # expected values from Pillow 13: Image.fromarray(img).resize((w, h), Image.LANCZOS)

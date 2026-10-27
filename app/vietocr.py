@@ -301,20 +301,24 @@ def _drops_marks(tess: str, vocr: str) -> bool:
     return any(p in tess and q in tess[tess.index(p) :] and (p not in vocr or q not in vocr) for p, q in ("[]", "{}"))
 
 
-def _sliver(tess: str, vocr: str) -> bool:
-    """VietOCR's reading has more words than Tesseract's and starts or ends with one whose letters and digits stand
-    for nothing Tesseract read: a piece of the word before or after it in the crop ("chuyển" read "ố chuyên", "8m"
-    read "8 m về" before "về", "PHẦN" read "PHẦN I." before "I."). Splitting Tesseract's glued text ("B.343m/s." ->
-    "B. 343 m/s.") and a letter read otherwise ("C.621.102T." -> "C.6,21.10-23 J.") are not."""
+def _sliver(tess: str, vocr: str, sides: tuple[bool, bool]) -> bool:
+    """VietOCR's reading has more words than Tesseract's and starts (ends) with one whose letters and digits stand
+    for nothing Tesseract read, on a side where another word of the line reaches into the crop (sides: left, right):
+    a piece of that word ("chuyển" read "ố chuyên", "8m" read "8 m về" where Tesseract's box runs into "về", "c)" read
+    "c) ở" around "Ở"). Without a word there, it is a glyph of the box Tesseract left out ("B." read "B. v").
+    Splitting Tesseract's glued text ("B.343m/s." -> "B. 343 m/s.") and a letter read otherwise ("C.621.102T." ->
+    "C.6,21.10-23 J.") are not slivers."""
     spans = [m.span() for m in re.finditer(r"\S+", vocr)]
     if len(spans) <= len(tess.split()):
         return False
     read = {j for tag, _, _, j0, j1 in _blocks(tess, vocr) if tag != "insert" for j in range(j0, j1) if vocr[j].isalnum()}
-    return any(any(c.isalnum() for c in vocr[a:b]) and not read & set(range(a, b)) for a, b in (spans[0], spans[-1]))
+    return any(side and any(c.isalnum() for c in vocr[a:b]) and not read & set(range(a, b))
+               for side, (a, b) in zip(sides, (spans[0], spans[-1])))
 
 
-def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
-    """The word to keep from Tesseract's reading (confidence 0-100) and VietOCR's (probability 0-1)."""
+def choose(tess: str, conf: float, vocr: str, prob: float, sides: tuple[bool, bool] = (True, True)) -> str:
+    """The word to keep from Tesseract's reading (confidence 0-100) and VietOCR's (probability 0-1). sides: another
+    word of the line reaches into the crop on the left, on the right (word_sides)."""
     if not vocr.strip():
         return tess
     # "°" is not in VietOCR's vocabulary: it writes "?" ("A.8,3 ?C." for "A.83°C.").
@@ -333,7 +337,7 @@ def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
         return tess
     if any(vocr.count(ch) < tess.count(ch) for ch in MATH_CHARS & set(tess)):
         return tess
-    if _drops_marks(tess, vocr) or _sliver(tess, vocr):
+    if _drops_marks(tess, vocr) or _sliver(tess, vocr, sides):
         return tess
     return _case_of(tess, vocr) if conf >= CASE_CONF else vocr
 
@@ -350,6 +354,19 @@ def word_crops(lines: list, gray: np.ndarray) -> list[np.ndarray]:
     return out
 
 
+def word_sides(lines: list) -> list[tuple[bool, bool]]:
+    """For each word's crop (word_crops): whether another word of its line starts before it and ends inside the crop's
+    left margin or later, and whether one starts after it and inside the crop's right margin or earlier."""
+    out = []
+    for ln in lines:
+        pad = int(0.25 * (max(wd.y1 for wd in ln.words) - min(wd.y0 for wd in ln.words)))
+        for wd in ln.words:
+            others = [o for o in ln.words if o is not wd]
+            out.append((any(o.x0 < wd.x0 and o.x1 > wd.x0 - pad for o in others),
+                        any(o.x0 > wd.x0 and o.x0 < wd.x1 + pad for o in others)))
+    return out
+
+
 def refine_words(lines: list, gray: np.ndarray, reader: VietOCR) -> int:
     """Re-read Tesseract's words (app.ocr Line/Word, before fix_lines) with VietOCR and keep
     the better reading of each. Returns how many words changed."""
@@ -359,10 +376,11 @@ def refine_words(lines: list, gray: np.ndarray, reader: VietOCR) -> int:
     if not todo:
         return 0
     reads = reader.read([crops[i] for i in todo])
+    sides = word_sides(lines)
     changed = 0
     for i, (text, prob) in zip(todo, reads):
         wd = words[i]
-        new = choose(wd.text, wd.conf, text, prob)
+        new = choose(wd.text, wd.conf, text, prob, sides[i])
         if new != wd.text:
             wd.text = new
             changed += 1
