@@ -56,6 +56,17 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(vietocr.choose("0.25", 68, "0,25", 0.93), "0,25")
         self.assertEqual(vietocr.choose("II.", 62, "III", 0.90), "III")
 
+    def test_no_pieces_of_neighbour_words(self):
+        # a word VietOCR read at the crop's edge from the next or previous word: Tesseract's word
+        self.assertEqual(vietocr.choose("chuyển", 87, "ố chuyên", 0.82), "chuyển")
+        self.assertEqual(vietocr.choose("8m", 85, "8 m về", 0.91), "8m")
+        self.assertEqual(vietocr.choose("PHÀN", 0, "PHẦN I.", 0.92), "PHÀN")
+        self.assertEqual(vietocr.choose("THẦY", 72, "Thầy E", 0.82), "THẦY")
+        # glued text split, a letter read otherwise: VietOCR's words
+        self.assertEqual(vietocr.choose("B.343m/s.", 58, "B. 343 m/s.", 0.88), "B. 343 m/s.")
+        self.assertEqual(vietocr.choose("C.621.102T.", 52, "C.6,21.10-23 J.", 0.90), "C.6,21.10-23 J.")
+        self.assertEqual(vietocr.choose("d)ở", 85, "d) ở", 0.93), "d) ở")
+
 
 # expected values from Pillow 13: Image.fromarray(img).resize((w, h), Image.LANCZOS)
 PILLOW_CASES = {

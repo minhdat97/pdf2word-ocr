@@ -278,6 +278,18 @@ def _drops_marks(tess: str, vocr: str) -> bool:
     return any(p in tess and q in tess[tess.index(p) :] and (p not in vocr or q not in vocr) for p, q in ("[]", "{}"))
 
 
+def _sliver(tess: str, vocr: str) -> bool:
+    """VietOCR's reading has more words than Tesseract's and starts or ends with one whose letters and digits stand
+    for nothing Tesseract read: a piece of the word before or after it in the crop ("chuyển" read "ố chuyên", "8m"
+    read "8 m về" before "về", "PHẦN" read "PHẦN I." before "I."). Splitting Tesseract's glued text ("B.343m/s." ->
+    "B. 343 m/s.") and a letter read otherwise ("C.621.102T." -> "C.6,21.10-23 J.") are not."""
+    spans = [m.span() for m in re.finditer(r"\S+", vocr)]
+    if len(spans) <= len(tess.split()):
+        return False
+    read = {j for tag, _, _, j0, j1 in _blocks(tess, vocr) if tag != "insert" for j in range(j0, j1) if vocr[j].isalnum()}
+    return any(any(c.isalnum() for c in vocr[a:b]) and not read & set(range(a, b)) for a, b in (spans[0], spans[-1]))
+
+
 def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
     """The word to keep from Tesseract's reading (confidence 0-100) and VietOCR's (probability 0-1)."""
     if not vocr.strip():
@@ -298,7 +310,7 @@ def choose(tess: str, conf: float, vocr: str, prob: float) -> str:
         return tess
     if any(vocr.count(ch) < tess.count(ch) for ch in MATH_CHARS & set(tess)):
         return tess
-    if _drops_marks(tess, vocr):
+    if _drops_marks(tess, vocr) or _sliver(tess, vocr):
         return tess
     return _case_of(tess, vocr) if conf >= CASE_CONF else vocr
 

@@ -208,6 +208,9 @@ tắt.
      chữ cái trùng với chữ Tesseract tin ≥60, không bỏ dấu câu hay ngoặc Tesseract đọc được
      ("T,;" → "T,": giữ chữ Tesseract; dấu đọc thành dấu khác hay thành chữ, "0.25" → "0,25", thì
      được), dấu . , ; : cuối từ VietOCR bỏ sót thì thêm lại ("Lần" → "lần.", "Nan3" → "NaN3.").
+     Ô cắt rộng hơn khoảng cách giữa hai từ nên có mẩu chữ của từ bên cạnh: VietOCR đọc thêm một từ
+     ở đầu hay cuối mà Tesseract không đọc thấy chữ nào ("chuyển" → "ố chuyên", "8m" → "8 m về" ngay
+     trước "về") thì giữ chữ Tesseract; tách chữ dính ("B.343m/s." → "B. 343 m/s.") vẫn lấy.
      Sửa lỗi theo cấu trúc đề (`app/ocr_fix.py`), chỉ chỗ cấu trúc tự quyết được, không chọn giữa
      hai từ có thật ("chuyên"/"chuyển"):
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";
