@@ -239,7 +239,10 @@ tắt.
      Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract…; mô hình không có chữ tiếng Việt nên kết quả viết một từ của vùng không dấu, "và" →
-     "va", cũng bị bỏ). Vùng đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
+     "va", cũng bị bỏ). Dấu trừ đầu số mũ mà mọi lần đọc đều viết thành ký hiệu lạ
+     ("7,66.10^{\mu^{22}} J.": các lần cắt chỉ khác lề nên sai giống nhau) thì đọc thêm phần số bỏ
+     đơn vị cuối: lần đọc đó có "-" và khớp phần còn lại thì các lần kia tính phiếu cho nó. Vùng
+     đọc được: bỏ mọi từ OCR có tâm trong vùng (giữ nhãn), đặt kết quả vào chỗ đó
      (chữ thường + chỉ số trên/dưới, hay Equation + đơn vị/dấu chấm sau nó); vùng cao (phân số,
      căn) không đọc được thành ảnh công thức trên dòng chữ như trang có text; vùng khác giữ chữ OCR.
      Chữ của công thức không đậm, không màu theo đoạn.

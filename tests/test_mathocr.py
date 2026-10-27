@@ -195,6 +195,21 @@ class ReadRegionsTest(unittest.TestCase):
         self.assertEqual([as_text(d) for d in ds], ["10^{5}", "1,22", None])
         self.assertEqual(reader.passes, [3, 3, 1])
 
+    def test_minus_read_as_a_symbol_confirmed_without_the_unit(self):
+        gray = np.full((100, 300), 255, np.uint8)
+        for x0, x1 in ((20, 60), (64, 100), (104, 160), (172, 190)):  # a number, a blank gap, the unit
+            gray[30:60, x0:x1] = 0
+        crop = M.cut(gray, (10, 20, 200, 70))
+        self.assertEqual(M._without_unit(crop).shape, (30, 140))
+        self.assertIsNone(M._without_unit(crop[:, :140]))  # no unit after the number
+        junk = [("\\mathrm { 7 , 6 6 . 1 0 ^ { \\mu ^ { 2 2 } } \\, J . }", 0.94),
+                ("\\mathrm { 7 , 6 6 . 1 0 ^ { \\theta ^ { 2 2 } } \\, J . }", 0.97)]
+        for head, want in (("7 , 6 6 . 1 0 ^ { - 2 2 }", "7,66.10^{-22} J."), ("7 , 6 6 . 1 0 ^ { 2 2 }", None)):
+            reader = FakeReader({176: junk, 146: [(head, 0.97)]})
+            ds = M.read_regions(gray, [(10, 20, 200, 70)], ["7,66.1022J."], reader=reader)
+            self.assertEqual([as_text(d) for d in ds], [want])
+            self.assertEqual(reader.passes, [1, 1, 1, 1])
+
     def test_model_off(self):
         with mock.patch.object(M, "get_reader", return_value=None):
             self.assertEqual(M.read_regions(np.zeros((10, 10), np.uint8), [(0, 0, 5, 5)], [""]), [None])
