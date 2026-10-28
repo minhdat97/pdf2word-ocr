@@ -22,7 +22,8 @@ https://github.com/tesseract-ocr/tessdata_best vào `tessdata/`; giao diện t�
 
 VietOCR (nên có cho file scan tiếng Việt) đọc lại các từ Tesseract chưa chắc, sửa dấu và chữ
 Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang ONNX, trọng số float16,
-76 MB, chạy bằng onnxruntime, không cần PyTorch) không nằm trong git, lấy về `models/vietocr/`:
+76 MB, chạy bằng onnxruntime, không cần PyTorch) và mô hình công thức không nằm trong git, lấy về
+`models/`:
 
 ```bash
 .venv/bin/python scripts/fetch_models.py                   # tải theo scripts/models.json
@@ -31,24 +32,29 @@ Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang O
 .venv/bin/python scripts/fetch_models.py --model mfr       # chỉ một mô hình
 ```
 
-VietOCR chưa có địa chỉ tải trong `scripts/models.json`: dựng `models/vietocr/` bằng
-`scripts/export_vietocr.py` trên máy có PyTorch rồi đưa lên máy chủ bằng `--from <thư mục>`.
-Script kiểm SHA-256 từng file; các file mới của một mô hình chỉ thay file cũ khi đã đủ và đúng
-cả (tải hỏng giữa chừng thì mô hình giữ nguyên bộ file cũ, không lẫn cũ với mới). Dịch vụ đang
-chạy tự thấy mô hình mới chép vào, không cần restart; mô hình hỏng khi đọc (file lệch nhau) thì
-tắt tới lần restart sau, trang vẫn chuyển bằng chữ Tesseract. Không có mô hình (hoặc
-`P2W_VIETOCR=0`) thì công cụ chạy như trước, chỉ Tesseract.
+Các file tải từ bản phát hành GitHub `models-2026-10-28` của repo này (VietOCR float16 và int8, hai
+nửa bộ giải mã công thức; trang phát hành ghi cách làm và giấy phép) và nơi công bố gốc của mô hình
+công thức (ghim theo bản). `--from` nhận thư mục có các file dưới tên trong `scripts/models.json`
+hay tên file của bản phát hành (`vietocr-encoder.onnx`…). Script kiểm SHA-256 từng file; file một
+mô hình khác đã có (VietOCR int8 dùng chung `decoder.onnx`, `config.json` với bản float16) được chép,
+không tải lại; các file mới của một mô hình chỉ thay file cũ khi đã đủ và đúng cả (tải hỏng giữa
+chừng thì mô hình giữ nguyên bộ file cũ, không lẫn cũ với mới). Dịch vụ đang chạy tự thấy mô hình
+mới chép vào, không cần restart; mô hình hỏng khi đọc (file lệch nhau) thì tắt tới lần restart sau,
+trang vẫn chuyển bằng chữ Tesseract. Không có mô hình (hoặc `P2W_VIETOCR=0`) thì công cụ chạy như
+trước, chỉ Tesseract. Đổi mô hình: đăng file lên một bản phát hành mới (`models-<ngày>`), đổi địa chỉ
+và SHA-256 trong `scripts/models.json`; `scripts/deploy.sh` tải về.
 
 Từ được đọc lại (`P2W_VIETOCR_WORDS`): mặc định `unsure` – từ Tesseract tin dưới 92 và từ có chữ
 â ă ê ô không dấu thanh hay dấu huyền (Tesseract chắc mà vẫn hay sót dấu ở đó: "chuyên" thay "chuyển",
 "thăng" thay "thẳng"), khoảng 30 % số từ; `all`: mọi từ. Trên 30 trang scan thử `unsure` cho số từ đúng
 như `all` (từ chắc khác gần như không bao giờ được VietOCR sửa đúng) mà VietOCR chỉ tốn ~40 % thời gian.
-Bản int8 (tuỳ chọn, cho máy chủ nhỏ): `scripts/quantize_vietocr.py models/vietocr models/vietocr-int8
-<file scan>.pdf ...` (cần thêm gói `onnx`, ~6 GB RAM, chạy trên máy dev) đổi các lớp tích chập của bộ mã
-hoá sang int8, hiệu chỉnh trên chữ của các trang scan đưa vào (nên là scan thật, không phải file dùng để
-đo); chép thư mục lên máy chủ, dùng bằng `P2W_VIETOCR_DIR=models/vietocr-int8`. Trên CPU ARM của Mac (một
-luồng, không KleidiAI) VietOCR nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ; tốc độ trên máy
-chủ phụ thuộc lệnh int8 của CPU, cần đo trên máy chủ trước khi dùng.
+Bản int8 (cho máy chủ nhỏ, `models/vietocr-int8`, `fetch_models.py` tải cùng bản float16): các lớp tích
+chập của bộ mã hoá đổi sang int8 (`scripts/quantize_vietocr.py`, hiệu chỉnh trên chữ của các trang scan).
+`P2W_VIETOCR_INT8=1` dùng bản này khi thư mục đủ file (không thì bản float16; `P2W_VIETOCR_DIR` đặt thì
+luôn dùng thư mục đó). Trên CPU ARM của Mac (một luồng, không KleidiAI) VietOCR
+nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ. Mặc định tắt: tốc độ trên máy chủ phụ thuộc
+lệnh int8 của CPU, cần đo trên máy chủ trước; bật mặc định là đổi `"0"` thành `"1"` ở dòng `VIETOCR_INT8`
+của `app/settings.py`.
 
 **Công thức trên trang scan** có hai cách đọc; vùng công thức tìm như nhau (`app/mathregions.py`):
 **phương án trả lời** (sau nhãn "A."–"D.", kể cả nhãn Tesseract đọc sai hay bỏ sót), **công thức hai
@@ -61,17 +67,23 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   đối chiếu với nét chữ; không chắc thì giữ chữ OCR. Phân số, căn thành ảnh trong dòng. Cần Tesseract
   4.1 trở lên (danh sách ký tự có dấu cách, `hocr_char_boxes`): chạy `tests/test_scriptocr.py` trên máy
   chủ, phép thử in một trang rồi đọc lại. `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
-- **"Đọc kỹ"** (tuỳ chọn `"careful": true` của tác vụ, xem Luồng API; giao diện chưa có ô chọn): mô hình
-  pix2text-mfr-1.5 (giấy phép MIT, ONNX ~120 MB, chạy bằng onnxruntime) đọc vùng công thức thành LaTeX.
-  Kết quả tin được thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới, căn,
-  phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Lấy mô hình về
-  `models/mfr/` bằng `scripts/fetch_models.py` (địa chỉ ghim theo phiên bản trong `scripts/models.json`).
-  Nên tách bộ giải mã: `scripts/split_mfr_decoder.py models/mfr` (cần gói `onnx`, chạy trên máy dev)
-  tạo `cross_kv.onnx` (khoá/giá trị cross-attention của một vùng, tính một lần) và `decoder_step.onnx`;
-  chép hai file vào `models/mfr/` của máy chủ rồi restart: kết quả giữ nguyên, phần đọc công thức nhanh
-  khoảng gấp đôi (`fetch_models.py --check` bỏ qua file thêm; thiếu một trong hai file thì dùng
-  `decoder_model.onnx`). Chậm (xem Máy chủ nhỏ) nên chỉ dùng cho file có tối đa `P2W_MFR_MAX_PAGES` (5)
-  trang scan; file dài hơn, máy không có mô hình hay mô hình hỏng thì đọc kiểu mặc định.
+- **"Đọc kỹ"** (ô "Đọc kỹ công thức" của giao diện; tuỳ chọn `"careful": true` của tác vụ, xem Luồng API):
+  mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX ~120 MB khi chạy, onnxruntime) đọc vùng công thức thành
+  LaTeX. Kết quả tin được thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới,
+  căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. `fetch_models.py`
+  lấy về `models/mfr/` ba file đã công bố và hai nửa của bộ giải mã (`cross_kv.onnx`: khoá/giá trị
+  cross-attention của một vùng, tính một lần; `decoder_step.onnx`; tách bằng `scripts/split_mfr_decoder.py`,
+  tải từ bản phát hành): kết quả như bộ giải mã nguyên khối, phần đọc công thức nhanh khoảng gấp đôi.
+  Thiếu một trong hai file thì dùng `decoder_model.onnx` (máy chủ chỉ có ba file cũ vẫn chạy; bỏ hai file
+  tách rồi restart là quay về bộ giải mã nguyên khối). Chậm (xem Máy chủ nhỏ) nên chỉ cho file có tối đa
+  `P2W_MFR_MAX_PAGES` (5) trang scan và mỗi lúc chỉ một lần chuyển "Đọc kỹ" (`P2W_CAREFUL_WORKERS`): lần
+  khác chờ trong hàng đợi (trạng thái `queued`, giao diện ghi "Đang chờ đến lượt đọc kỹ…"), không giữ
+  luồng nào, lần chuyển thường xếp sau nó vẫn chạy. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và
+  máy chủ đọc kỹ được (có mô hình, không tắt, không hỏng); file quá số trang scan thì ô tắt kèm lý do; khi
+  đọc kỹ dòng trạng thái ghi "mỗi trang scan khoảng 1–2 phút". Lần chuyển thường có phân số, căn giữ dạng
+  ảnh (file đọc kỹ được) thì ghi chú ghi số công thức kèm nút "chuyển lại, đọc kỹ". Qua API, file dài hơn,
+  máy không có mô hình hay mô hình hỏng thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` /
+  `formulas`).
 
 `P2W_FORMULAS`: `scripts` (mặc định), `model` (mọi lần chuyển đều "Đọc kỹ"), `off` (không đọc công
 thức; "Đọc kỹ" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_MATH_DETECT=off` tắt cả việc tìm vùng.
@@ -79,28 +91,34 @@ thức; "Đọc kỹ" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
-`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_MAX_PAGES` (30),
+`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_INT8` (`0`; `1`: bản int8
+`models/vietocr-int8`), `P2W_VIETOCR_MAX_PAGES` (30),
 `P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
+`P2W_CAREFUL_WORKERS` (1: số lần chuyển "Đọc kỹ" chạy cùng lúc),
 `P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
 
-Máy chủ nhỏ (2 lõi ARM, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình, nên
-hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
-chạy một mình, cả process ~2,5 GB). "Đọc kỹ" chỉ dùng mô hình công thức cho file có tối đa
-`P2W_MFR_MAX_PAGES` trang scan (dài hơn thì đọc công thức kiểu mặc định), file hơn `P2W_VIETOCR_MAX_PAGES`
-trang không dùng VietOCR (giao diện ghi một dòng), để một file dài không giữ máy chủ quá lâu. Thời gian
-mỗi trang scan trên máy chủ 2 lõi Neoverse-N1, một luồng (ước từ CPU đo trên Mac không dùng KleidiAI:
-Tesseract ×2,3, mô hình ×2,9 – khớp trong 10 % với lần đo thật đề VL1212 438 giây có mô hình, 17 giây không):
+Máy chủ nhỏ (2 lõi ARM Neoverse-N1, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình,
+nên hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
+chạy một mình, cả process ~2,5 GB); mỗi lúc chỉ một lần "Đọc kỹ", nên lõi kia luôn còn cho lần chuyển
+thường. File hơn `P2W_MFR_MAX_PAGES` (5) trang scan không "Đọc kỹ", file hơn `P2W_VIETOCR_MAX_PAGES` (30)
+trang scan không dùng VietOCR (giao diện ghi một dòng), để một file dài không giữ máy chủ quá lâu. Thời gian
+mỗi trang scan trên máy chủ, giây (ước từ CPU đo trên Mac không dùng KleidiAI, một luồng: Tesseract ×2,3, mô
+hình ×2,9 – khớp trong 10 % với lần đo thật đề VL1212 trên máy chủ: 438 giây có cả hai mô hình, 17 giây
+không mô hình; 2026-10-28):
 
-| cách chuyển | đề Vật lí scan 3 trang (VL1212) | 30 trang scan thử: trung bình / trang lâu nhất |
-|---|---|---|
-| chỉ Tesseract (`P2W_VIETOCR=0`, `P2W_FORMULAS=off`) | 5,4 giây | 4,4 / 9 |
-| mặc định: VietOCR `unsure` + công thức không mô hình | 20 | 12 / 33 |
-| mặc định, VietOCR int8 (chưa đo tốc độ int8 trên máy chủ: có thể tới 17 / 10,5) | 12 | 8 / 21 |
-| "Đọc kỹ": thêm mô hình công thức, bộ giải mã tách đôi | 74 (trang dày 105) | 35 / 114 |
-| bản trước (mọi lần chuyển dùng cả hai mô hình, VietOCR đọc mọi từ) | 156 | 66 / 233 |
+| cách chuyển | đề Vật lí scan 3 trang (VL1212): trung bình (từng trang) | bản scan giả 6 trang của đề Vật lí khác | 30 trang scan thử: trung bình / trung vị / trang lâu nhất |
+|---|---|---|---|
+| chỉ Tesseract (`P2W_VIETOCR=0`, `P2W_FORMULAS=off`) | 5,4 (6 / 7 / 3) | 4,7 | 4,4 / 5,4 / 9 |
+| mặc định: VietOCR `unsure` + công thức không mô hình | 19,7 (25 / 26 / 8) | 12,4 | 12,2 / 14,7 / 33 |
+| mặc định, VietOCR int8 (`P2W_VIETOCR_INT8=1`; int8 chưa đo trên máy chủ: lệnh int8 chậm thì có thể tới ~17 / ~10,5) | 12,4 (16 / 16 / 6) | 8,3 | 8,2 / 9,7 / 21 |
+| "Đọc kỹ": thêm mô hình công thức, bộ giải mã tách đôi | 73,9 (105 / 105 / 12) | 30,2 | 34,6 / 21,7 / 114 |
+| bản trước (mọi lần chuyển dùng cả hai mô hình, VietOCR đọc mọi từ) | 155,7 (203 / 239 / 25) | 65,9 | 66,3 / 44,1 / 233 |
+
+Trang "Đọc kỹ" dày nhất (~2 phút) còn xa mức 10 phút giao diện bỏ cuộc; một file 5 trang dày giữ lượt
+"Đọc kỹ" ~9 phút, lần "Đọc kỹ" sau chờ trong lúc đó.
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -114,10 +132,15 @@ Bảo vệ khi chạy công khai:
   `NoNewPrivileges`…) và `MemoryMax=80%`; `scripts/deploy.sh` cài lại file này khi nó đổi và tự trả
   lại bản cũ nếu dịch vụ mới không lên.
 
-Cập nhật bản chạy trên máy chủ (dịch vụ systemd `pdf2word`): `./scripts/deploy.sh`. Script
-`git pull`, cài lại thư viện khi `requirements.txt` đổi, cài lại dịch vụ khi
-`deploy/pdf2word.service` đổi và chỉ restart khi `app/` hoặc dịch vụ đổi (giao diện `static/` đọc
-thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
+Cập nhật bản chạy trên máy chủ (dịch vụ systemd `pdf2word`): `./scripts/deploy.sh`. Script `git pull` rồi
+so với bản đã triển khai lần trước (ghi trong `.git/pdf2word-deployed` sau mỗi lần xong; chưa có thì coi
+như mọi thứ đổi), nên `git pull` tay trước đó không làm sót gì: cài lại thư viện khi `requirements.txt`
+đổi, tải mô hình khi `scripts/models.json` đổi hoặc `fetch_models.py --check` thấy thiếu/hỏng (tải hỏng
+thì lần chạy sau tải tiếp), cài lại dịch vụ khi bản đã cài khác `deploy/pdf2word.service`, restart khi
+`app/`, mô hình hay dịch vụ đổi (giao diện `static/` đọc thẳng từ ổ đĩa). Dịch vụ không lên thì bản đó
+không được ghi, lần chạy sau làm lại. Cuối cùng nhắc một dòng nếu một drop-in systemd
+(`/etc/systemd/system/pdf2word.service.d/*.conf`) đặt `P2W_VIETOCR=0`, `P2W_MFR=0` hay `P2W_FORMULAS`,
+kèm lệnh xoá. `--restart` để restart dù không có gì đổi.
 
 ## Luồng API
 
@@ -130,9 +153,14 @@ thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
 | Poll | `GET /v1/tasks/<task_id>` → `status`, `progress`, `result.output_files`, `result.error_fe` |
 | Tải về | `GET /v1/files/<token>?name=...` |
 
+Kết quả `analyse-document` có thêm `careful`: `{"available": true, "max_scan_pages": 5}` (máy chủ
+"Đọc kỹ" được không, tối đa mấy trang scan). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc
+công thức trang scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn đọc kỹ mà file quá dài),
+`vietocr_skipped`, `formula_pictures` (vùng công thức trang scan giữ thành ảnh).
+
 Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
-trang nào xong thêm; thời gian chờ trong hàng đợi không tính, nên file scan dài có đọc công thức vẫn
-nhận được kết quả.
+trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, nên file scan dài
+hay "Đọc kỹ" vẫn nhận được kết quả.
 
 `task_id` do client sinh (32 ký tự hex). Mã lỗi `error_fe` cho giao diện: `password`,
 `corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`,
@@ -378,7 +406,7 @@ tắt.
 ```bash
 .venv/bin/python scripts/make_test_pdfs.py   # sinh samples/ (cần font Times New Roman của macOS)
 .venv/bin/python scripts/smoke_test.py       # cần server đang chạy
-.venv/bin/python -m unittest discover -s tests  # kiểm thử đơn vị (VietOCR, công thức, tải mô hình)
+.venv/bin/python -m unittest discover -s tests  # kiểm thử đơn vị (VietOCR, công thức, tải mô hình, hàng đợi)
 ```
 
 `exam-like.pdf` kiểm tra các định dạng phải giữ: dòng VNI, số mũ/chỉ số dưới, màu, tab đáp
@@ -454,6 +482,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   của mô hình (bộ giải mã nguyên khối, vùng nào cũng đọc hai lần) cùng VietOCR `unsure`: chữ 99,7 %,
   số 93,4 %, Equation 13/24 (15/24), 47/51, 0 kết quả sai; 30 trang 97,75 % / 97,14 %, mất 3 từ đúng (3 từ
   VietOCR ở trên), thêm 6.
+- Mô hình từ bản phát hành `models-2026-10-28`: hai nửa bộ giải mã tạo lại từ bản ghim giống hệt từng byte
+  bản đã đo; với `models/` do `fetch_models.py` dựng, đề Vật lí và bản scan giả 6 trang ra .docx giống hệt
+  bản đã đo (mặc định; `P2W_VIETOCR_INT8=1` dùng đúng bản int8: thời gian như dòng int8 ở trên).
 
 ## Giới hạn
 
@@ -503,10 +534,10 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
   lộn xộn).
-- "Đọc kỹ" chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang đề nhiều công thức): quá `P2W_MFR_MAX_PAGES` (5)
-  trang scan thì đọc công thức kiểu mặc định, quá `P2W_VIETOCR_MAX_PAGES` (30) thì bỏ cả VietOCR; máy chủ
-  chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc hay số việc "Đọc kỹ" chạy
-  cùng lúc (hai việc "Đọc kỹ" giữ cả hai lõi).
+- "Đọc kỹ" chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang đề nhiều công thức): chỉ cho file tối đa
+  `P2W_MFR_MAX_PAGES` (5) trang scan, mỗi lúc một lần – lần sau có thể chờ tới ~9 phút sau một file 5 trang
+  dày; quá `P2W_VIETOCR_MAX_PAGES` (30) trang scan thì bỏ cả VietOCR; máy chủ chạy hết việc dù người dùng đã
+  đóng trang; chưa giới hạn thời gian mỗi việc.
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 
@@ -528,7 +559,9 @@ Thành phần khác: model trong `tessdata/` lấy từ
 [tesseract-ocr/tessdata_best](https://github.com/tesseract-ocr/tessdata_best) (Apache-2.0);
 Tesseract và OpenCV (Apache-2.0), python-docx và FastAPI (MIT), NumPy (BSD), ONNX Runtime
 (MIT). Mô hình trong `models/mfr/` là pix2text-mfr-1.5 (MIT), dùng nguyên các file ONNX đã công
-bố. Mô hình trong `models/vietocr/` là `vgg_transformer` của
-[VietOCR](https://github.com/pbcquoc/vietocr) (Apache-2.0), chuyển sang ONNX bằng
-`scripts/export_vietocr.py` (giữ nguyên trọng số, lưu float16). File PDF mẫu
+bố, cùng hai nửa của `decoder_model.onnx` tách bằng `scripts/split_mfr_decoder.py`. Mô hình trong
+`models/vietocr/` là `vgg_transformer` của [VietOCR](https://github.com/pbcquoc/vietocr) (Apache-2.0),
+chuyển sang ONNX bằng `scripts/export_vietocr.py` (giữ nguyên trọng số, lưu float16); `models/vietocr-int8/`
+là bản đó với bộ mã hoá lượng tử hoá int8 (`scripts/quantize_vietocr.py`). Các file tự làm ra được đăng ở
+bản phát hành `models-2026-10-28` kèm giấy phép của mô hình gốc. File PDF mẫu
 không nằm trong repo: `scripts/make_test_pdfs.py` tạo lại vào `samples/`.
