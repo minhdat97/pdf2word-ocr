@@ -279,6 +279,37 @@ class NativePageTest(unittest.TestCase):
         self.assertTrue(any(r.image for r in runs))
 
 
+class SplitLinesTest(unittest.TestCase):
+    """native._split_lines: a formula group spanning two printed lines becomes two formulas only when
+    nothing but closeness joins them."""
+
+    @staticmethod
+    def glyph(x, base, size=10, kind=2):
+        c = {"c": "x", "origin": (x, base), "bbox": (x, base - 0.78 * size, x + 5, base + 0.22 * size)}
+        return [pymupdf.Rect(c["bbox"]), kind, size, None, c]
+
+    def test_two_lines(self):
+        nodes = [self.glyph(50, 100), self.glyph(56, 103, 7), self.glyph(50, 114), self.glyph(56, 114)]
+        parts = native._split_lines(list(range(4)), nodes, [])
+        self.assertEqual(sorted(map(sorted, parts)), [[0, 1], [2, 3]])
+
+    def test_kept_whole(self):
+        # rows closer than 0.9 em (a system), a row without a formula glyph, a stroke between the lines
+        nodes = [self.glyph(50, 100), self.glyph(50, 108)]
+        self.assertEqual(native._split_lines([0, 1], nodes, []), [[0, 1]])
+        nodes = [self.glyph(50, 100), self.glyph(50, 114, kind=1)]
+        self.assertEqual(native._split_lines([0, 1], nodes, []), [[0, 1]])
+        nodes = [self.glyph(50, 100), self.glyph(50, 114), [pymupdf.Rect(48, 103, 60, 104), 0, None, 7, None, False]]
+        self.assertEqual(native._split_lines([0, 1, 2], nodes, []), [[0, 1, 2]])
+
+    def test_fraction_keeps_its_parts(self):
+        # line 1: x = v²/2 (bar node 4 with parts 1, 2; the exponent 3 sits in its box); line 2 under it
+        nodes = [self.glyph(50, 100), self.glyph(60, 95), self.glyph(60, 109), self.glyph(66, 89, 7),
+                 [pymupdf.Rect(58, 97, 70, 98), 0, None, 3, None, False], self.glyph(50, 122), self.glyph(56, 122)]
+        parts = native._split_lines(list(range(7)), nodes, [(4, [1, 2])])
+        self.assertEqual(sorted(map(sorted, parts)), [[0, 1, 2, 3, 4], [5, 6]])
+
+
 class UnmappedGlyphsTest(unittest.TestCase):
     """native._unmapped_chars: glyph codes a Unicode math font gives without a real mapping, read
     within bounds whatever the file holds (the map is the uploader's)."""

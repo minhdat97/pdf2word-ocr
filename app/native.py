@@ -349,11 +349,13 @@ def _split_lines(members: list[int], nodes: list[list], fractions: list[tuple[in
     the other; each line is one formula (one picture or equation in its line).
     A fraction stays with the line its bar is on, and so does a script inside
     its box (the exponent of a numerator). Rows of one formula (a system, a
-    matrix) sit closer than a line apart or have no formula glyph of their own:
-    the group stays whole."""
+    matrix) sit closer than a line apart, have no formula glyph of their own or
+    are held by other strokes: the group stays whole."""
     parts = {k for bar, ks in fractions if bar in members for k in (bar, *ks)}
     glyphs = [k for k in members if nodes[k][4] is not None and k not in parts]
-    if not glyphs:
+    # a stroke that is not a fraction bar read as one (a display fraction's bar set apart, a radical)
+    # may hold the lines together: such a group stays whole
+    if not glyphs or any(nodes[k][3] is not None and k not in parts for k in members):
         return [members]
     top = max(nodes[k][2] for k in glyphs)
     baselines = sorted(nodes[k][4]["origin"][1] for k in glyphs if nodes[k][2] >= 0.85 * top)
