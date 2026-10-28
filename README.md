@@ -61,6 +61,14 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
 về `models/mfr/` bằng cùng script (tải từ địa chỉ ghim theo phiên bản trong `scripts/models.json`);
 không có mô hình, `P2W_MFR=0` hoặc `P2W_MATH_DETECT=off` thì trang OCR như trước.
 
+**Công thức không cần mô hình** (`P2W_FORMULAS=scripts`, cho máy chủ nhỏ): chỉ số mũ và chỉ số dưới của số,
+đơn vị và chữ ("6,42.10⁻²¹ J.", "mol⁻¹", "g/cm³", "4v_O = 9v_H", "n₁") được đọc bằng Tesseract: hình học
+tách đoạn nâng lên/hạ xuống, Tesseract đọc lại (hai lần, chỉ chữ số, chữ Latinh và vài dấu) rồi từng ký tự được
+đối chiếu với nét chữ (`app/scriptocr.py`); không chắc thì giữ chữ OCR. Phân số, căn thành ảnh trong dòng. Đề Vật
+lí scan 3 trang: thêm ~1 giây/trang máy chủ so với tắt đọc công thức, 27 chỗ đặt số mũ/chỉ số, không chỗ nào
+sai (mô hình: 47 chỗ, có cả phân số, căn). `P2W_FORMULAS`: `model` (mặc định: mô hình; file scan dài bỏ mô hình thì đọc
+kiểu `scripts`), `scripts`, `off`; `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
+
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
@@ -72,8 +80,8 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 
 Máy chủ nhỏ (2 lõi ARM, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình, nên
 hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
-chạy một mình, cả process ~2,5 GB). File có hơn `P2W_MFR_MAX_PAGES` trang scan không đọc công thức,
-hơn `P2W_VIETOCR_MAX_PAGES` trang không dùng VietOCR (giao diện ghi một dòng), để một file dài
+chạy một mình, cả process ~2,5 GB). File có hơn `P2W_MFR_MAX_PAGES` trang scan không dùng mô hình công thức
+(chỉ đọc số mũ/chỉ số kiểu `scripts`), hơn `P2W_VIETOCR_MAX_PAGES` trang không dùng VietOCR (giao diện ghi một dòng), để một file dài
 không giữ máy chủ quá lâu. Đề scan 3 trang nhiều công thức: Tesseract ~6 giây/trang trên máy chủ
 như vậy (đo), có VietOCR ~17, có cả đọc công thức ~37 (ước theo tỉ lệ đo trên Mac).
 
