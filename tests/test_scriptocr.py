@@ -48,6 +48,23 @@ class LettersSeenTest(unittest.TestCase):
         self.assertTrue(scriptocr._letters_seen("v_{H}", "vh"))
 
 
+class UnitShapeTest(unittest.TestCase):
+    def test_words_after_a_script_are_units(self):
+        for text in ("J.", "m/s.", "kPa", "mol.K", "g/cm"):
+            self.assertTrue(scriptocr._unit(text), text)
+        for text in ("I.", "gem", "Tr"):
+            self.assertFalse(scriptocr._unit(text), text)
+
+    def test_outline_of_a_character(self):
+        xh = 20
+        self.assertTrue(scriptocr._shape("m", [1], 34, 20, 0, xh))
+        self.assertFalse(scriptocr._shape("m", [1], 34, 30, 0, xh))  # too high for an x-height letter
+        self.assertFalse(scriptocr._shape("/", [1], 16, 20, 0, xh))  # a "c" read as "/"
+        self.assertTrue(scriptocr._shape("/", [1], 12, 32, 4, xh))
+        self.assertFalse(scriptocr._shape("g", [1], 20, 20, 0, xh))  # no descender
+        self.assertFalse(scriptocr._shape("=", [1], 20, 4, -10, xh))  # one bar
+
+
 class Glyphs:
     """A tiny page of filled rectangles: x-height 20 px, baseline at y=100, its components as mathregions._Page
     keeps them."""

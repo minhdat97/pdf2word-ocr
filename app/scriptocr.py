@@ -53,7 +53,9 @@ log = logging.getLogger("pdf2word.scriptocr")
 # What Tesseract may read on a canvas (no Vietnamese: a region with Vietnamese text is not a formula). The space
 # must be listed: without it Tesseract's LSTM reads a whitelisted line as one word.
 CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+=,.;:/()' "
-LANG = "eng"
+# Tesseract model for the canvases (P2W_SCRIPTS_LANG): "eng" (tessdata_best, in tessdata/); a tessdata_fast English
+# model copied there under another name (e.g. engfast) reads them in about half the time.
+LANG = os.environ.get("P2W_SCRIPTS_LANG", "eng").strip() or "eng"
 VOTE_SCALE = 1.5  # each canvas is read again this much larger; the readings must agree (0: one reading)
 LETTERS_FROM_OCR = False  # also ask the page's OCR text to hold the reading's letters (_letters_seen)
 MIN_CONF = 60  # Tesseract's confidence (0-100) needed for each word of a reading
