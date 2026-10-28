@@ -119,8 +119,8 @@ def _unmapped_chars(page: pymupdf.Page) -> set[str] | None:
                 return None
             continue  # CIDs outside the map come out as U+FFFD, never as plain text
         first, last = (doc.xref_get_key(xref, k) for k in ("FirstChar", "LastChar"))
-        try:
-            lo, hi = int(first[1]), int(last[1])
+        try:  # a simple font's codes are one byte, whatever the file claims
+            lo, hi = max(int(first[1]), 0), min(int(last[1]), 255)
         except ValueError:
             lo, hi = 0, 255
         out.update(chr(code) for code in range(lo, hi + 1) if code not in mapped)
