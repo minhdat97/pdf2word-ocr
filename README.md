@@ -20,7 +20,7 @@ cd pdf2word-ocr
 Muốn thêm ngôn ngữ, tải `<lang>.traineddata` từ
 https://github.com/tesseract-ocr/tessdata_best vào `tessdata/`; giao diện tự hiện thêm.
 
-VietOCR (nên có cho file scan tiếng Việt) đọc lại từng từ Tesseract tìm được, sửa dấu và chữ
+VietOCR (nên có cho file scan tiếng Việt) đọc lại các từ Tesseract chưa chắc, sửa dấu và chữ
 Tesseract đọc sai. Mô hình (`vgg_transformer` của VietOCR chuyển sang ONNX, trọng số float16,
 76 MB, chạy bằng onnxruntime, không cần PyTorch) không nằm trong git, lấy về `models/vietocr/`:
 
@@ -39,51 +39,68 @@ chạy tự thấy mô hình mới chép vào, không cần restart; mô hình h
 tắt tới lần restart sau, trang vẫn chuyển bằng chữ Tesseract. Không có mô hình (hoặc
 `P2W_VIETOCR=0`) thì công cụ chạy như trước, chỉ Tesseract.
 
-VietOCR nhẹ hơn cho máy chủ nhỏ (mặc định vẫn như trên, bật từng cách bằng biến môi trường):
-- `P2W_VIETOCR_WORDS=unsure`: chỉ đọc lại từ Tesseract chưa chắc (độ tin dưới 92) và từ có chữ
-  â ă ê ô không dấu thanh hay dấu huyền (Tesseract chắc mà vẫn hay sót dấu ở đó: "chuyên" thay
-  "chuyển", "thăng" thay "thẳng"), khoảng 30 % số từ. Trên 30 trang scan thử, số từ đúng không kém
-  đọc lại mọi từ (từ chắc khác gần như không bao giờ được VietOCR sửa đúng).
-- Bản int8: `scripts/quantize_vietocr.py models/vietocr models/vietocr-int8 <file scan>.pdf ...`
-  (cần thêm gói `onnx`, ~6 GB RAM) đổi các lớp tích chập của bộ mã hoá sang int8, hiệu chỉnh trên
-  chữ của các trang scan đưa vào; chép thư mục lên máy chủ, dùng bằng
-  `P2W_VIETOCR_DIR=models/vietocr-int8`. Trên CPU ARM của Mac (một luồng, không KleidiAI) VietOCR
-  nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ; tốc độ trên máy chủ phụ thuộc lệnh
-  int8 của CPU, cần đo trên máy chủ.
+Từ được đọc lại (`P2W_VIETOCR_WORDS`): mặc định `unsure` – từ Tesseract tin dưới 92 và từ có chữ
+â ă ê ô không dấu thanh hay dấu huyền (Tesseract chắc mà vẫn hay sót dấu ở đó: "chuyên" thay "chuyển",
+"thăng" thay "thẳng"), khoảng 30 % số từ; `all`: mọi từ. Trên 30 trang scan thử `unsure` cho số từ đúng
+như `all` (từ chắc khác gần như không bao giờ được VietOCR sửa đúng) mà VietOCR chỉ tốn ~40 % thời gian.
+Bản int8 (tuỳ chọn, cho máy chủ nhỏ): `scripts/quantize_vietocr.py models/vietocr models/vietocr-int8
+<file scan>.pdf ...` (cần thêm gói `onnx`, ~6 GB RAM, chạy trên máy dev) đổi các lớp tích chập của bộ mã
+hoá sang int8, hiệu chỉnh trên chữ của các trang scan đưa vào (nên là scan thật, không phải file dùng để
+đo); chép thư mục lên máy chủ, dùng bằng `P2W_VIETOCR_DIR=models/vietocr-int8`. Trên CPU ARM của Mac (một
+luồng, không KleidiAI) VietOCR nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ; tốc độ trên máy
+chủ phụ thuộc lệnh int8 của CPU, cần đo trên máy chủ trước khi dùng.
 
-**Đọc công thức** (nên có cho đề Toán/Lí scan): mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX
-~120 MB, chạy bằng onnxruntime) đọc vùng công thức của trang OCR thành LaTeX. Kết quả tin được
-thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới ("6,42.10⁻²¹ J."),
-căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Tìm vùng ở
+**Công thức trên trang scan** có hai cách đọc; vùng công thức tìm như nhau (`app/mathregions.py`):
 **phương án trả lời** (sau nhãn "A."–"D.", kể cả nhãn Tesseract đọc sai hay bỏ sót), **công thức hai
 tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có số mũ/chỉ số dưới trong câu dẫn**
-("6,02.10²³ mol⁻¹", "g/m³", "n₁", "x_A"); chữ cái đứng một mình ("p", "k", "T") vẫn là chữ OCR. Lấy mô hình
-về `models/mfr/` bằng cùng script (tải từ địa chỉ ghim theo phiên bản trong `scripts/models.json`);
-không có mô hình, `P2W_MFR=0` hoặc `P2W_MATH_DETECT=off` thì trang OCR như trước.
+("6,02.10²³ mol⁻¹", "g/m³", "n₁", "x_A"); chữ cái đứng một mình ("p", "k", "T") vẫn là chữ OCR.
 
-**Công thức không cần mô hình** (`P2W_FORMULAS=scripts`, cho máy chủ nhỏ): chỉ số mũ và chỉ số dưới của số,
-đơn vị và chữ ("6,42.10⁻²¹ J.", "mol⁻¹", "g/cm³", "4v_O = 9v_H", "n₁") được đọc bằng Tesseract: hình học
-tách đoạn nâng lên/hạ xuống, Tesseract đọc lại (hai lần, chỉ chữ số, chữ Latinh và vài dấu) rồi từng ký tự được
-đối chiếu với nét chữ (`app/scriptocr.py`); không chắc thì giữ chữ OCR. Phân số, căn thành ảnh trong dòng. Đề Vật
-lí scan 3 trang: thêm ~1 giây/trang máy chủ so với tắt đọc công thức, 27 chỗ đặt số mũ/chỉ số, không chỗ nào
-sai (mô hình: 47 chỗ, có cả phân số, căn). `P2W_FORMULAS`: `model` (mặc định: mô hình; file scan dài bỏ mô hình thì đọc
-kiểu `scripts`), `scripts`, `off`; `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
+- **Mặc định, không cần mô hình** (`app/scriptocr.py`): số mũ và chỉ số dưới của số, đơn vị và chữ
+  ("6,42.10⁻²¹ J.", "mol⁻¹", "g/cm³", "4v_O = 9v_H", "n₁") được đọc bằng Tesseract: hình học tách đoạn
+  nâng lên/hạ xuống, Tesseract đọc lại (hai lần, chỉ chữ số, chữ Latinh và vài dấu) rồi từng ký tự được
+  đối chiếu với nét chữ; không chắc thì giữ chữ OCR. Phân số, căn thành ảnh trong dòng. Cần Tesseract
+  4.1 trở lên (danh sách ký tự có dấu cách, `hocr_char_boxes`): chạy `tests/test_scriptocr.py` trên máy
+  chủ, phép thử in một trang rồi đọc lại. `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
+- **"Đọc kỹ"** (tuỳ chọn `"careful": true` của tác vụ, xem Luồng API; giao diện chưa có ô chọn): mô hình
+  pix2text-mfr-1.5 (giấy phép MIT, ONNX ~120 MB, chạy bằng onnxruntime) đọc vùng công thức thành LaTeX.
+  Kết quả tin được thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới, căn,
+  phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. Lấy mô hình về
+  `models/mfr/` bằng `scripts/fetch_models.py` (địa chỉ ghim theo phiên bản trong `scripts/models.json`).
+  Nên tách bộ giải mã: `scripts/split_mfr_decoder.py models/mfr` (cần gói `onnx`, chạy trên máy dev)
+  tạo `cross_kv.onnx` (khoá/giá trị cross-attention của một vùng, tính một lần) và `decoder_step.onnx`;
+  chép hai file vào `models/mfr/` của máy chủ rồi restart: kết quả giữ nguyên, phần đọc công thức nhanh
+  khoảng gấp đôi (`fetch_models.py --check` bỏ qua file thêm; thiếu một trong hai file thì dùng
+  `decoder_model.onnx`). Chậm (xem Máy chủ nhỏ) nên chỉ dùng cho file có tối đa `P2W_MFR_MAX_PAGES` (5)
+  trang scan; file dài hơn, máy không có mô hình hay mô hình hỏng thì đọc kiểu mặc định.
+
+`P2W_FORMULAS`: `scripts` (mặc định), `model` (mọi lần chuyển đều "Đọc kỹ"), `off` (không đọc công
+thức; "Đọc kỹ" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_MATH_DETECT=off` tắt cả việc tìm vùng.
 
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
 `P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_MAX_PAGES` (30),
-`P2W_VIETOCR_WORDS` (`all` mặc định, `unsure`),
-`P2W_MFR` (`0` để tắt đọc công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (10),
+`P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
+`P2W_SCRIPTS_LANG` (`eng`),
+`P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
 `P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
 
 Máy chủ nhỏ (2 lõi ARM, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình, nên
 hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
-chạy một mình, cả process ~2,5 GB). File có hơn `P2W_MFR_MAX_PAGES` trang scan không dùng mô hình công thức
-(chỉ đọc số mũ/chỉ số kiểu `scripts`), hơn `P2W_VIETOCR_MAX_PAGES` trang không dùng VietOCR (giao diện ghi một dòng), để một file dài
-không giữ máy chủ quá lâu. Đề scan 3 trang nhiều công thức: Tesseract ~6 giây/trang trên máy chủ
-như vậy (đo), có VietOCR ~17, có cả đọc công thức ~37 (ước theo tỉ lệ đo trên Mac).
+chạy một mình, cả process ~2,5 GB). "Đọc kỹ" chỉ dùng mô hình công thức cho file có tối đa
+`P2W_MFR_MAX_PAGES` trang scan (dài hơn thì đọc công thức kiểu mặc định), file hơn `P2W_VIETOCR_MAX_PAGES`
+trang không dùng VietOCR (giao diện ghi một dòng), để một file dài không giữ máy chủ quá lâu. Thời gian
+mỗi trang scan trên máy chủ 2 lõi Neoverse-N1, một luồng (ước từ CPU đo trên Mac không dùng KleidiAI:
+Tesseract ×2,3, mô hình ×2,9 – khớp trong 10 % với lần đo thật đề VL1212 438 giây có mô hình, 17 giây không):
+
+| cách chuyển | đề Vật lí scan 3 trang (VL1212) | 30 trang scan thử: trung bình / trang lâu nhất |
+|---|---|---|
+| chỉ Tesseract (`P2W_VIETOCR=0`, `P2W_FORMULAS=off`) | 5,4 giây | 4,4 / 9 |
+| mặc định: VietOCR `unsure` + công thức không mô hình | 20 | 12 / 33 |
+| mặc định, VietOCR int8 (chưa đo tốc độ int8 trên máy chủ: có thể tới 17 / 10,5) | 12 | 8 / 21 |
+| "Đọc kỹ": thêm mô hình công thức, bộ giải mã tách đôi | 74 (trang dày 105) | 35 / 114 |
+| bản trước (mọi lần chuyển dùng cả hai mô hình, VietOCR đọc mọi từ) | 156 | 66 / 233 |
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -109,7 +126,7 @@ thẳng từ ổ đĩa); `--restart` để restart dù không có gì đổi.
 | Xin URL upload | `POST /v1/upload-url` → URL ký HMAC, hết hạn 15 phút (kiểu presigned URL của object store) |
 | Upload | `PUT /v1/files/<token>?expires&sig` |
 | Phân tích | `POST /v1/tasks` `{"tool":"analyse-document"}` |
-| Convert | `POST /v1/tasks` `{"tool":"pdf-to-word","options":{"ocr_type":"ocr","languages":["vie"]}}` |
+| Convert | `POST /v1/tasks` `{"tool":"pdf-to-word","options":{"ocr_type":"ocr","languages":["vie"]}}` (thêm `"careful":true` để "Đọc kỹ") |
 | Poll | `GET /v1/tasks/<task_id>` → `status`, `progress`, `result.output_files`, `result.error_fe` |
 | Tải về | `GET /v1/files/<token>?name=...` |
 
@@ -251,8 +268,8 @@ tắt.
      ("chuyển" → "ố chuyên", "8m" → "8 m về" khi khung "8m" chồng lên "về"), thì giữ chữ Tesseract;
      không có từ nào ở phía đó thì đó là nét trong khung Tesseract bỏ sót ("B." → "B. v"), vẫn lấy;
      tách chữ dính ("B.343m/s." → "B. 343 m/s.") cũng lấy.
-     Với `P2W_VIETOCR_WORDS=unsure` chỉ từ Tesseract tin <92 hay có â ă ê ô không dấu/dấu huyền
-     được đọc lại (`vietocr.unsure`); từ khác giữ chữ Tesseract.
+     Chỉ từ Tesseract tin <92 hay có â ă ê ô không dấu/dấu huyền được đọc lại (`vietocr.unsure`;
+     `P2W_VIETOCR_WORDS=all`: mọi từ); từ khác giữ chữ Tesseract.
      Sửa lỗi theo cấu trúc đề (`app/ocr_fix.py`), chỉ chỗ cấu trúc tự quyết được, không chọn giữa
      hai từ có thật ("chuyên"/"chuyển"):
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";
@@ -274,7 +291,7 @@ tắt.
      ngang ("A" + "BCD"). Dòng hai cột, kể cả hàng phương án của hai câu cạnh nhau ("A. 10 m." bên
      "C. 25 N."), giữ riêng; đơn vị sau số ("1 A.", "2.10⁻⁶ C.") không phải nhãn; dải đầu/chân
      trang giữ nguyên.
-     Có mô hình công thức: tìm vùng công thức (`app/mathregions.py`, cách `rules`, theo thứ tự ưu tiên):
+     Tìm vùng công thức (`app/mathregions.py`, cách `rules`, theo thứ tự ưu tiên):
      - phương án: phần sau nhãn "A."–"D." của dòng có phương án, kể cả nhãn đứng một mình; nới theo
        mực tới khoảng trắng, qua gạch phân số tới tử/mẫu; bỏ vùng có chữ tiếng Việt Tesseract tin
        ≥80 và vùng tràn sang phương án hay dòng khác. Nhãn Tesseract đọc sai ("c.v=a.", "p.v=—.")
@@ -298,7 +315,15 @@ tắt.
        chữ hoa, lỗ trong rộng và kín tới gần đáy; lỗ của chữ A, số 4 chỉ tới nửa chiều cao).
        Hoa/thường của chữ đầu vùng lấy theo chiều cao nét ("Vh" → "vh") ở các chữ chỉ khác nhau
        về cỡ (c o s u v w x z; không có k: nét lên của k cao bằng chữ hoa).
-     Mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau, chỉ lấy kết quả
+     Mặc định (`app/scriptocr.py`) chỉ vùng có nét nâng lên/hạ xuống được đọc: các đoạn trên dòng, đoạn
+     nâng, đoạn hạ đặt cạnh nhau trên một dòng (chỉ số phóng lên cỡ chữ, đặt trên đường chân chữ),
+     Tesseract đọc dòng đó hai lần (như cũ và phóng 1,5 lần, chỉ chữ số, chữ Latinh và vài dấu), hai lần
+     phải khớp; mỗi ký tự đối chiếu với nét của nó (số ký tự bằng số nét, dấu phẩy/chấm theo nét, dấu trừ
+     chỉ ở chỗ hình học thấy, chữ số đứng trên dòng cao bằng chữ số, 0/O theo bề rộng, o/O, v/V theo chiều
+     cao, chữ sau số mũ phải là đơn vị); chữ cái không kiểm được phải có trong chữ OCR của trang; rồi qua
+     cùng luật an toàn như kết quả mô hình. Vùng cao (phân số, căn) thành ảnh công thức.
+     "Đọc kỹ": mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau (lần đầu là chữ thường trùng chữ
+     Tesseract, "6 kPa.", thì giữ luôn, không đọc lần hai), chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract theo thứ tự – mô hình bớt hay thêm một chữ số ("200" cho "2000", "500 00" cho
      "500 000", "2ω" cho "20"), kể cả chữ số ngoài phân số/căn ("7√3" cho "2/3"), là bỏ; số mũ
@@ -415,6 +440,21 @@ Sửa theo rà soát mã (2026-10-27): kết quả trên đề Vật lí scan v�
 không còn nằm trong Equation, số thứ tự ở cột nhãn không thành "A.", căn bậc ba ra đúng, mô hình bớt
 hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 393/522 kết quả nhận, 0 sai).
 
+Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, mọi lần chuyển dùng cả hai mô hình):
+- Mặc định (VietOCR `unsure`, công thức không mô hình): đề Vật lí scan 3 trang chữ 99,6 % (99,6 %), số
+  95,4 % (93,4 %), Equation 0/24 (13/24: phân số, căn giữ thành ảnh), 27/51 công thức và số mũ/chỉ số của
+  bộ thử (47/51); 29 kết quả đặt vào đề, đều đúng; hai bản scan giả của đề Vật lí kia 2 và 1/157 (19/157),
+  không kết quả nào sai; 104 kết quả đặt trên 30 trang scan giả, so với chữ của PDF gốc: không cái nào sai. 30 trang scan giả 97,53 % / 96,67 % (97,73 % / 97,09 %; chỉ Tesseract 92,22 % /
+  91,48 %): mất 35 từ đúng trên 9 trang – 32 là số, đơn vị trong vùng mô hình đọc được mà cách không mô
+  hình bỏ qua (số mũ trên trang scan kém, "cm³", số thập phân "1,33" của phương án không có chỉ số), 3 do
+  VietOCR chỉ đọc lại từ chưa chắc ("đẳng", "HỒ" Tesseract tin mà sai dấu; một số "0" đổi theo các từ đọc
+  cùng lượt) –, thêm 10. VietOCR int8: 97,58 % / 96,69 %, so với bản float mất 2 từ ("thẳng", "A"), thêm 5;
+  các số khác như bản float. PDF có text không đổi (22 file).
+- "Đọc kỹ": .docx của đề Vật lí và hai bản scan giả, 30 trang chữ đọc được giống hệt từng byte cách đọc cũ
+  của mô hình (bộ giải mã nguyên khối, vùng nào cũng đọc hai lần) cùng VietOCR `unsure`: chữ 99,7 %,
+  số 93,4 %, Equation 13/24 (15/24), 47/51, 0 kết quả sai; 30 trang 97,75 % / 97,14 %, mất 3 từ đúng (3 từ
+  VietOCR ở trên), thêm 6.
+
 ## Giới hạn
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
@@ -426,6 +466,10 @@ hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
   đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
   dùng font Symbol) vẫn là chữ.
+- Đọc công thức mặc định (không mô hình): phân số, căn, gạch trên luôn thành ảnh; vùng có chữ Tesseract
+  đọc thêm ký tự ("9v_O"), "/" không đọc được ("g/m³"), Δ dính chữ sau nó ("Δx = x_A + x_B") hay nét
+  số mũ vỡ (scan 200 dpi) thì giữ chữ OCR; dấu phẩy thập phân mất trong phương án không có số mũ
+  ("1,33") không lấy lại được.
 - Đọc công thức (trang scan): chữ cái đứng riêng (p, ρ, k, T) và số thường trong câu dẫn vẫn
   là chữ OCR; công thức trong bảng cũng vậy. Không đọc phương án có chữ tiếng Việt Tesseract tin
   ≥80, vùng chạm dòng trên/dưới hay phương án bên cạnh, phương án mà một từ OCR chạy sang phương
@@ -435,7 +479,7 @@ hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 
   ngay sau hàng. Số mũ chỉ
   nhận theo hình khi tách khỏi nét chữ trước nó (scan nhoè dính liền thì không thấy).
 - Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân; số mũ/chỉ số dưới chỉ có
-  ở chỗ mô hình công thức đọc được;
+  ở chỗ đọc được (mặc định: số, đơn vị, chữ có số mũ/chỉ số; "Đọc kỹ" thêm phân số, căn);
   chữ đậm theo từng từ thỉnh thoảng sai ở từ rời; Tesseract không đọc được dòng gạch dài kiểu
   "------HẾT------"; hình mờ, nét rất mảnh có thể bị cắt sát.
 - Watermark chữ xoay được set lại bằng font serif, không phải font gốc; font Type3 dùng font
@@ -459,9 +503,10 @@ hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
   lộn xộn).
-- File scan có đọc công thức chạy lâu (máy chủ 2 lõi ARM ~37 giây/trang đề nhiều công thức): quá
-  `P2W_MFR_MAX_PAGES` (10) trang scan thì bỏ đọc công thức, quá `P2W_VIETOCR_MAX_PAGES` (30) thì bỏ cả
-  VietOCR; máy chủ chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc.
+- "Đọc kỹ" chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang đề nhiều công thức): quá `P2W_MFR_MAX_PAGES` (5)
+  trang scan thì đọc công thức kiểu mặc định, quá `P2W_VIETOCR_MAX_PAGES` (30) thì bỏ cả VietOCR; máy chủ
+  chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc hay số việc "Đọc kỹ" chạy
+  cùng lúc (hai việc "Đọc kỹ" giữ cả hai lõi).
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 

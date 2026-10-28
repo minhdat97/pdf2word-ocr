@@ -392,9 +392,9 @@ def convert(
     strip: bool = False,
     careful: bool = False,
 ) -> tuple[Path, dict]:
-    """Convert a PDF to .docx. careful ("Đọc kỹ"): the formula model reads the formulas of scanned pages (about a
-    minute and a half per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES of them; otherwise
-    they are read as settings.FORMULAS says (by default superscripts and subscripts without the model)."""
+    """Convert a PDF to .docx. careful ("Đọc kỹ"): the formula model reads the formulas of scanned pages (up to about
+    2 minutes per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES of them; otherwise they
+    are read as settings.FORMULAS says (by default superscripts and subscripts without the model)."""
     if mode not in MODES:
         raise TaskError("invalid_options", mode)
     doc = open_pdf(pdf_path)

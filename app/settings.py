@@ -58,8 +58,8 @@ MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
 MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
 MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
 # A file with more scanned pages than this reads its formulas without the model (as by default, FORMULAS "scripts"):
-# the model takes about a minute and a half per dense page on a 2-core server, and a long scan would hold a worker
-# for too long.
+# with the model a page takes up to about 2 minutes on a 2-core server (35 s on average on the test scans), and a
+# long scan would hold a worker for too long.
 MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 5))
 # Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
