@@ -50,11 +50,9 @@ Từ được đọc lại (`P2W_VIETOCR_WORDS`): mặc định `unsure` – t�
 như `all` (từ chắc khác gần như không bao giờ được VietOCR sửa đúng) mà VietOCR chỉ tốn ~40 % thời gian.
 Bản int8 (cho máy chủ nhỏ, `models/vietocr-int8`, `fetch_models.py` tải cùng bản float16): các lớp tích
 chập của bộ mã hoá đổi sang int8 (`scripts/quantize_vietocr.py`, hiệu chỉnh trên chữ của các trang scan).
-`P2W_VIETOCR_INT8=1` dùng bản này khi thư mục đủ file (không thì bản float16; `P2W_VIETOCR_DIR` đặt thì
-luôn dùng thư mục đó). Trên CPU ARM của Mac (một luồng, không KleidiAI) VietOCR
-nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ. Mặc định tắt: tốc độ trên máy chủ phụ thuộc
-lệnh int8 của CPU, cần đo trên máy chủ trước; bật mặc định là đổi `"0"` thành `"1"` ở dòng `VIETOCR_INT8`
-của `app/settings.py`.
+Mặc định dùng bản này khi thư mục đủ file (không thì bản float16; `P2W_VIETOCR_INT8=0` luôn dùng bản
+float16; `P2W_VIETOCR_DIR` đặt thì luôn dùng thư mục đó). Số từ đúng như bản float16, 2 % số từ đọc khác.
+Đo trên máy chủ 2 lõi ARM (2026-10-28, một luồng): 98 thay vì 211 ms mỗi từ.
 
 **Công thức trên trang scan** có hai cách đọc; vùng công thức tìm như nhau (`app/mathregions.py`):
 **phương án trả lời** (sau nhãn "A."–"D.", kể cả nhãn Tesseract đọc sai hay bỏ sót), **công thức hai
@@ -102,8 +100,8 @@ thức; "Đọc kỹ" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
-`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_INT8` (`0`; `1`: bản int8
-`models/vietocr-int8`), `P2W_VIETOCR_MAX_PAGES` (30),
+`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_INT8` (`1`: bản int8
+`models/vietocr-int8` khi đủ file; `0`: bản float16), `P2W_VIETOCR_MAX_PAGES` (30),
 `P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
@@ -125,8 +123,8 @@ không mô hình; 2026-10-28):
 | cách chuyển | đề Vật lí scan 3 trang (VL1212): trung bình (từng trang) | bản scan giả 6 trang của đề Vật lí khác | 30 trang scan thử: trung bình / trung vị / trang lâu nhất |
 |---|---|---|---|
 | chỉ Tesseract (`P2W_VIETOCR=0`, `P2W_FORMULAS=off`) | 5,4 (6 / 7 / 3) | 4,7 | 4,4 / 5,4 / 9 |
-| mặc định: VietOCR `unsure` + công thức không mô hình | 19,7 (25 / 26 / 8) | 12,4 | 12,2 / 14,7 / 33 |
-| mặc định, VietOCR int8 (`P2W_VIETOCR_INT8=1`; int8 chưa đo trên máy chủ: lệnh int8 chậm thì có thể tới ~17 / ~10,5) | 12,4 (16 / 16 / 6) | 8,3 | 8,2 / 9,7 / 21 |
+| mặc định: VietOCR int8 `unsure` + công thức không mô hình (tỉ lệ int8 / float16 đo trên máy chủ: 0,46, trên Mac 0,44) | 12,4 (16 / 16 / 6) | 8,3 | 8,2 / 9,7 / 21 |
+| như trên, VietOCR float16 (`P2W_VIETOCR_INT8=0`) | 19,7 (25 / 26 / 8) | 12,4 | 12,2 / 14,7 / 33 |
 | "Đọc kỹ": thêm mô hình công thức, bộ giải mã tách đôi | 73,9 (105 / 105 / 12) | 30,2 | 34,6 / 21,7 / 114 |
 | bản trước (mọi lần chuyển dùng cả hai mô hình, VietOCR đọc mọi từ) | 155,7 (203 / 239 / 25) | 65,9 | 66,3 / 44,1 / 233 |
 
@@ -505,7 +503,7 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   VietOCR ở trên), thêm 6.
 - Mô hình từ bản phát hành `models-2026-10-28`: hai nửa bộ giải mã tạo lại từ bản ghim giống hệt từng byte
   bản đã đo; với `models/` do `fetch_models.py` dựng, đề Vật lí và bản scan giả 6 trang ra .docx giống hệt
-  bản đã đo (mặc định; `P2W_VIETOCR_INT8=1` dùng đúng bản int8: thời gian như dòng int8 ở trên).
+  bản đã đo (bản int8, mặc định: thời gian như dòng đầu của bảng ở trên).
 
 ## Giới hạn
 

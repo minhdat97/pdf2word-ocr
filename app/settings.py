@@ -44,10 +44,10 @@ MODEL_THREADS = max(1, min(2, (os.cpu_count() or 1) // max(1, WORKERS)))
 # VIETOCR_INT8_DIR when VIETOCR_INT8 is on and that folder has every file, else models/vietocr (float16).
 VIETOCR_DIR = Path(os.environ.get("P2W_VIETOCR_DIR", BASE_DIR / "models" / "vietocr"))
 VIETOCR_DIR_SET = bool(os.environ.get("P2W_VIETOCR_DIR"))
-# The encoder's convolutions in int8 (scripts/quantize_vietocr.py): a default conversion of a scanned exam ~20 -> ~12 s
-# per page on a 2-core ARM server by the Mac estimate, as many words right; off until the int8 speed is measured on the
-# server (P2W_VIETOCR_INT8=1 turns it on). To make it the default, change the "0" on the next line to "1".
-VIETOCR_INT8 = os.environ.get("P2W_VIETOCR_INT8", "0") != "0"
+# The encoder's convolutions in int8 (scripts/quantize_vietocr.py): as many words right, and on the 2-core ARM server
+# (measured 2026-10-28) 98 instead of 211 ms per word, so a default conversion of a scanned exam takes ~12 instead of
+# ~20 s per page. P2W_VIETOCR_INT8=0 keeps the float16 copy.
+VIETOCR_INT8 = os.environ.get("P2W_VIETOCR_INT8", "1") != "0"
 VIETOCR_INT8_DIR = BASE_DIR / "models" / "vietocr-int8"
 VIETOCR_ENABLED = os.environ.get("P2W_VIETOCR", "1") != "0"
 VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", MODEL_THREADS))
