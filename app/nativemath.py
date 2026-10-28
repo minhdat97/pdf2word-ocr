@@ -26,6 +26,7 @@ from .omml import GREEK, latex_to_omml
 
 SCRIPT = 0.85  # glyphs smaller than this share of the line's size are scripts (or a smaller line)
 ON_BASE = 0.12  # baseline tolerance, in em
+FRACTION_RULE = 0.065  # Word's (Cambria Math) fraction rule thickness, em
 AXIS = 0.28  # height of the maths axis (fraction bars) over the baseline, in em (0.284 measured)
 # A gap this wide (em) between two ordinary symbols is a typed space (0.18–0.22 em). Gaps after
 # punctuation are Word's own (0.15–0.17 em after a dot before a script or fraction: "945. 10³").
@@ -106,6 +107,7 @@ class Bar:
     x0: float
     x1: float
     y: float
+    thickness: float = 0.72  # Word's fraction rule: 0.065 em of its equation
 
 
 @dataclass(eq=False)
@@ -283,6 +285,9 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
         raise Unsure("bar left over")
     rest = [g for g in glyphs if id(g) not in used]
     if not rest:
+        if depth == 0 and any(b.thickness < 0.8 * FRACTION_RULE * t.size for b, t in zip(outer, tokens)):
+            # fractions alone, on a rule thinner than Word's: a table's border between two formula lines
+            raise Unsure("rule thinner than a fraction bar")
         for t in tokens:
             t.write(outer_size, depth, info)
         return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens))

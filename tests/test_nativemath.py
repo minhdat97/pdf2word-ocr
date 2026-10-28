@@ -231,6 +231,15 @@ class RefusalTest(unittest.TestCase):
         ln.put(")", color="FF0000").put("=", gap=2).put("1")
         self.assertIsNone(build(ln.glyphs, [], []))
 
+    def test_thin_rule_between_formulas(self):
+        # fractions alone on a rule thinner than Word's (a table border between two centred lines)
+        ln = Line()
+        bar = ln.frac("𝑥", "𝑦", size=S)
+        bar.thickness = 0.5
+        self.assertIsNone(build(ln.glyphs, [bar], []))
+        bar.thickness = 0.72
+        self.assertEqual(latex(build(ln.glyphs, [bar], [])), [r"\frac{x}{y}"])
+
     def test_text_a_docx_cannot_hold(self):
         ln = Line().put("\uffff", font="Times New Roman").put("𝑥", gap=2.3).put("=", gap=2).put("1")
         self.assertPicture(ln.glyphs)
@@ -333,6 +342,13 @@ class SplitLinesTest(unittest.TestCase):
         self.assertEqual(native._split_lines([0, 1], nodes, []), [[0, 1]])
         nodes = [self.glyph(50, 100), self.glyph(50, 114), [pymupdf.Rect(48, 103, 60, 104), 0, None, 7, None, False]]
         self.assertEqual(native._split_lines([0, 1, 2], nodes, []), [[0, 1, 2]])
+
+    def test_rows_of_a_bracket_stay_together(self):
+        # a brace open on one line (or a glyph that is no ordinary sign, Word for Mac's "«") holds its rows
+        for brace in ("{", "«"):
+            nodes = [self.glyph(50, 100), self.glyph(56, 100), self.glyph(70, 114), self.glyph(76, 114)]
+            nodes[1][4]["c"] = brace
+            self.assertEqual(native._split_lines(list(range(4)), nodes, []), [[0, 1, 2, 3]])
 
     def test_fraction_keeps_its_parts(self):
         # line 1: x = v²/2 (bar node 4 with parts 1, 2; the exponent 3 sits in its box); line 2 under it

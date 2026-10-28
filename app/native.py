@@ -88,7 +88,7 @@ CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is no
 CMAP_BUDGET = 1024 * 1024  # bytes of maps read per file
 FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
 FONT_READ_BUDGET = 1_000_000  # characters of font objects read per file (Word's: a few hundred per font)
-FORMS_MAX = 64  # form XObjects of a page looked through for math fonts
+FORMS_MAX = 2000  # form XObjects of a page looked through for math fonts (Word writes each legacy equation as one)
 TRACE_TEXTS_MAX = 20000  # text objects on a page before its glyph trace (for drawn marks) is not built
 FORMULA_GLYPHS_MAX = 300  # glyphs and strokes of one formula read as an equation (Word's largest here: 73)
 FORMULA_MARKS_MAX = 32  # combining marks of one formula
@@ -191,6 +191,7 @@ def _simple_font_map(doc: pymupdf.Document, xref: int) -> frozenset[str] | None:
     return cache[key]
 
 
+SPLIT_SIGNS = set("()[]{}=+−-×·.,;:/|<>≤≥≠≈→←⇒⇔∈∉′'%°∆∞∂!∀∃∅∖∩∪⊂⊆⋅…") | {"\u20d7", "\u0302", "\u0303", "\u0304", "\u0305", "\u0307"}
 FONT_REF = re.compile(r"/[^\s/<>\[\]()]+\s+(\d+)\s+0\s+R")
 
 
@@ -240,6 +241,8 @@ def _resources(doc: pymupdf.Document, ref: int, key: str) -> str | None:
         kind, val = doc.xref_get_key(ref, "Resources")
         if kind != "null":
             break
+        if doc.xref_get_key(ref, "Subtype")[1] == "/Form":
+            return ""  # a form without resources of its own draws with the page's
         kind, val = doc.xref_get_key(ref, "Parent")
         if kind != "xref":
             return None
@@ -269,24 +272,27 @@ def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, st
         cache[fval] = [(x, *_font_info(doc, x)) for x in xrefs]
     fonts = cache[fval]
     own = {x for x, _sub, _names in fonts}
-    forms, seen = [(page.xref, 0)], set()
+    forms, seen, forms_seen = [(page.xref, 0)], set(), 0
     while forms:
         ref, depth = forms.pop()
         xval = _resources(doc, ref, "XObject")
         if xval is None:
             return None
+        _spend(doc, len(xval))
         for m in FONT_REF.finditer(xval):
             x = int(m.group(1))
             if x in seen:
                 continue
             seen.add(x)
-            if len(seen) > FORMS_MAX or depth > 2:
-                return None
             if doc.xref_get_key(x, "Subtype")[1] != "/Form":
-                continue
+                continue  # images
+            forms_seen += 1
+            if forms_seen > FORMS_MAX or depth > 2:
+                return None
             ffonts = _resources(doc, x, "Font")
             if ffonts is None:
                 return None
+            _spend(doc, len(ffonts))
             for fm in FONT_REF.finditer(ffonts):
                 fx = int(fm.group(1))
                 if fx not in own and any(UNICODE_MATH_FONT.search(n) for n in _font_info(doc, fx)[1]):
@@ -598,6 +604,17 @@ def _split_lines(members: list[int], nodes: list[list], fractions: list[tuple[in
     out = [part for part in out if part]
     if any(not any(nodes[k][1] == 2 or k in bars for k in part) for part in out):
         return [members]
+    for part in out:
+        # a bracket open on one line has its rows on the others (a piecewise function's brace), and a glyph
+        # that is no ordinary letter, digit or sign (Word for Mac's stretched brace reads "«") may be one
+        depth = 0
+        for k in sorted((k for k in part if nodes[k][4] is not None), key=lambda k: nodes[k][0].x0):
+            c = nodes[k][4]["c"]
+            depth += (c in "([{") - (c in ")]}")
+            if depth < 0 or not (c.isalnum() or _math_alnum(c) or c in SPLIT_SIGNS):
+                return [members]
+        if depth:
+            return [members]
     return out
 
 
@@ -790,6 +807,7 @@ class _Extractor:
         ]
         self.used_drawings: set[int] = set()
         self.table_rects: list[pymupdf.Rect] = []  # set before rows(): table shading is not a highlight
+        self.table_lines: list[tuple] = []  # (rect, xs, ys) of those tables: their borders join no formula
         self.highlights = [
             (pymupdf.Rect(d["rect"]), _hex(d["fill"]), i)
             for i, d in enumerate(self.drawings)
@@ -1107,9 +1125,20 @@ class _Extractor:
         in_table = lambda r: any(  # noqa: E731
             t.x0 - 1 <= r.x0 and r.x1 <= t.x1 + 1 and t.y0 - 1 <= r.y0 and r.y1 <= t.y1 + 1 for t in self.table_rects
         )
+        # a ruled table's own borders (on its grid lines) join no formula: a formula in a cell would take the
+        # border, and through it its neighbours' cells (Word draws each cell side as a rect of its own)
+        on_grid = lambda r: any(  # noqa: E731
+            pymupdf.Rect(t.x0 - 2, t.y0 - 2, t.x1 + 2, t.y1 + 2).contains(r) and (
+                (r.height <= 2 and any(abs((r.y0 + r.y1) / 2 - y) <= 1.5 for y in ys))
+                or (r.width <= 2 and any(abs((r.x0 + r.x1) / 2 - x) <= 1.5 for x in xs))
+            )
+            for t, xs, ys in self.table_lines
+        )
         fractions: list[tuple[int, list[int]]] = []  # (bar node, glyph nodes over and under it)
         for i, d in enumerate(self.drawings):
             r = pymupdf.Rect(d["rect"])
+            if on_grid(r):
+                continue
             # an upright stroke outside ruled tables: an absolute-value bar or a bracket
             upright = r.width <= 1 and 0 < r.height <= 40 and not in_table(r)
             parts = (
@@ -1264,7 +1293,7 @@ class _Extractor:
         for i in f["drawings"]:
             r = pymupdf.Rect(self.drawings[i]["rect"])
             if i in fraction_bars:
-                bars.append(nativemath.Bar(r.x0, r.x1, (r.y0 + r.y1) / 2))
+                bars.append(nativemath.Bar(r.x0, r.x1, (r.y0 + r.y1) / 2, r.height))
             elif r.width <= 1 and r.height > 0:
                 uprights.append((r.x0, r.y0, r.x1, r.y1))
             else:
@@ -2309,6 +2338,7 @@ def native_page(
     table_specs = ex.tables()
     table_rects = [spec[0] for spec in table_specs]
     ex.table_rects = table_rects
+    ex.table_lines = [(pymupdf.Rect(spec[0]), spec[1], spec[2]) for spec in table_specs]
     rows = ex.rows()
     layout = PageLayout(width_pt=ex.width, height_pt=ex.height, source="native")
     table_rows: list[list[_Row]] = [[] for _ in table_specs]
