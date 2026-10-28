@@ -244,21 +244,30 @@ tắt.
     "Đúng" thành "Đún/g"). Nét kẻ của bảng không bị coi là gạch chân chữ.
   - Equation của Word (font Cambria Math, cả STIX/Latin Modern Math: chữ có Unicode thật) được
     **dựng lại thành Equation** sửa được trong Word (`app/nativemath.py`) từ vị trí glyph: chữ toán
-    nghiêng 𝑚 → m, 𝒃 → chữ đậm nghiêng; chỉ số trên/dưới theo cỡ chữ nhỏ hơn và độ lệch baseline
-    (chỉ số của số thập phân lấy cả số: "4,1²"); gạch phân số (cả phân số lồng nhau); mũi tên vectơ
-    (ký tự ghép U+20D7 ở mép phải chữ, 1–2 mảnh); "⁰C" sau dấu ngoặc hay cách xa số trước là chỉ số
-    trên không có cơ số; chữ đứng (đơn vị "kg", "J/kgK") giữ đứng; chữ thường trong Equation ("Hiệu
-    suất", "Năng lượng nhận được") thành chữ thường của Equation (font Cambria Math như bản gốc);
-    vạch "|x|" (chữ hay nét vẽ); khoảng trắng gõ tay (≥0,16em, không tính sau dấu câu hay cạnh phân số
-    vì Word tự giãn); ∆ giữ nguyên ký tự (đứng). Gạch đầu dòng "- " cách công thức, nhãn khác màu ("b)"
-    xanh đậm nghiêng) và dấu câu cuối font chữ thường thành chữ ngoài Equation. Màu chữ của Equation
-    giữ nguyên. Equation đứng một mình trong đoạn có thêm một dấu cách sau nó (không thì Word coi là
-    Equation hiển thị riêng: căn giữa, phân số to). Đọc không chắc thì giữ ảnh như dưới đây: nét vẽ
-    khác gạch phân số và vạch đứng (căn, ngoặc nhọn, gạch chân, nền tô), glyph cỡ to lệch baseline
-    (hai dòng), nhiều màu, ký tự lạ ("!", mảnh ngoặc lớn ⎛, chữ script), font chữ thường lẫn giữa,
-    LaTeX `omml.py` không nhận, và glyph mà font toán không có bảng mã chữ (ToUnicode rỗng hay thiếu
-    mã: PDF chỉ còn mã "!\"#$", có thể trông như "(" hợp lệ – cả trang có font Type0 không bảng mã
-    thì mọi công thức trang đó giữ ảnh).
+    nghiêng 𝑚 → m, 𝒃 → chữ đậm nghiêng, chữ Hy Lạp (ε/ϵ, φ/ϕ phân biệt); chỉ số trên/dưới theo cỡ chữ
+    và độ lệch đường chân chữ (cả chỉ số của số thập phân "4,1²", v′₁); gạch phân số (lồng nhau; tử/mẫu
+    cân giữa gạch); mũi tên vectơ và dấu mũ trên một chữ (vị trí vẽ thật lấy từ `get_texttrace`, vì lớp
+    chữ dời dấu ghép về cuối glyph trước); "⁰C" sau ngoặc hay cách số trước là chỉ số không cơ số; đơn vị
+    chữ đứng ("kg", "J/kgK"), chữ thường trong Equation ("Hiệu suất", font Cambria Math như bản gốc);
+    vạch "|x|" (chữ, hay nét vẽ thành cặp); ℝ ℕ ℤ ℚ ℂ ∅ ∖ ∀ ∃ ⋮ ⊆, n!; khoảng trắng gõ tay (≥0,16em; sau
+    dấu chấm ≥0,2em vì Word tự giãn 0,15–0,17em). Gạch đầu dòng "- ", nhãn khác màu ("b)") và dấu câu
+    cuối font chữ thường thành chữ ngoài Equation; màu chữ giữ nguyên. Equation có phân số cỡ bằng dòng
+    là Equation hiển thị của Word: đứng riêng đoạn thì ghi `m:oMathPara` căn theo đoạn, cạnh chữ thì giữ
+    ảnh; công thức chỉ có phân số cạnh chữ là Equation trong dòng ở cỡ chữ dòng. Equation trong dòng
+    đứng một mình trên một dòng (cả sau ngắt dòng trong ô bảng) có thêm dấu cách sau nó, không thì Word
+    coi là Equation hiển thị. **Không chắc thì giữ ảnh** (một Equation sai tệ hơn một ảnh): nét vẽ khác
+    gạch phân số và vạch đứng thành cặp (căn, ngoặc nhọn, gạch chân, nền tô), glyph cỡ dòng lệch đường
+    chân chữ (hai dòng), cận dưới "lim/min", chữ trên mũi tên, chỉ số của chỉ số, chỉ số đứng dưới chữ,
+    chỉ số không cơ số trước toán tử hay dấu đóng ngoặc, phân số trong số mũ, dấu mũ giãn trên nhiều chữ
+    (góc xOy), ngoặc không cân hay ngoặc giãn cao hơn mọi thứ công thức chứa (ma trận, hệ – đo mực khi vẽ
+    trang), nhiều màu, nhãn có dấu, ký tự lạ, font chữ thường lẫn giữa, glyph dưới 4 pt, công thức quá
+    lớn (300 glyph/nét, 32 dấu ghép), LaTeX `omml.py` không nhận; và glyph mà font toán không có bảng mã
+    chữ (ToUnicode rỗng/thiếu mã: PDF chỉ còn mã "!\"#$"; font CID thì đọc lại trang không thay mã lạ,
+    gặp U+FFFD là giữ ảnh), font không có trong danh sách font của trang (chỉ đọc từ điển /Font của chính
+    trang, có giới hạn; font toán riêng của Form XObject thì cả trang giữ ảnh). Bảng mã ToUnicode chỉ đọc
+    trong giới hạn (64 KB, giải nén Flate có chặn, 1 MB mỗi file), đối tượng font đọc một lần mỗi file.
+    Word for Mac xuất chỉ số bằng glyph không có bảng mã ("x_A" đọc thành "𝑥!"), nên công thức có chỉ số
+    của file Word for Mac vẫn là ảnh; file Word for Windows có bảng mã đủ.
   - Công thức không có chữ dùng được – MathType/Equation mà Word xuất ra PDF đánh số glyph
     "!", "\"", "#"…, công thức MathType (Times + Symbol) và công thức trên không đọc chắc – được cắt
     thành **ảnh nội dòng** 300 DPI đúng chỗ trong
