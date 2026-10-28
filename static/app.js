@@ -210,6 +210,8 @@ async function convert(e) {
     if (info.pages_image) notes.push(`${info.pages_image} trang scan giữ dạng ảnh. Chọn "Đọc chữ từ ảnh" để sửa được chữ.`);
     if (info.legacy_font_spans) notes.push("Đã đổi font VNI/TCVN3 sang Unicode.");
     if (info.removed_watermarks || info.removed_lines) notes.push("Đã bỏ watermark, chữ chìm và link ở đầu/chân trang.");
+    if (info.vietocr_skipped) notes.push("File scan rất dài nên chỉ đọc chữ nhanh, chưa đọc công thức – nên soát kỹ hơn.");
+    else if (info.formulas_skipped) notes.push("File scan dài nên chưa đọc công thức – công thức giữ dạng chữ thường.");
     $("notes").replaceChildren(...notes.map((t) => Object.assign(document.createElement("li"), { textContent: t })));
     $("notes").hidden = !notes.length;
 

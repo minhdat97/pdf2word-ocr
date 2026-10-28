@@ -20,6 +20,9 @@ import math
 import re
 import threading
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -216,10 +219,27 @@ def available() -> bool:
     return VIETOCR_ENABLED and all((VIETOCR_DIR / f).is_file() for f in MODEL_FILES)
 
 
+# VietOCR wanted by the conversion running in this thread (convert() skips it for very long scans).
+_wanted: ContextVar[bool] = ContextVar("vietocr_wanted", default=True)
+
+
+@contextmanager
+def skipped(skip: bool = True) -> Iterator[None]:
+    """VietOCR off for the conversion running in this thread while the block runs (other conversions
+    running at the same time in other threads keep theirs)."""
+    token = _wanted.set(not skip)
+    try:
+        yield
+    finally:
+        _wanted.reset(token)
+
+
 def reader() -> VietOCR | None:
     """The process's VietOCR, loaded on first use once its files are there (files fetched while the service
-    runs are found); None when disabled, not installed, or broken."""
+    runs are found); None when disabled, skipped for this conversion, not installed, or broken."""
     global _reader, _failed
+    if not _wanted.get():
+        return None
     if _reader is not None or _failed or not available():
         return _reader
     with _lock:

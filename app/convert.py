@@ -20,6 +20,7 @@ from statistics import median
 import cv2
 import numpy as np
 
+from . import mathocr, vietocr
 from .analyze import open_pdf, page_kind
 from .docx_builder import build_docx
 from .errors import TaskError
@@ -27,7 +28,7 @@ from .layout import canonical, looks_like_page_label, looks_like_page_number
 from .model import TAB, PageLayout, Paragraph, Picture, Run
 from .native import HEADER_ZONE, image_page, native_page
 from .ocr import ocr_page
-from .settings import MAX_DRAWINGS
+from .settings import MAX_DRAWINGS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
 
 MODES = ("basic", "ocr", "ocr-full")
 
@@ -394,18 +395,23 @@ def convert(
         raise TaskError("invalid_options", mode)
     doc = open_pdf(pdf_path)
     total = doc.page_count
+    kinds = [page_kind(page)["kind"] for page in doc]
+    ocr_pages = sum(mode == "ocr-full" or (mode == "ocr" and kind == "scan") for kind in kinds)
+    # long scans without the slower models, so one file does not hold a worker for long (a small server)
+    skip_formulas = ocr_pages > MFR_MAX_PAGES and mathocr.available()
+    skip_vietocr = ocr_pages > VIETOCR_MAX_PAGES and vietocr.available()
     pages: list[PageLayout] = []
-    for i, page in enumerate(doc):
-        progress(i, total)
-        kind = page_kind(page)["kind"]
-        if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
-            layout = ocr_page(page, languages)
-        elif kind == "scan" or len(page.get_cdrawings()) > MAX_DRAWINGS:
-            # (tens of thousands of vector paths would take the layout analysis hours)
-            layout = image_page(page)
-        else:
-            layout = native_page(page, languages if mode == "ocr" else None, strip=strip)
-        pages.append(layout)
+    with mathocr.skipped(skip_formulas), vietocr.skipped(skip_vietocr):
+        for i, (page, kind) in enumerate(zip(doc, kinds, strict=True)):
+            progress(i, total)
+            if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
+                layout = ocr_page(page, languages)
+            elif kind == "scan" or len(page.get_cdrawings()) > MAX_DRAWINGS:
+                # (tens of thousands of vector paths would take the layout analysis hours)
+                layout = image_page(page)
+            else:
+                layout = native_page(page, languages if mode == "ocr" else None, strip=strip)
+            pages.append(layout)
     progress(total, total)
 
     sources = Counter(p.source for p in pages)
@@ -432,4 +438,6 @@ def convert(
         "removed_lines": removed_lines,
         "word_count": words or None,
         "avg_confidence": round(sum(p.conf_sum for p in pages) / words, 1) if words else None,
+        "formulas_skipped": skip_formulas,
+        "vietocr_skipped": skip_vietocr,
     }

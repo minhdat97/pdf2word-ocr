@@ -52,9 +52,17 @@ không có mô hình, `P2W_MFR=0` hoặc `P2W_MATH_DETECT=off` thì trang OCR nh
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
-`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_THREADS` (2),
-`P2W_MFR` (`0` để tắt đọc công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_THREADS` (2),
+`P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_MAX_PAGES` (30),
+`P2W_MFR` (`0` để tắt đọc công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (10),
+`P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
+
+Máy chủ nhỏ (2 lõi ARM, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình, nên
+hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
+chạy một mình, cả process ~2,5 GB). File có hơn `P2W_MFR_MAX_PAGES` trang scan không đọc công thức,
+hơn `P2W_VIETOCR_MAX_PAGES` trang không dùng VietOCR (giao diện ghi một dòng), để một file dài
+không giữ máy chủ quá lâu. Đề scan 3 trang nhiều công thức: Tesseract ~6 giây/trang trên máy chủ
+như vậy (đo), có VietOCR ~17, có cả đọc công thức ~37 (ước theo tỉ lệ đo trên Mac).
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -428,8 +436,9 @@ hay thêm một chữ số so với Tesseract thì giữ chữ OCR (bộ thử: 
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
   lộn xộn).
-- File scan dài có đọc công thức chạy lâu (trên M4 Pro ~9 giây/trang khi chỉ có mô hình công thức):
-  máy chủ chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc.
+- File scan có đọc công thức chạy lâu (máy chủ 2 lõi ARM ~37 giây/trang đề nhiều công thức): quá
+  `P2W_MFR_MAX_PAGES` (10) trang scan thì bỏ đọc công thức, quá `P2W_VIETOCR_MAX_PAGES` (30) thì bỏ cả
+  VietOCR; máy chủ chạy hết việc dù người dùng đã đóng trang; chưa giới hạn thời gian mỗi việc.
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 

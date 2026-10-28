@@ -41,6 +41,9 @@ import logging
 import re
 import threading
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -232,13 +235,30 @@ _reader_failed = False
 _reader_lock = threading.Lock()
 
 
+# Formula reading wanted by the conversion running in this thread (convert() skips it for long scans).
+_wanted: ContextVar[bool] = ContextVar("formulas_wanted", default=True)
+
+
 def available() -> bool:
-    return MFR_ENABLED and all((MFR_DIR / f).is_file() for f in MODEL_FILES)
+    return MFR_ENABLED and _wanted.get() and all((MFR_DIR / f).is_file() for f in MODEL_FILES)
+
+
+@contextmanager
+def skipped(skip: bool = True) -> Iterator[None]:
+    """Formula reading off for the conversion running in this thread while the block runs (other
+    conversions running at the same time in other threads keep theirs)."""
+    token = _wanted.set(not skip)
+    try:
+        yield
+    finally:
+        _wanted.reset(token)
 
 
 def get_reader() -> FormulaReader | None:
-    """The shared reader, loaded on first use; None when off, missing or broken."""
+    """The shared reader, loaded on first use; None when off, skipped for this conversion, missing or broken."""
     global _reader, _reader_failed
+    if not _wanted.get():
+        return None
     if _reader is not None or _reader_failed or not available():
         return _reader
     with _reader_lock:

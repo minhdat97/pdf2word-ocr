@@ -35,17 +35,26 @@ OCR_DPI = 300
 OCR_MAX_SIDE_PX = 4500
 DEFAULT_OCR_LANGUAGES = ["vie"]
 
+# Threads of each model per conversion: the cores shared by the WORKERS conversions that run at once,
+# at most 2 (a 2-core server running 2 conversions: 1 each, so they do not fight over the cores).
+MODEL_THREADS = max(1, min(2, (os.cpu_count() or 1) // max(1, WORKERS)))
+
 # VietOCR re-reads Vietnamese OCR words (app/vietocr.py). On when its model files are in
 # VIETOCR_DIR (scripts/fetch_models.py) unless P2W_VIETOCR=0; threads per conversion.
 VIETOCR_DIR = Path(os.environ.get("P2W_VIETOCR_DIR", BASE_DIR / "models" / "vietocr"))
 VIETOCR_ENABLED = os.environ.get("P2W_VIETOCR", "1") != "0"
-VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", 2))
+VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", MODEL_THREADS))
+# A file with more scanned pages than this keeps Tesseract's words (VietOCR about doubles the OCR time).
+VIETOCR_MAX_PAGES = int(os.environ.get("P2W_VIETOCR_MAX_PAGES", 30))
 
 # Formula model (app/mathocr.py, pix2text-mfr-1.5) reads formula regions of OCR pages.
 # On when its files are in MFR_DIR unless P2W_MFR=0; onnxruntime threads per conversion.
 MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
 MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
-MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", 2))
+MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
+# A file with more scanned pages than this is converted without formula reading (VietOCR still runs):
+# formulas take about half the OCR time, and a long scan would hold a worker for too long.
+MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 10))
 # Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
 # detector registered in mathregions.DETECTORS.
