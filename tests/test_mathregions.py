@@ -237,7 +237,7 @@ class TwoDimensionalTest(unittest.TestCase):
             def read(self, images):
                 return [("C . \\frac { 3 } { 2 }", 0.99) for _ in images]
 
-        with mock.patch.object(mathocr, "available", return_value=True), \
+        with mock.patch.object(mathocr, "available", return_value=True), ocr.formulas_mode("model"), \
                 mock.patch.object(mathocr, "get_reader", return_value=Reader()), \
                 mock.patch.object(mathregions, "MATH_DETECT", "rules"):
             ocr.read_formulas(lines, [], gray, ink, rgb, 300)
@@ -331,7 +331,7 @@ class GarbledLabelsTest(unittest.TestCase):
             def read(self, images):
                 return [("9 \\mathrm { k m } .", 0.99) for _ in images]
 
-        with mock.patch.object(mathocr, "available", return_value=True), \
+        with mock.patch.object(mathocr, "available", return_value=True), ocr.formulas_mode("model"), \
                 mock.patch.object(mathocr, "get_reader", return_value=Reader()), \
                 mock.patch.object(mathregions, "MATH_DETECT", "rules"):
             ocr.read_formulas(lines, [], gray, ink, rgb, 300)

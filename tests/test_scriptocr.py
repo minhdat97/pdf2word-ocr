@@ -126,16 +126,22 @@ class CharTest(unittest.TestCase):
 
 class ReaderChoiceTest(unittest.TestCase):
     def test_settings_and_skipped_model(self):
-        with mock.patch.object(ocr, "FORMULAS", "scripts"):
-            self.assertEqual(ocr.formula_reader(), "scripts")
-        with mock.patch.object(ocr, "FORMULAS", "off"):
-            self.assertEqual(ocr.formula_reader(), "off")
-        with mock.patch.object(ocr, "FORMULAS", "model"), mock.patch.object(mathocr, "installed", return_value=True):
-            self.assertEqual(ocr.formula_reader(), "model")
-            with mathocr.skipped():  # a long scan: the model is skipped, scripts are still read
-                self.assertEqual(ocr.formula_reader(), "scripts")
-        with mock.patch.object(ocr, "FORMULAS", "model"), mock.patch.object(mathocr, "installed", return_value=False):
-            self.assertEqual(ocr.formula_reader(), "off")
+        with mock.patch.object(mathocr, "available", return_value=True):
+            for setting in ("scripts", "off", "model"):
+                with mock.patch.object(ocr, "FORMULAS", setting):
+                    self.assertEqual(ocr.formula_reader(), setting)
+                    with ocr.formulas_mode("model"):  # a careful conversion: the model whatever the setting
+                        self.assertEqual(ocr.formula_reader(), "model")
+                    with ocr.formulas_mode("scripts"):
+                        self.assertEqual(ocr.formula_reader(), "scripts" if setting != "off" else "off")
+            self.assertEqual(ocr.formula_reader(), "scripts")  # the default
+        # no model (not installed, broken, or skipped for a long scan): the default way
+        with mock.patch.object(mathocr, "available", return_value=False):
+            for setting, want in (("scripts", "scripts"), ("off", "off"), ("model", "scripts")):
+                with mock.patch.object(ocr, "FORMULAS", setting), ocr.formulas_mode("model"):
+                    self.assertEqual(ocr.formula_reader(), want)
+        with mock.patch.object(mathocr, "installed", return_value=True), mathocr.skipped():
+            self.assertFalse(mathocr.available())
 
     def test_scripts_mode_reads_with_scriptocr_and_keeps_tall_regions_as_pictures(self):
         gray = np.full((300, 900), 255, np.uint8)

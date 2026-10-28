@@ -31,6 +31,8 @@ takes the case measured on the glyph. On 522 formula boxes of two physics
 exams (one real scan, a native PDF and two simulated scans of it) it kept 399,
 none wrong.
 
+Only a careful conversion ("Đọc kỹ", app/convert.py) uses the model; the default
+reads superscripts and subscripts without it (app/scriptocr.py).
 Without the model files (or with P2W_MFR=0) read_regions() returns Nones.
 decoder_model.onnx may be replaced by its two halves (scripts/split_mfr_decoder.py:
 the cross-attention keys and values of a crop computed once, not at every step),
@@ -57,9 +59,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .settings import (
-    MFR_DIR, MFR_ENABLED, MFR_ENCODE_ONE, MFR_FIRST_STOP, MFR_HEAD, MFR_PADS, MFR_SAME_STOP, MFR_THREADS,
-)
+from .settings import MFR_DIR, MFR_ENABLED, MFR_THREADS
 
 log = logging.getLogger("pdf2word.mathocr")
 
@@ -69,7 +69,10 @@ BOS, EOS, PAD = 1, 2, 0
 SIZE = 384  # the encoder's input side; crops are stretched to a square
 MAX_TOKENS = 200  # a reading that does not end by then is dropped
 BATCH = 16  # crops per encoder/decoder run
-ENCODE_ONE = MFR_ENCODE_ONE  # the encoder reads the crops of a batch one by one (INT8 encoder: readings per crop)
+# The encoder reads the crops of a batch one by one: the same readings, ~10 % less time and half the memory (one
+# crop's activations stay in cache); a dynamically quantized INT8 encoder needs it (it scales its activations over
+# the whole batch: a crop's reading would depend on the other crops of its page).
+ENCODE_ONE = True
 MAX_CROP_PIXELS = 2_000_000  # larger regions are not formulas (a formula at 300 dpi is < 300 px high)
 
 MIN_CONF = 0.85  # mean token probability needed by decide() (vote() asks less of each of two readings)
@@ -267,7 +270,7 @@ _reader_failed = False
 _reader_lock = threading.Lock()
 
 
-# Formula reading wanted by the conversion running in this thread (convert() skips it for long scans).
+# The formula model wanted by the conversion running in this thread (convert() skips it for long scans).
 _wanted: ContextVar[bool] = ContextVar("formulas_wanted", default=True)
 
 
@@ -280,7 +283,8 @@ def installed() -> bool:
 
 
 def available() -> bool:
-    return _wanted.get() and installed()
+    """The conversion running in this thread can use the model: installed, not skipped, not broken (broken())."""
+    return _wanted.get() and not _reader_failed and installed()
 
 
 @contextmanager
@@ -1094,7 +1098,7 @@ def _as_ocr(reading: tuple[str, float], ocr_text: str) -> MathDecision | None:
     """The decision of a reading that is plain text (no script, no 2-D part) equal to the OCR text but for spaces,
     else None."""
     d = judge(reading[0], reading[1], ocr_text, VOTE_MIN_CONF)[0]
-    if d is None or d.kind != "text" or (SAME_STOP < 2 and any(script for _, script in d.parts)):
+    if d is None or d.kind != "text" or any(script for _, script in d.parts):
         return None
     plain, ocr = ("".join(t for t, _ in d.parts), _LABEL.sub("", ocr_text or ""))
     return d if re.sub(r"\s", "", plain) == re.sub(r"\s", "", ocr) else None
@@ -1113,11 +1117,11 @@ def _pad(img: np.ndarray, px: int) -> np.ndarray:
 
 # Crops of a region given to the model, tuned at 300 dpi: cut to the ink, then 3 px and 8 px of white around it.
 # The third is read only when the first two do not agree.
-PADS = MFR_PADS  # (0, 3, 8) unless P2W_MFR_PADS says otherwise
+PADS = (0, 3, 8)
 HEAD_PAD = 3  # margin of the crop without its last word
-FIRST_STOP = MFR_FIRST_STOP  # a region whose first reading can be used in no vote is not read again
-SAME_STOP = MFR_SAME_STOP  # a region whose first reading is plain text equal to the OCR text is not read again
-HEAD = MFR_HEAD  # unsettled regions are read once more without their last short word
+# A region whose first reading is plain text equal to the OCR text ("6 kPa.") is not read again: it writes the OCR
+# text anyway. About 20 % fewer crops, the same .docx on the test scans.
+SAME_STOP = True
 # A blank gap this wide (share of the crop's height) before a last word this narrow (share of its width): the
 # unit or mark after a number or a symbol ("7,66.10^{-22} J.", "T_1;").
 UNIT_GAP = 0.15
@@ -1195,8 +1199,6 @@ def read_regions(
             break
         for i, (tex, conf) in zip(todo, reader.read([_pad(crops[i], pad) for i in todo])):
             readings[i].append((checked(i, tex), conf))
-        if k == 0 and FIRST_STOP:
-            todo = [i for i in todo if _usable(readings[i], ocr_texts[i])]
         if k == 0 and SAME_STOP:
             for i in todo:
                 d = _as_ocr(readings[i][0], ocr_texts[i])
@@ -1209,7 +1211,7 @@ def read_regions(
     # written as a symbol ("7,66.10^{\mu^{22}} J."), a thin subscript "1" beside a ";" read as "\i". Read without
     # its last short word (unit, mark), the rest is often read right; it then counts as a reading of the whole
     # region (_confirmed), so the readings that agree with it count with it (vote()).
-    parts = {i: _without_unit(crops[i]) for i in todo} if HEAD else {}  # todo: unsettled, some reading usable
+    parts = {i: _without_unit(crops[i]) for i in todo}  # todo: unsettled, some reading usable or repairable
     again = [i for i, part in parts.items() if part is not None]
     for i, head in zip(again, reader.read([_pad(parts[i], HEAD_PAD) for i in again]) if again else []):
         confirmed = _confirmed(readings[i], head, ocr_texts[i])

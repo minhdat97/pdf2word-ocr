@@ -117,7 +117,10 @@ def _validate(payload: dict) -> Task:
         strip = options.get("strip_watermarks", False)
         if not isinstance(strip, bool):
             raise ValueError("invalid_options: strip_watermarks must be true or false")
-        options = {"ocr_type": ocr_type, "languages": languages, "strip_watermarks": strip}
+        careful = options.get("careful", False)  # "Đọc kỹ": formulas of scanned pages read by the formula model
+        if not isinstance(careful, bool):
+            raise ValueError("invalid_options: careful must be true or false")
+        options = {"ocr_type": ocr_type, "languages": languages, "strip_watermarks": strip, "careful": careful}
     else:
         options = {}
     return Task(task_id=task_id, tool=tool, input_tokens=tokens, options=options)
@@ -161,7 +164,8 @@ class TaskManager:
             else:
                 mode = OCR_TYPES[task.options["ocr_type"]]
                 out, task.result_options = convert(
-                    path, mode, task.options["languages"], progress, task.options["strip_watermarks"]
+                    path, mode, task.options["languages"], progress, task.options["strip_watermarks"],
+                    task.options["careful"],
                 )
                 task.output_files = [storage.store_output(out, "docx")]
             task.status = "done"

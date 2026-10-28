@@ -1,6 +1,7 @@
-"""The slower models per conversion: a file with more scanned pages than MFR_MAX_PAGES is converted without
-formula reading, one with more than VIETOCR_MAX_PAGES without VietOCR too (convert() turns them off for its own
-thread only), and the result says so.
+"""The slower models per conversion: the formula model reads only in a careful conversion ("Đọc kỹ") of a file with
+at most MFR_MAX_PAGES scanned pages (otherwise formulas are read without it), VietOCR only in one with at most
+VIETOCR_MAX_PAGES (convert() turns them off for its own thread only), and the result says so. The task option
+"careful" reaches convert().
 
     python -m unittest discover -s tests
 """
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pymupdf  # noqa: E402
 
-from app import convert, mathocr, vietocr  # noqa: E402
+from app import convert, mathocr, ocr, storage, tasks, vietocr  # noqa: E402
 from app.native import image_page  # noqa: E402
 
 
@@ -34,11 +35,13 @@ def scan_pdf(pages: int) -> Path:
 
 
 class FormulaLimitTest(unittest.TestCase):
-    def run_convert(self, pages: int, limit: int, vietocr_limit: int = 30) -> tuple[dict, list[tuple[bool, bool]]]:
+    def run_convert(
+        self, pages: int, limit: int, vietocr_limit: int = 30, careful: bool = True
+    ) -> tuple[dict, list[tuple[str, bool]]]:
         wanted = []
 
         def fake_ocr_page(page, languages):
-            wanted.append((mathocr.available(), vietocr._wanted.get() and vietocr.available()))
+            wanted.append((ocr.formula_reader(), vietocr._wanted.get() and vietocr.available()))
             return image_page(page)
 
         path = scan_pdf(pages)
@@ -49,10 +52,10 @@ class FormulaLimitTest(unittest.TestCase):
                 mock.patch.object(vietocr, "VIETOCR_ENABLED", True),
                 mock.patch.object(vietocr, "MODEL_FILES", ()),
                 mock.patch.object(convert, "ocr_page", fake_ocr_page),
-                mock.patch.object(mathocr, "MFR_ENABLED", True),
-                mock.patch.object(mathocr, "MODEL_FILES", ()),  # the model counts as present
+                mock.patch.object(mathocr, "installed", return_value=True),  # the model counts as present
+                mock.patch.object(ocr, "FORMULAS", "scripts"),
             ):
-                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None)
+                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None, careful=careful)
                 out.unlink()
         finally:
             path.unlink()
@@ -62,13 +65,15 @@ class FormulaLimitTest(unittest.TestCase):
         info, wanted = self.run_convert(3, 2)
         self.assertTrue(info["formulas_skipped"])
         self.assertFalse(info["vietocr_skipped"])
-        self.assertEqual(wanted, [(False, True)] * 3)
+        self.assertEqual(info["formulas"], "scripts")
+        self.assertEqual(wanted, [("scripts", True)] * 3)
         self.assertTrue(mathocr._wanted.get())  # back on after the conversion
+        self.assertIsNone(ocr._formulas.get())
 
     def test_very_long_scan_skips_vietocr(self):
         info, wanted = self.run_convert(3, 1, vietocr_limit=2)
         self.assertTrue(info["formulas_skipped"] and info["vietocr_skipped"])
-        self.assertEqual(wanted, [(False, False)] * 3)
+        self.assertEqual(wanted, [("scripts", False)] * 3)
         self.assertTrue(vietocr._wanted.get())
         self.assertIsNone(self.reader_while_skipped())
 
@@ -79,7 +84,15 @@ class FormulaLimitTest(unittest.TestCase):
     def test_short_scan_reads_formulas(self):
         info, wanted = self.run_convert(2, 2)
         self.assertFalse(info["formulas_skipped"])
-        self.assertEqual(wanted, [(True, True)] * 2)
+        self.assertEqual((info["careful"], info["formulas"]), (True, "model"))
+        self.assertEqual(wanted, [("model", True)] * 2)
+
+    def test_default_conversion_reads_without_the_model(self):
+        for pages in (2, 3):
+            info, wanted = self.run_convert(pages, 2, careful=False)
+            self.assertFalse(info["formulas_skipped"])  # the model was not wanted
+            self.assertEqual((info["careful"], info["formulas"]), (False, "scripts"))
+            self.assertEqual(wanted, [("scripts", True)] * pages)
 
     def test_skip_is_per_thread(self):
         seen = {}
@@ -98,6 +111,29 @@ class FormulaLimitTest(unittest.TestCase):
             seen["own"] = mathocr._wanted.get()
         t.join()
         self.assertEqual(seen, {"other": True, "own": False})
+
+
+class CarefulOptionTest(unittest.TestCase):
+    def payload(self, **options):
+        return {"task_id": "0" * 32, "tool": "pdf-to-word", "input_tokens": ["x.pdf"], "options": options}
+
+    def test_option_reaches_convert(self):
+        with mock.patch.object(storage, "exists", return_value=True):
+            self.assertFalse(tasks._validate(self.payload(ocr_type="ocr")).options["careful"])
+            task = tasks._validate(self.payload(ocr_type="ocr", careful=True))
+            self.assertTrue(task.options["careful"])
+            with self.assertRaises(ValueError):
+                tasks._validate(self.payload(ocr_type="ocr", careful="yes"))
+        out = Path(tempfile.mkstemp(suffix=".docx")[1])
+        with (
+            mock.patch.object(tasks, "convert", return_value=(out, {})) as conv,
+            mock.patch.object(storage, "store_output", return_value="y.docx"),
+            mock.patch.object(storage, "path_for", return_value=Path("x.pdf")),
+        ):
+            tasks.TaskManager._run(None, task)
+        out.unlink(missing_ok=True)
+        self.assertEqual(task.status, "done")
+        self.assertIs(conv.call_args.args[5], True)
 
 
 if __name__ == "__main__":

@@ -257,6 +257,11 @@ class FakeReader:
 
 
 class ReadFormulasTest(unittest.TestCase):
+    def setUp(self):  # the formula model's path (a careful conversion)
+        patch = mock.patch.object(ocr, "FORMULAS", "model")
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def run_page(self, answer):
         gray, ink = page_image()
         rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
@@ -318,11 +323,11 @@ class ReadFormulasTest(unittest.TestCase):
         self.assertEqual([w.text for w in lines[0].words], ["A.", "5", "và", "3.", "B.", "4."])
         self.assertIsNotNone(lines[0].words[5].math)
 
-    def test_nothing_without_the_model_or_in_tables(self):
+    def test_nothing_when_off_or_in_tables(self):
         gray, ink = page_image()
         rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         lines = page_lines()
-        with mock.patch.object(mathocr, "available", return_value=False):
+        with mock.patch.object(ocr, "FORMULAS", "off"), mock.patch.object(mathocr, "available", return_value=True):
             self.assertEqual(ocr.read_formulas(lines, [], gray, ink, rgb, 300), 0)
         grid = ocr._Grid(0, 0, 1600, 240, [0, 240], [0, 1600])
         with mock.patch.object(mathocr, "available", return_value=True), \

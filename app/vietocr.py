@@ -1,7 +1,9 @@
 """Second reading of OCR words with VietOCR (vgg_transformer, Apache-2.0).
 
 Tesseract finds the words and reads them; VietOCR, trained on Vietnamese,
-re-reads each word's crop. refine_words takes its tone marks when both read the
+re-reads the crops of the words Tesseract may have wrong (unsure(): not sure of
+them, or a letter â ă ê ô with no tone mark or a grave accent; every word with
+P2W_VIETOCR_WORDS=all). refine_words takes its tone marks when both read the
 same letters, and its whole word where Tesseract was unsure and VietOCR was not.
 
 The model runs on onnxruntime (models/vietocr, fetched by scripts/fetch_models.py):
@@ -388,21 +390,6 @@ def unsure(wd) -> bool:
     return wd.conf < TESS_SURE or _bare_hat(wd.text)
 
 
-# Words re-read by the conversion running in this thread ("all" / "unsure"; None: VIETOCR_WORDS).
-_words: ContextVar[str | None] = ContextVar("vietocr_words", default=None)
-
-
-@contextmanager
-def words_mode(mode: str | None) -> Iterator[None]:
-    """VietOCR re-reads every word ("all") or only unsure() ones ("unsure") in the conversion running in this
-    thread while the block runs; None keeps the setting (P2W_VIETOCR_WORDS)."""
-    token = _words.set(mode)
-    try:
-        yield
-    finally:
-        _words.reset(token)
-
-
 def word_crops(lines: list, gray: np.ndarray) -> list[np.ndarray]:
     """One crop per word: the word's columns, the line's rows, padded by a quarter of the line height."""
     h, w = gray.shape[:2]
@@ -430,11 +417,11 @@ def word_sides(lines: list) -> list[tuple[bool, bool]]:
 
 def refine_words(lines: list, gray: np.ndarray, reader: VietOCR) -> int:
     """Re-read Tesseract's words (app.ocr Line/Word, before fix_lines) with VietOCR and keep
-    the better reading of each; with words_mode("unsure") (or P2W_VIETOCR_WORDS=unsure) only unsure() words
-    are read. Returns how many words changed."""
+    the better reading of each; only unsure() words are read unless P2W_VIETOCR_WORDS=all. Returns how many words
+    changed."""
     words = [wd for ln in lines for wd in ln.words]
     crops = word_crops(lines, gray)
-    every = (_words.get() or VIETOCR_WORDS) != "unsure"
+    every = VIETOCR_WORDS == "all"
     todo = [i for i, c in enumerate(crops) if c.shape[0] >= 2 and c.shape[1] >= 2 and (every or unsure(words[i]))]
     if not todo:
         return 0

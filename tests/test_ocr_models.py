@@ -50,11 +50,22 @@ class BrokenModelTest(unittest.TestCase):
     def test_formula_model_failing_keeps_ocr_text(self):
         with mock.patch.object(vietocr, "reader", return_value=None), \
                 mock.patch.object(ocr.mathregions, "find", side_effect=RuntimeError("past_k")), \
-                mock.patch.object(mathocr, "available", return_value=True), self.assertLogs("pdf2word.mathocr", "ERROR"):
+                mock.patch.object(mathocr, "installed", return_value=True), ocr.formulas_mode("model"), \
+                self.assertLogs("pdf2word.mathocr", "ERROR"):
             layout = ocr.ocr_page(self.page, ["vie"])
+            self.assertEqual(ocr.formula_reader(), "scripts")  # the model is off: formulas are read without it
         self.assertIn("2 kg", self.text(layout))
         self.assertTrue(mathocr._reader_failed)
         self.assertIsNone(mathocr.get_reader())
+
+    def test_reading_without_the_model_failing_keeps_ocr_text(self):
+        with mock.patch.object(vietocr, "reader", return_value=None), \
+                mock.patch.object(ocr.mathregions, "find", side_effect=RuntimeError("bad region")), \
+                mock.patch.object(mathocr, "installed", return_value=True), \
+                mock.patch.object(ocr, "FORMULAS", "scripts"), self.assertLogs("pdf2word.ocr", "ERROR"):
+            layout = ocr.ocr_page(self.page, ["vie"])
+        self.assertIn("2 kg", self.text(layout))
+        self.assertFalse(mathocr._reader_failed)  # a careful conversion can still use the model
 
 
 if __name__ == "__main__":

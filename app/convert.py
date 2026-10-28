@@ -27,7 +27,7 @@ from .errors import TaskError
 from .layout import canonical, looks_like_page_label, looks_like_page_number
 from .model import TAB, PageLayout, Paragraph, Picture, Run
 from .native import HEADER_ZONE, image_page, native_page
-from .ocr import ocr_page
+from .ocr import formula_reader, formulas_mode, ocr_page
 from .settings import MAX_DRAWINGS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
 
 MODES = ("basic", "ocr", "ocr-full")
@@ -390,18 +390,25 @@ def convert(
     languages: list[str],
     progress: Callable[[int, int], None],
     strip: bool = False,
+    careful: bool = False,
 ) -> tuple[Path, dict]:
+    """Convert a PDF to .docx. careful ("Đọc kỹ"): the formula model reads the formulas of scanned pages (about a
+    minute and a half per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES of them; otherwise
+    they are read as settings.FORMULAS says (by default superscripts and subscripts without the model)."""
     if mode not in MODES:
         raise TaskError("invalid_options", mode)
     doc = open_pdf(pdf_path)
     total = doc.page_count
     kinds = [page_kind(page)["kind"] for page in doc]
     ocr_pages = sum(mode == "ocr-full" or (mode == "ocr" and kind == "scan") for kind in kinds)
-    # long scans without the slower models, so one file does not hold a worker for long (a small server)
-    skip_formulas = ocr_pages > MFR_MAX_PAGES and mathocr.available()
+    how = "model" if careful else None  # how formulas are read (None: settings.FORMULAS)
+    with formulas_mode(how):
+        # long scans without the slower models, so one file does not hold a worker for long (a small server)
+        skip_formulas = ocr_pages > MFR_MAX_PAGES and formula_reader() == "model"
     skip_vietocr = ocr_pages > VIETOCR_MAX_PAGES and vietocr.available()
     pages: list[PageLayout] = []
-    with mathocr.skipped(skip_formulas), vietocr.skipped(skip_vietocr):
+    with formulas_mode(how), mathocr.skipped(skip_formulas), vietocr.skipped(skip_vietocr):
+        formulas = formula_reader()
         for i, (page, kind) in enumerate(zip(doc, kinds, strict=True)):
             progress(i, total)
             if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
@@ -438,6 +445,8 @@ def convert(
         "removed_lines": removed_lines,
         "word_count": words or None,
         "avg_confidence": round(sum(p.conf_sum for p in pages) / words, 1) if words else None,
-        "formulas_skipped": skip_formulas,
+        "careful": careful,
+        "formulas": formulas if ocr_pages else None,  # how formulas of scanned pages were read: model / scripts / off
+        "formulas_skipped": skip_formulas,  # the model was wanted, the file has too many scanned pages for it
         "vietocr_skipped": skip_vietocr,
     }

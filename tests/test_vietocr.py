@@ -125,7 +125,8 @@ class RefineTest(unittest.TestCase):
         ln = Line(block=1, par=1, baseline=60.0, em_px=40.0)
         ln.words = [Word(10, 40, 90, 70, 95.0, "Trương", 0, 40.0), Word(100, 30, 200, 80, 50.0, "xyz", 0, 40.0)]
         reader = FakeReader([("trường", 0.9), ("học", 0.8)])
-        self.assertEqual(vietocr.refine_words([ln], gray, reader), 2)
+        with mock.patch.object(vietocr, "VIETOCR_WORDS", "all"):  # "Trương" is sure: read only when all words are
+            self.assertEqual(vietocr.refine_words([ln], gray, reader), 2)
         self.assertEqual([w.text for w in ln.words], ["Trường", "học"])
         # line rows 30..80 padded by a quarter of 50 px; word columns padded the same
         self.assertEqual(reader.shapes, [(74, 102), (74, 124)])
@@ -138,17 +139,13 @@ class RefineTest(unittest.TestCase):
             Word(100, 40, 190, 70, 96.0, "học", 0, 40.0),  # sure, no hat letter: kept as it is
             Word(200, 40, 290, 70, 60.0, "xyz", 0, 40.0),  # unsure: read
         ]
-        for mode in ("unsure", None):
-            for w, t in zip(ln.words, ("chuyên", "học", "xyz")):
-                w.text = t
-            reader = FakeReader([("chuyển", 0.9), ("xyw", 0.9)])
-            patch = mock.patch.object(vietocr, "VIETOCR_WORDS", "unsure" if mode is None else "all")
-            with patch, vietocr.words_mode(mode):
-                self.assertEqual(vietocr.refine_words([ln], gray, reader), 2)
-            self.assertEqual([w.text for w in ln.words], ["chuyển", "học", "xyw"])
-            self.assertEqual(len(reader.shapes), 2)
+        reader = FakeReader([("chuyển", 0.9), ("xyw", 0.9)])
+        with mock.patch.object(vietocr, "VIETOCR_WORDS", "unsure"):
+            self.assertEqual(vietocr.refine_words([ln], gray, reader), 2)
+        self.assertEqual([w.text for w in ln.words], ["chuyển", "học", "xyw"])
+        self.assertEqual(len(reader.shapes), 2)
         reader = FakeReader([("chuyển", 0.9), ("học", 0.9), ("xyw", 0.9)])
-        with vietocr.words_mode("all"):
+        with mock.patch.object(vietocr, "VIETOCR_WORDS", "all"):
             vietocr.refine_words([ln], gray, reader)
         self.assertEqual(len(reader.shapes), 3)
 
@@ -168,14 +165,6 @@ class SelectTest(unittest.TestCase):
         self.assertFalse(vietocr.unsure(wd("học", vietocr.TESS_SURE)))
         self.assertTrue(vietocr.unsure(wd("tiên", 97)))
         self.assertFalse(vietocr.unsure(wd("6,02.10", 96)))
-
-    def test_mode_of_one_conversion(self):
-        self.assertIsNone(vietocr._words.get())
-        with vietocr.words_mode("unsure"):
-            self.assertEqual(vietocr._words.get(), "unsure")
-            with vietocr.words_mode(None):
-                self.assertIsNone(vietocr._words.get())
-        self.assertIsNone(vietocr._words.get())
 
 
 class LoaderTest(unittest.TestCase):

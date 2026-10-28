@@ -8,12 +8,16 @@ paragraphs and table cells with font size, alignment, indents, spacing and
 bold estimates.
 """
 
+import logging
 import os
 import re
 import subprocess
 import tempfile
 import unicodedata
 from bisect import bisect_right
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from itertools import pairwise
@@ -29,7 +33,9 @@ from .layout import alignment, cell_align, looks_like_link
 from .model import TAB, Cell, PageLayout, Paragraph, Picture, Run, Table
 from .ocr_fix import fix_lines, fix_table
 from .omml import latex_to_omml
-from .settings import FORMULAS, MFR_SKIP_KINDS, OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
+from .settings import FORMULAS, OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
+
+log = logging.getLogger("pdf2word.ocr")
 
 # Tesseract's per-line metrics relative to the font size in pixels, measured
 # on samples/ (20pt title, 12pt body, 11pt table): x_size ~0.91em and
@@ -1137,14 +1143,28 @@ def _formula_picture(region, rgb: np.ndarray, gray: np.ndarray, s: float) -> For
     return FormulaPicture(_png(crop), (x1 - x0) * s, (y1 - y0) * s, depth)
 
 
+# How the conversion running in this thread reads formulas (None: settings.FORMULAS); "model" for a careful one.
+_formulas: ContextVar[str | None] = ContextVar("formulas", default=None)
+
+
+@contextmanager
+def formulas_mode(how: str | None) -> Iterator[None]:
+    """Formula regions of the conversion running in this thread are read `how` ("model", "scripts", "off"; None:
+    settings.FORMULAS) while the block runs; other conversions running at the same time keep theirs."""
+    token = _formulas.set(how)
+    try:
+        yield
+    finally:
+        _formulas.reset(token)
+
+
 def formula_reader() -> str:
-    """How this conversion reads formula regions: "model", "scripts" or "off" (settings.FORMULAS). "model" becomes
-    "scripts" in a conversion that skips the model (a long scan, app/convert.py), "off" without the model."""
-    if FORMULAS in ("scripts", "off"):
-        return FORMULAS
-    if mathocr.available():
-        return "model"
-    return "scripts" if mathocr.installed() else "off"
+    """How this conversion reads formula regions: "model", "scripts" or "off" (formulas_mode(), else
+    settings.FORMULAS). Where the model is not installed or the conversion skips it (a long scan, app/convert.py),
+    "model" falls back to the default way (FORMULAS; "scripts" when that is "model" too)."""
+    default = FORMULAS if FORMULAS in ("scripts", "off") else "scripts"
+    how = _formulas.get() or FORMULAS
+    return "model" if how == "model" and mathocr.available() else default
 
 
 def read_formulas(
@@ -1178,12 +1198,10 @@ def read_formulas(
         reader = mathocr.get_reader()
         if reader is None:
             return 0
-        read = [r for r in regions if r.kind not in MFR_SKIP_KINDS]  # kinds not read: no reading (a tall one: picture)
-        got = dict(zip(map(id, read), mathocr.read_regions(
-            gray, [r.box for r in read], [r.ocr_text for r in read], [r.em_px for r in read], reader,
-            [r.case_from_ink for r in read],
-        )))
-        decisions = [got.get(id(r)) for r in regions]
+        decisions = mathocr.read_regions(
+            gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader,
+            [r.case_from_ink for r in regions],
+        )
     s = 72 / dpi
     placed = 0
     for region, decision in zip(regions, decisions, strict=True):
@@ -1275,7 +1293,10 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     try:
         read_formulas(lines, grids, gray, ink, rgb, dpi)  # words change only once all regions are read
     except Exception:  # damaged or mismatched model files: OCR text, formula model off
-        mathocr.broken()
+        if formula_reader() == "model":
+            mathocr.broken()
+        else:  # the detector or the reader without the model failed on this page: its OCR text
+            log.exception("formula reading failed on a page")
     s = 72 / dpi
     pictures = []
     if whole_page:
