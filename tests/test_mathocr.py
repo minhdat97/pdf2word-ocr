@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -303,6 +304,24 @@ class ReadRegionsTest(unittest.TestCase):
         self.assertEqual([as_text(d) for d in ds], ["v_{H}"])
         self.assertEqual(M.read_regions(small, [(10, 20, 70, 80)], ["vh"], reader=FakeReader(read)), [None])
 
+    def test_reading_equal_to_ocr_read_once(self):
+        gray = np.full((100, 400), 255, np.uint8)
+        gray[30:60, 20:120] = 0
+        gray[30:60, 200:380] = 0
+        boxes = [(10, 20, 130, 70), (190, 20, 390, 70)]
+        read = {100: [("6 \\mathrm { ~ k P a } .", 0.97)], 180: [("1 0 ^ { 5 }", 0.99)]}
+        for same_stop, passes in ((False, [2, 2]), (True, [2, 1])):
+            reader = FakeReader(read)
+            with mock.patch.object(M, "SAME_STOP", same_stop):
+                ds = M.read_regions(gray, boxes, ["6 kPa.", "105"], reader=reader)
+            self.assertEqual([as_text(d) for d in ds], ["6 kPa.", "10^{5}"])
+            self.assertEqual(reader.passes, passes)  # "10^{5}" has a script: Tesseract cannot confirm it
+        # a plain reading Tesseract does not agree with is read again
+        reader = FakeReader({100: [("8 \\mathrm { ~ k P a } .", 0.97)], 180: [("1 0 ^ { 5 }", 0.99)]})
+        with mock.patch.object(M, "SAME_STOP", True):
+            self.assertEqual(M.read_regions(gray, boxes[:1], ["6 kPa."], reader=reader), [None])
+        self.assertEqual(reader.passes, [1, 1])
+
     def test_model_off(self):
         with mock.patch.object(M, "get_reader", return_value=None):
             self.assertEqual(M.read_regions(np.zeros((10, 10), np.uint8), [(0, 0, 5, 5)], [""]), [None])
@@ -366,6 +385,59 @@ class ModelPartsTest(unittest.TestCase):
             img = (rng.rand(h, w) * 255).astype(np.uint8)
             want = np.asarray(Image.fromarray(img).resize((384, 384), Image.BICUBIC))
             self.assertTrue((M.resize_bicubic(img, 384, 384) == want).all())
+
+    def test_split_decoder_reads_as_the_whole_one(self):
+        """cross_kv + decoder_step (scripts/split_mfr_decoder.py) decode as decoder_model does, rows that end
+        dropping out of the batch."""
+        rng = np.random.RandomState(0)
+        proj = rng.rand(4, 3).astype(np.float32)
+        emb = rng.rand(30, 3).astype(np.float32)
+
+        class Run:
+            def __init__(self, fn, outputs=()):
+                self.fn, self.calls = fn, []
+                self.get_outputs = lambda: [SimpleNamespace(name=n) for n in outputs]
+
+            def run(self, _names, feed):
+                self.calls.append({k: v.shape for k, v in feed.items()})
+                return self.fn(feed)
+
+        def logits(ids, kv):  # next token from the last token and the crop's keys; EOS (2) after 3-6 steps
+            n = ids.shape[1]
+            score = (kv.sum(axis=(1, 2))[:, None] * emb[ids[:, -1]].sum(1, keepdims=True)) % 1
+            out = np.zeros((len(ids), n, 30), np.float32)
+            nxt = np.where(n >= 3 + (score[:, 0] * 4).astype(int), 2, 3 + (score[:, 0] * 20).astype(int))
+            out[np.arange(len(ids)), -1, nxt] = 10.0
+            return [out]
+
+        encoder = Run(lambda f: [f["pixel_values"][:, :1, :5, :4].reshape(len(f["pixel_values"]), 5, 4)])
+        whole = Run(lambda f: logits(f["input_ids"], f["encoder_hidden_states"] @ proj))
+        cross = Run(lambda f: [f["encoder_hidden_states"] @ proj], ["kv0"])
+        step = Run(lambda f: logits(f["input_ids"], f["kv0"]), ["logits"])
+        vocab = mock.Mock(decode=lambda ids: " ".join(str(int(i)) for i in ids))
+        crops = [(rng.rand(20 + 7 * k, 60) * 255).astype(np.uint8) for k in range(5)]
+        plain = M.FormulaReader.__new__(M.FormulaReader)
+        plain.encoder, plain.decoder, plain.cross, plain.vocab = encoder, whole, None, vocab
+        split = M.FormulaReader.__new__(M.FormulaReader)
+        split.encoder, split.decoder, split.cross, split.step, split.vocab = encoder, None, cross, step, vocab
+        with mock.patch.object(M, "ENCODE_ONE", False):
+            want = plain.read(crops)
+        self.assertEqual(len(encoder.calls), 1)
+        with mock.patch.object(M, "ENCODE_ONE", True):  # one crop per encoder run: the same readings
+            self.assertEqual(split.read(crops), want)
+        self.assertEqual(len(encoder.calls), 1 + len(crops))
+        self.assertEqual(len({t for t, _ in want}), 5)  # rows of several lengths
+        self.assertEqual(len(cross.calls), 1)
+        self.assertEqual(len(step.calls), len(whole.calls))
+        self.assertEqual([c["kv0"][0] for c in step.calls], [c["input_ids"][0] for c in step.calls])
+
+    def test_split_files_count_as_the_model(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(M, "MFR_DIR", Path(tmp)):
+            for name in ("encoder_model.onnx", "tokenizer.json") + M.SPLIT_FILES:
+                (Path(tmp) / name).write_bytes(b"")
+            self.assertTrue(M.available())
+            (Path(tmp) / M.SPLIT_FILES[0]).unlink()
+            self.assertFalse(M.available())
 
     def test_no_model_files(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(M, "MFR_DIR", Path(tmp)):

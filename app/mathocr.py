@@ -20,15 +20,21 @@ when Tesseract's digits (number by number, outside fractions and roots too) or
 first letter's case disagree with it.
 read_regions() reads each region twice (crop cut to the ink, then with 3 px of
 white; with 8 px when the two disagree; without its last short word, a unit or
-mark, when they still do not) and keeps a decision two readings agree on. Before that, a reading gets what the ink tells better than the model: a
+mark, when they still do not) and keeps a decision two readings agree on; a
+first reading that is plain text equal to Tesseract's ("6 kPa.", read right by
+OCR) is kept without a second one, since it writes the OCR text anyway.
+Before that, a reading gets what the ink tells better than the model: a
 coefficient's letter read into a subscript ("4_{VO}") is written out (4v_{O})
 where the ink shows a small letter on the baseline and a lowered glyph after
 the digit, and a first letter whose case only its height tells (v, o, x...)
 takes the case measured on the glyph. On 522 formula boxes of two physics
-exams (one real scan, a native PDF and two simulated scans of it) it kept 393,
+exams (one real scan, a native PDF and two simulated scans of it) it kept 399,
 none wrong.
 
 Without the model files (or with P2W_MFR=0) read_regions() returns Nones.
+decoder_model.onnx may be replaced by its two halves (scripts/split_mfr_decoder.py:
+the cross-attention keys and values of a crop computed once, not at every step),
+about a quarter less time per crop with the same readings.
 Decoding needs only the vocabulary of tokenizer.json (byte-level BPE), and the
 crops are resized as Pillow's BICUBIC does, so neither tokenizers nor Pillow is
 needed; onnxruntime runs the model.
@@ -51,15 +57,19 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .settings import MFR_DIR, MFR_ENABLED, MFR_THREADS
+from .settings import (
+    MFR_DIR, MFR_ENABLED, MFR_ENCODE_ONE, MFR_FIRST_STOP, MFR_HEAD, MFR_PADS, MFR_SAME_STOP, MFR_THREADS,
+)
 
 log = logging.getLogger("pdf2word.mathocr")
 
 MODEL_FILES = ("encoder_model.onnx", "decoder_model.onnx", "tokenizer.json")
+SPLIT_FILES = ("cross_kv.onnx", "decoder_step.onnx")  # used in place of decoder_model.onnx when both are there
 BOS, EOS, PAD = 1, 2, 0
 SIZE = 384  # the encoder's input side; crops are stretched to a square
 MAX_TOKENS = 200  # a reading that does not end by then is dropped
 BATCH = 16  # crops per encoder/decoder run
+ENCODE_ONE = MFR_ENCODE_ONE  # the encoder reads the crops of a batch one by one (INT8 encoder: readings per crop)
 MAX_CROP_PIXELS = 2_000_000  # larger regions are not formulas (a formula at 300 dpi is < 300 px high)
 
 MIN_CONF = 0.85  # mean token probability needed by decide() (vote() asks less of each of two readings)
@@ -175,7 +185,14 @@ class FormulaReader:
         providers = ["CPUExecutionProvider"]
         model_dir = Path(model_dir)
         self.encoder = ort.InferenceSession(str(model_dir / "encoder_model.onnx"), so, providers=providers)
-        self.decoder = ort.InferenceSession(str(model_dir / "decoder_model.onnx"), so, providers=providers)
+        # decoder_model.onnx split in two (scripts/split_mfr_decoder.py): the cross-attention keys and values of a crop
+        # computed once (cross_kv.onnx), not again at every step of decoder_model.onnx
+        self.cross = self.decoder = None
+        if all((model_dir / f).is_file() for f in SPLIT_FILES):
+            self.cross = ort.InferenceSession(str(model_dir / SPLIT_FILES[0]), so, providers=providers)
+            self.step = ort.InferenceSession(str(model_dir / SPLIT_FILES[1]), so, providers=providers)
+        else:
+            self.decoder = ort.InferenceSession(str(model_dir / "decoder_model.onnx"), so, providers=providers)
         self.vocab = Vocab(model_dir / "tokenizer.json")
 
     @staticmethod
@@ -199,15 +216,30 @@ class FormulaReader:
         if not images:
             return []
         px = np.stack([self.pixels(im) for im in images]).astype(np.float32)
-        hidden = self.encoder.run(None, {"pixel_values": px})[0]
+        if ENCODE_ONE:  # a dynamically quantized encoder scales its activations per batch: one crop at a time
+            hidden = np.concatenate([self.encoder.run(None, {"pixel_values": px[k : k + 1]})[0] for k in range(len(px))])
+        else:
+            hidden = self.encoder.run(None, {"pixel_values": px})[0]
         n = len(images)
         seqs = [[BOS] for _ in range(n)]
         logp = np.zeros(n)
         finished = np.zeros(n, bool)
         active = np.arange(n)
+        if self.cross is not None:
+            names = [o.name for o in self.cross.get_outputs()]
+            kv_all = dict(zip(names, self.cross.run(None, {"encoder_hidden_states": hidden})))
+        feed, fed = {}, -1  # inputs of the active rows, rebuilt when a row ends
         for _ in range(MAX_TOKENS):
             ids = np.array([seqs[i] for i in active], dtype=np.int64)  # active sequences have one length
-            logits = self.decoder.run(None, {"input_ids": ids, "encoder_hidden_states": hidden[active]})[0][:, -1, :]
+            if fed != len(active):
+                whole = len(active) == n
+                if self.cross is not None:
+                    feed = {k: v if whole else np.ascontiguousarray(v[active]) for k, v in kv_all.items()}
+                else:
+                    feed = {"encoder_hidden_states": hidden if whole else hidden[active]}
+                fed = len(active)
+            run = self.step if self.cross is not None else self.decoder
+            logits = run.run(None, {"input_ids": ids, **feed})[0][:, -1, :]
             logits = logits - logits.max(axis=1, keepdims=True)
             p = np.exp(logits)
             p /= p.sum(axis=1, keepdims=True)
@@ -240,7 +272,10 @@ _wanted: ContextVar[bool] = ContextVar("formulas_wanted", default=True)
 
 
 def available() -> bool:
-    return MFR_ENABLED and _wanted.get() and all((MFR_DIR / f).is_file() for f in MODEL_FILES)
+    if not (MFR_ENABLED and _wanted.get()):
+        return False
+    have = {f for f in MODEL_FILES + SPLIT_FILES if (MFR_DIR / f).is_file()}
+    return set(MODEL_FILES) <= have or {"encoder_model.onnx", "tokenizer.json", *SPLIT_FILES} <= have
 
 
 @contextmanager
@@ -1045,10 +1080,24 @@ def vote(readings: list[tuple[str, float]], ocr_text: str = "", min_conf: float 
     return max(best, key=lambda d: (len(re.findall(r"[\d}] [A-Za-z°Ω]", d.as_latex())) if d.kind == "text" else 0, d.conf))
 
 
+def _usable(readings: list[tuple[str, float]], ocr_text: str) -> bool:
+    """Some reading could count in a vote (accepted by judge() as it is or repaired)."""
+    return any(judge(tex, conf, ocr_text, VOTE_MIN_CONF)[0] is not None or repaired(tex) for tex, conf in readings)
+
+
+def _as_ocr(reading: tuple[str, float], ocr_text: str) -> MathDecision | None:
+    """The decision of a reading that is plain text (no script, no 2-D part) equal to the OCR text but for spaces,
+    else None."""
+    d = judge(reading[0], reading[1], ocr_text, VOTE_MIN_CONF)[0]
+    if d is None or d.kind != "text" or (SAME_STOP < 2 and any(script for _, script in d.parts)):
+        return None
+    plain, ocr = ("".join(t for t, _ in d.parts), _LABEL.sub("", ocr_text or ""))
+    return d if re.sub(r"\s", "", plain) == re.sub(r"\s", "", ocr) else None
+
+
 def _settled(readings: list[tuple[str, float]], ocr_text: str) -> bool:
     """True if more readings cannot change vote(): two agree, or none can be used."""
-    ds = [judge(tex, conf, ocr_text, VOTE_MIN_CONF)[0] for tex, conf in readings]
-    if all(d is None for d in ds) and not any(repaired(tex) for tex, _ in readings):
+    if not _usable(readings, ocr_text):
         return True
     return vote(readings, ocr_text) is not None
 
@@ -1059,7 +1108,11 @@ def _pad(img: np.ndarray, px: int) -> np.ndarray:
 
 # Crops of a region given to the model, tuned at 300 dpi: cut to the ink, then 3 px and 8 px of white around it.
 # The third is read only when the first two do not agree.
-PADS = (0, 3, 8)
+PADS = MFR_PADS  # (0, 3, 8) unless P2W_MFR_PADS says otherwise
+HEAD_PAD = 3  # margin of the crop without its last word
+FIRST_STOP = MFR_FIRST_STOP  # a region whose first reading can be used in no vote is not read again
+SAME_STOP = MFR_SAME_STOP  # a region whose first reading is plain text equal to the OCR text is not read again
+HEAD = MFR_HEAD  # unsettled regions are read once more without their last short word
 # A blank gap this wide (share of the crop's height) before a last word this narrow (share of its width): the
 # unit or mark after a number or a symbol ("7,66.10^{-22} J.", "T_1;").
 UNIT_GAP = 0.15
@@ -1119,6 +1172,7 @@ def read_regions(
     crops = [cut(gray, box, em_px[i] if em_px else None) for i, box in enumerate(boxes)]
     todo = [i for i, c in enumerate(crops) if c is not None and c.shape[0] >= 6 and c.shape[1] >= 4 and c.size <= MAX_CROP_PIXELS]
     readings: dict[int, list[tuple[str, float]]] = {i: [] for i in todo}
+    agreed: dict[int, MathDecision] = {}  # SAME_STOP: one reading Tesseract's text agrees with
     shown: dict[int, int] = {}
 
     def checked(i: int, tex: str) -> str:
@@ -1131,24 +1185,32 @@ def read_regions(
             tex = fixed if shown[i] == len(_LETTER_SUB.findall(fixed)) else tex
         return _ink_case(tex, ocr_texts[i]) if case_from_ink and case_from_ink[i] else tex
 
-    for pad in PADS:
+    for k, pad in enumerate(PADS):
         if not todo:
             break
         for i, (tex, conf) in zip(todo, reader.read([_pad(crops[i], pad) for i in todo])):
             readings[i].append((checked(i, tex), conf))
-        if len(readings[todo[0]]) >= 2:
+        if k == 0 and FIRST_STOP:
+            todo = [i for i in todo if _usable(readings[i], ocr_texts[i])]
+        if k == 0 and SAME_STOP:
+            for i in todo:
+                d = _as_ocr(readings[i][0], ocr_texts[i])
+                if d is not None:
+                    agreed[i] = d
+            todo = [i for i in todo if i not in agreed]
+        if k >= 1:
             todo = [i for i in todo if not _settled(readings[i], ocr_texts[i])]
     # The crops differ in their margin only, so a misreading may come back in each: a minus starting an exponent
     # written as a symbol ("7,66.10^{\mu^{22}} J."), a thin subscript "1" beside a ";" read as "\i". Read without
     # its last short word (unit, mark), the rest is often read right; it then counts as a reading of the whole
     # region (_confirmed), so the readings that agree with it count with it (vote()).
-    parts = {i: _without_unit(crops[i]) for i in todo}  # todo: unsettled, some reading usable or repairable
+    parts = {i: _without_unit(crops[i]) for i in todo} if HEAD else {}  # todo: unsettled, some reading usable
     again = [i for i, part in parts.items() if part is not None]
-    for i, head in zip(again, reader.read([_pad(parts[i], PADS[1]) for i in again]) if again else []):
+    for i, head in zip(again, reader.read([_pad(parts[i], HEAD_PAD) for i in again]) if again else []):
         confirmed = _confirmed(readings[i], head, ocr_texts[i])
         if confirmed:
             readings[i].append(confirmed)
-    return [vote(readings[i], ocr_texts[i]) if i in readings else None for i in range(n)]
+    return [agreed[i] if i in agreed else vote(readings[i], ocr_texts[i]) if i in readings else None for i in range(n)]
 
 
 # --- crops ---

@@ -55,6 +55,24 @@ MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
 # A file with more scanned pages than this is converted without formula reading (VietOCR still runs):
 # formulas take about half the OCR time, and a long scan would hold a worker for too long.
 MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 10))
+# How a region is read (app/mathocr.py read_regions; measured on VL1212, two physics scans, 30 scanned pages):
+# - MFR_PADS: margins of white around the crop, in order; the third is read only when the first two disagree.
+# - MFR_SAME_STOP (on): a first reading that is plain text equal to Tesseract's is kept without a second one
+#   (it writes the OCR text anyway): ~20 % fewer crops, same .docx. 2: also a reading with scripts whose
+#   characters are Tesseract's (3 % fewer again; not used: Tesseract does not see the scripts).
+# - MFR_FIRST_STOP (off): a region whose first reading can be used in no vote is not read again (4 % fewer
+#   crops, loses 5 of 206 readings).
+# - MFR_HEAD (on): a region still unsettled is read once more without its last short word (a unit).
+# - MFR_ENCODE_ONE (on): the encoder reads one crop per run, not a batch: same readings, ~10 % faster and half
+#   the memory (the activations of one crop stay in cache); a dynamically quantized INT8 encoder needs it (it
+#   scales activations over the whole batch: a crop's reading would depend on the other crops of its page).
+# - MFR_SKIP_KINDS: region kinds (option, tall, inline) not read at all (every kind changes text: off).
+MFR_PADS = tuple(int(p) for p in os.environ.get("P2W_MFR_PADS", "0,3,8").split(",") if p.strip())
+MFR_SAME_STOP = int(os.environ.get("P2W_MFR_SAME_STOP", "1"))
+MFR_FIRST_STOP = os.environ.get("P2W_MFR_FIRST_STOP", "0") == "1"
+MFR_HEAD = os.environ.get("P2W_MFR_HEAD", "1") != "0"
+MFR_ENCODE_ONE = os.environ.get("P2W_MFR_ENCODE_ONE", "1") != "0"
+MFR_SKIP_KINDS = frozenset(k.strip() for k in os.environ.get("P2W_MFR_SKIP_KINDS", "").split(",") if k.strip())
 # Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
 # detector registered in mathregions.DETECTORS.

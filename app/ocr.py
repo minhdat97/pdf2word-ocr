@@ -29,7 +29,7 @@ from .layout import alignment, cell_align, looks_like_link
 from .model import TAB, Cell, PageLayout, Paragraph, Picture, Run, Table
 from .ocr_fix import fix_lines, fix_table
 from .omml import latex_to_omml
-from .settings import OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
+from .settings import MFR_SKIP_KINDS, OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
 
 # Tesseract's per-line metrics relative to the font size in pixels, measured
 # on samples/ (20pt title, 12pt body, 11pt table): x_size ~0.91em and
@@ -1161,10 +1161,12 @@ def read_formulas(
     reader = mathocr.get_reader() if regions else None
     if reader is None:
         return 0
-    decisions = mathocr.read_regions(
-        gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader,
-        [r.case_from_ink for r in regions],
-    )
+    read = [r for r in regions if r.kind not in MFR_SKIP_KINDS]  # kinds not read: no reading (a tall one: picture)
+    got = dict(zip(map(id, read), mathocr.read_regions(
+        gray, [r.box for r in read], [r.ocr_text for r in read], [r.em_px for r in read], reader,
+        [r.case_from_ink for r in read],
+    )))
+    decisions = [got.get(id(r)) for r in regions]
     s = 72 / dpi
     placed = 0
     for region, decision in zip(regions, decisions, strict=True):
