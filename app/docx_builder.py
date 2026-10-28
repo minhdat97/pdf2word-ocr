@@ -1,6 +1,7 @@
 """Write page layouts (native text or OCR) to an editable .docx."""
 
 import io
+import re
 from dataclasses import replace
 from itertools import count, pairwise
 from pathlib import Path
@@ -148,6 +149,14 @@ def _add_formula(p, r: Run) -> None:
         doc_pr.set("title", FORMULA_ALT)
 
 
+# Characters an XML document cannot hold; a PDF's text layer may give them (U+FFFF from a broken map).
+NOT_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def _xml_text(text: str) -> str:
+    return NOT_XML.sub("", text)
+
+
 def _add_math(p, r: Run, size: float) -> None:
     """A formula as a Word equation (m:oMath in the paragraph, between its runs). LaTeX the
     converter rejects falls back to the run's picture, else to its text."""
@@ -158,14 +167,14 @@ def _add_math(p, r: Run, size: float) -> None:
         if r.image:
             _add_formula(p, r)
         else:
-            run = p.add_run(r.math_text if r.math_text is not None else r.math)
+            run = p.add_run(_xml_text(r.math_text if r.math_text is not None else r.math))
             _format(run, r)
 
 
 def _add_field(p, r: Run) -> None:
     # The run text is the value shown until Word computes the field (viewers
     # such as QuickLook never do), e.g. the real page count for NUMPAGES.
-    run = p.add_run(r.text or "1")
+    run = p.add_run(_xml_text(r.text) or "1")
     _format(run, r)
     fld = OxmlElement("w:fldSimple")
     # MERGEFORMAT keeps the run's formatting when Word recomputes the field.
@@ -177,7 +186,7 @@ def _add_field(p, r: Run) -> None:
 
 def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
     if not runs:
-        run = p.add_run(text)
+        run = p.add_run(_xml_text(text))
         run.font.size = Pt(size)
         run.bold = bold or None
         return
@@ -193,7 +202,7 @@ def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
         else:
             parts = r.text.split(LINE_BREAK)
             for i, part in enumerate(parts):
-                run = p.add_run(part)
+                run = p.add_run(_xml_text(part))
                 _format(run, r)
                 if i < len(parts) - 1:
                     run.add_break()

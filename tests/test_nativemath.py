@@ -105,6 +105,19 @@ class LayoutTest(unittest.TestCase):
         ln.put("+", gap=2).put("𝑡", gap=2).sup("′").put("𝛼").put("∆", gap=1).put("𝑇")
         self.assertEqual(latex(build(ln.glyphs, [], [])), [r"m_{1}\vec{v}_{1}=\vec{V}+t'\alpha∆T"])
 
+    def test_prime_then_subscript_greek_and_symbols(self):
+        ln = Line().put("𝑣").sup("′").sub("1", gap=0.3).put("=", gap=2).put("2")
+        self.assertEqual(latex(build(ln.glyphs, [], [])), [r"v_{1}'=2"])
+        # ε φ (Word's) and ϵ ϕ are different letters; ∞, ∂ and an upright Ω (ohms) are read too
+        ln = Line().put("𝜀").put("𝜑", gap=1).put("𝜖", gap=1).put("𝜙", gap=1).put("∞", gap=1).put("∂", gap=1)
+        ln.put("5", gap=2).put("Ω")
+        self.assertEqual(latex(build(ln.glyphs, [], [])), [r"\varepsilon\varphi\epsilon\phi\infty\partial\ 5\mathrm{Ω}"])
+
+    def test_script_order_does_not_matter(self):
+        ln = Line().put("𝑚").sub("𝑡ℎ").put("=", gap=2).put("1")
+        ln.glyphs[1], ln.glyphs[2] = ln.glyphs[2], ln.glyphs[1]  # the text layer lists "h" before "t"
+        self.assertEqual(latex(build(ln.glyphs, [], [])), [r"m_{th}=1"])
+
     def test_degree_zero_without_base(self):
         # "t( ⁰C)": after a bracket; "80,6 ⁰F": set apart from the number
         ln = Line().put("𝑡").put("(").sup("0", gap=3).put("𝐶").put(")").put("=", gap=2).put("80,6", gap=2)
@@ -159,6 +172,36 @@ class RefusalTest(unittest.TestCase):
         lone = Line().put("=")
         lone.glyphs.append(Glyph(nativemath.ARROW, 80, 92, 80, 102, BASE, S, font="Cambria Math"))
         self.assertPicture(lone.glyphs)  # an arrow over nothing
+
+    def test_layouts_it_does_not_read(self):
+        # a fraction in an exponent: 2^(−t/T) (its bar sits high over the line's maths axis)
+        ln = Line().put("𝑁").put("=", gap=2).put("2", gap=2).sup("−")
+        bar = Bar(ln.x, ln.x + 4, BASE - 7.5)
+        for c, oy in (("𝑡", BASE - 9.5), ("𝑇", BASE - 4)):
+            ln.glyphs.append(Glyph(c, ln.x, oy - 0.78 * 6, ln.x + 3.5, oy + 0.22 * 6, oy, 6, font="Cambria Math"))
+        self.assertPicture(ln.glyphs, [bar])
+        # limits under "lim" (a script under a symbol), a condition over an arrow
+        ln = Line().put("lim")
+        ln.glyphs.append(Glyph("𝑥", 52, BASE + 2, 55.5, BASE + 9, BASE + 7, 7, font="Cambria Math"))
+        ln.put("𝑓", gap=2)
+        self.assertPicture(ln.glyphs)
+        ln = Line().put("𝐴").put("→", gap=2, width=10)
+        ln.glyphs.append(Glyph("𝑡", 58, BASE - 14, 61.5, BASE - 7, BASE - 9, 7, font="Cambria Math"))
+        ln.put("𝐵", gap=2)
+        self.assertPicture(ln.glyphs)
+        # a coefficient before a nuclide: the stack ends together, so it is the nuclide's
+        ln = Line().put("2").put("1", size=7, dy=-3.5).put("𝑛")
+        ln.glyphs.insert(2, Glyph("0", 55, BASE - 3.4, 58.5, BASE + 3.6, BASE + 2, 7, font="Cambria Math"))
+        self.assertPicture(ln.glyphs)
+        # a glyph level with a fraction bar belongs to neither part
+        ln = Line().put("𝑥").put("=", gap=2)
+        bar = ln.frac("1", "2")
+        ln.glyphs.append(Glyph("|", bar.x1 - 1, bar.y - 4, bar.x1, bar.y + 4, bar.y + 1.5, S, font="Cambria Math"))
+        self.assertPicture(ln.glyphs, [bar])
+
+    def test_text_a_docx_cannot_hold(self):
+        ln = Line().put("\uffff", font="Times New Roman").put("𝑥", gap=2.3).put("=", gap=2).put("1")
+        self.assertPicture(ln.glyphs)
 
     def test_mathtype_and_text_fonts(self):
         self.assertPicture(Line().put("2", font="Times New Roman").put("π", font="Symbol").glyphs)
@@ -234,6 +277,54 @@ class NativePageTest(unittest.TestCase):
         runs = [r for e in layout.elements for r in getattr(e, "runs", [])]
         self.assertFalse(any(r.math for r in runs))
         self.assertTrue(any(r.image for r in runs))
+
+
+class UnmappedGlyphsTest(unittest.TestCase):
+    """native._unmapped_chars: glyph codes a Unicode math font gives without a real mapping, read
+    within bounds whatever the file holds (the map is the uploader's)."""
+
+    def page(self, cmap: bytes | None = b"", first=33, last=40, stream=True):
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((50, 100), "x", fontname="helv")
+        xref = next(x[0] for x in page.get_fonts(full=True))
+        doc.xref_set_key(xref, "BaseFont", "/AAAAAB+CambriaMath")
+        doc.xref_set_key(xref, "Subtype", "/TrueType")
+        doc.xref_set_key(xref, "Encoding", "null")
+        doc.xref_set_key(xref, "FirstChar", str(first))
+        doc.xref_set_key(xref, "LastChar", str(last))
+        if cmap is not None:
+            if stream:
+                ref = doc.get_new_xref()
+                doc.update_object(ref, "<<>>")
+                doc.update_stream(ref, cmap)
+            else:
+                ref = doc.get_new_xref()
+                doc.update_object(ref, "<< /Foo 1 >>")
+            doc.xref_set_key(xref, "ToUnicode", f"{ref} 0 R")
+        doc = pymupdf.open("pdf", doc.tobytes())
+        return doc, doc[0]
+
+    def test_maps(self):
+        _doc, page = self.page(b"begincmap 1 beginbfchar <21><0052> endbfchar 1 beginbfrange <22><23><0041> endbfrange endcmap")
+        self.assertEqual(native._unmapped_chars(page), set("$%&'("))
+        _doc, page = self.page(b"begincmap endcmap")  # an empty map: every code is raw
+        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+        _doc, page = self.page(None)  # no map, no standard encoding
+        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+
+    def test_hostile_maps(self):
+        import time
+        t = time.perf_counter()
+        _doc, page = self.page(b"begincmap 1 beginbfrange <00000000><FFFFFFFF><0041> endbfrange endcmap", 0, 10 ** 9)
+        self.assertEqual(native._unmapped_chars(page), set())  # one-byte codes, all mapped
+        _doc, page = self.page(b"begincmap " + b"beginbfchar " * 5000 + b"endcmap")
+        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+        self.assertLess(time.perf_counter() - t, 2)
+        _doc, page = self.page(b"begincmap endcmap", stream=False)  # not a stream: pictures
+        self.assertIsNone(native._unmapped_chars(page))
+        _doc, page = self.page(b"%" * (4 * native.CMAP_MAX + 1))  # too large to read: formulas stay pictures
+        self.assertIsNone(native._unmapped_chars(page))
 
 
 if __name__ == "__main__":

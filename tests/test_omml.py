@@ -377,7 +377,7 @@ CONTENT = {
     "mPr": "(?:baseJc )?(?:plcHide )?(?:rSpRule )?(?:cGpRule )?(?:rSp )?(?:cSp )?(?:cGp )?(?:mcs )?(?:ctrlPr )?",
     "mcs": "(?:mc )+", "mc": "(?:mcPr )?", "mcPr": "(?:count )?(?:mcJc )?", "mr": "(?:e )+",
     "argPr": "(?:scrLvl )?", "ctrlPr": "(?:w:rPr )?",
-    "w:rPr": "(?:w:rFonts )?(?:w:b )?(?:w:i )?(?:w:sz )?(?:w:szCs )?",
+    "w:rPr": "(?:w:rFonts )?(?:w:b )?(?:w:i )?(?:w:color )?(?:w:sz )?(?:w:szCs )?",
 }
 for _arg in ("num", "den", "deg", "e", "sub", "sup", "fName", "lim"):
     CONTENT[_arg] = ARG
@@ -390,7 +390,7 @@ VALUES = {
     "plcHide": ONOFF, "nor": ONOFF,
 }
 CHAR_VALUES = {"chr", "begChr", "sepChr", "endChr"}  # ST_Char: at most one character
-LEAVES = set(VALUES) | CHAR_VALUES | {"count", "t", "w:rFonts", "w:b", "w:i", "w:sz", "w:szCs"}
+LEAVES = set(VALUES) | CHAR_VALUES | {"count", "t", "w:rFonts", "w:b", "w:i", "w:color", "w:sz", "w:szCs"}
 
 
 def _name(el):
@@ -494,6 +494,17 @@ class LatexToOmmlTest(unittest.TestCase):
         self.assertEqual(runs[1].find(M + "t").get("{http://www.w3.org/XML/1998/namespace}space"), "preserve")
         bold = latex_to_omml(r"\textbf{A}").find(f"{M}r/{W}rPr/{W}b")
         self.assertIsNotNone(bold)
+
+    def test_color(self):
+        # a rebuilt equation of a native PDF keeps its colour: w:color in every run, schema order kept
+        root = latex_to_omml(r"\frac{a}{b}+\text{là}", size_pt=11, text_font="Cambria Math", color="0000FF")
+        self.assertEqual(schema_errors(root), [])
+        colors = {c.get(f"{W}val") for c in root.iter(f"{W}color")}
+        self.assertEqual(colors, {"0000FF"})
+        self.assertEqual(len(list(root.iter(f"{W}color"))), len(list(root.iter(f"{W}rPr"))))
+        for bad in ("blue", "00F", "0000FG"):
+            with self.assertRaises(ValueError):
+                latex_to_omml("x", color=bad)
 
     def test_spacing(self):
         tex = r"~5\,\mathrm{kg}\quad x\!y~\,z~."

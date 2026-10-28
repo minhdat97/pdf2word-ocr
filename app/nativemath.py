@@ -26,6 +26,7 @@ from .omml import GREEK, latex_to_omml
 
 SCRIPT = 0.85  # glyphs smaller than this share of the line's size are scripts (or a smaller line)
 ON_BASE = 0.12  # baseline tolerance, in em
+AXIS = 0.28  # height of the maths axis (fraction bars) over the baseline, in em (0.284 measured)
 # A gap this wide (em) between two ordinary symbols is a typed space (0.18–0.22 em). Gaps after
 # punctuation are Word's own (0.15–0.17 em after a dot before a script or fraction: "945. 10³").
 SPACE = 0.16
@@ -47,15 +48,19 @@ OPERATORS = {
 PUNCT = {",": ",", ".": ".", ";": ";", ":": ":", "/": "/"}
 OPENERS = {"(": "(", "[": "[", "{": r"\{"}
 CLOSERS = {")": ")", "]": "]", "}": r"\}"}
+# ∆ (U+2206) is kept as it is: Word sets it upright, \Delta (U+0394) italic. Upright Greek letters (Ω of
+# ohms, μ of micro) are \mathrm (_atom).
 SYMBOLS = {
-    "∆": "∆", "Δ": "Δ",  # kept as they are: Word sets U+2206 upright, \Delta (U+0394) italic "Ω": r"\Omega", "Ω": r"\Omega", "π": r"\pi", "∞": r"\infty", "∂": r"\partial",
-    "∇": r"\nabla", "∠": r"\angle", "°": "°", "∘": r"\circ", "′": "'", "″": "''", "%": r"\%",
+    "∆": "∆", "∞": r"\infty", "∂": r"\partial", "∇": r"\nabla", "∠": r"\angle", "°": "°", "∘": r"\circ", "′": "'", "″": "''", "%": r"\%",
     "∎": "∎", "■": "∎", "|": "|", "‖": r"\|", "ℏ": r"\hbar", "ℓ": r"\ell", "…": r"\ldots", "∴": r"\therefore",
 }
-GREEK_CAPITAL_LATIN = {"ALPHA": "A", "BETA": "B", "EPSILON": "E", "ZETA": "Z", "ETA": "H", "IOTA": "I", "KAPPA": "K",
-                       "MU": "M", "NU": "N", "OMICRON": "O", "RHO": "P", "TAU": "T", "CHI": "X"}
-GREEK_SYMBOL = {"EPSILON SYMBOL": "epsilon", "THETA SYMBOL": "vartheta", "PHI SYMBOL": "phi", "PI SYMBOL": "varpi",
-                "RHO SYMBOL": "varrho", "KAPPA SYMBOL": "varkappa", "FINAL SIGMA": "varsigma"}
+# Greek letters by their character (ε is \varepsilon, ϵ \epsilon, φ \varphi, ϕ \phi); capitals Word
+# shares with Latin (Α Β Ε …) are Latin letters.
+GREEK_NAMES = {ch: name for name, ch in GREEK.items()}
+GREEK_CAPITAL_LATIN = dict(zip("ΑΒΕΖΗΙΚΜΝΟΡΤΧ", "ABEZHIKMNOPTX"))
+GREEK_VARIANTS = {"EPSILON SYMBOL": "ϵ", "THETA SYMBOL": "ϑ", "PHI SYMBOL": "ϕ", "KAPPA SYMBOL": "ϰ", "RHO SYMBOL": "ϱ",
+                  "PI SYMBOL": "ϖ"}
+MATH_STYLES = {"ITALIC": "{}", "BOLD ITALIC": r"\boldsymbol{{{}}}", "BOLD": r"\mathbf{{{}}}"}
 # punctuation a run of words in an equation (Word's "normal text") carries with it
 TEXT_PUNCT = set("(),.:;+-/'")
 COMMAND_END = re.compile(r"\\[A-Za-z]+$")
@@ -103,6 +108,7 @@ class _Frac:
     x1: float
     latex: str
     size: float
+    y: float  # the bar: on the line's maths axis, a quarter em over the baseline
 
 
 @dataclass(eq=False)
@@ -129,45 +135,33 @@ class Piece:
 
 
 def _math_alnum(c: str) -> tuple[str, str]:
-    """(latex, kind) of a Unicode math letter or digit: 𝑚 → m, 𝒃 → \\boldsymbol{b}, 𝛼 → \\alpha."""
+    """(latex, kind) of a Unicode math letter or digit: 𝑚 → m, 𝒃 → \\boldsymbol{b}, 𝛼 → \\alpha, 𝜀 → \\varepsilon.
+    Script, fraktur, double-struck, sans-serif and monospace letters are not read."""
     if c == "ℎ":
         return "h", "ord"
     name = unicodedata.name(c, "")
-    if not name.startswith("MATHEMATICAL "):
+    other = ("ITALIC", "SCRIPT", "FRAKTUR", "DOUBLE-STRUCK", "SANS-SERIF", "MONOSPACE")
+    styles = [s for s in MATH_STYLES if name.startswith(f"MATHEMATICAL {s} ")
+              and name[len(f"MATHEMATICAL {s} "):].split()[0] not in other]  # "BOLD SCRIPT" is not "BOLD"
+    if len(styles) != 1:
         raise Unsure(f"letter {c!r}")
-    words = name.split()[1:]
-    for n, w in enumerate(words):
-        if w in ("SMALL", "CAPITAL", "DIGIT", "PARTIAL", "NABLA"):
-            style, rest = " ".join(words[:n]), words[n:]
-            break
+    style = styles[0]
+    # NFKC folds the symbol forms (ϵ ϑ ϕ ϰ ϱ ϖ) into the letters: those go by name
+    variant = GREEK_VARIANTS.get(name[len(f"MATHEMATICAL {style} "):]) if "SYMBOL" in name else None
+    plain = variant or unicodedata.normalize("NFKC", c)
+    if len(plain) != 1:
+        raise Unsure(f"letter {c!r}")
+    if plain.isascii() and plain.isalnum():
+        letter = plain
+    elif plain in GREEK_NAMES:
+        letter = "\\" + GREEK_NAMES[plain]
+    elif plain in GREEK_CAPITAL_LATIN:
+        letter = GREEK_CAPITAL_LATIN[plain]
+    elif plain in ("∂", "∇"):
+        letter = r"\partial" if plain == "∂" else r"\nabla"
     else:
         raise Unsure(f"letter {c!r}")
-    if rest[0] == "DIGIT":
-        letter = str(unicodedata.digit(c))
-    elif rest[0] in ("PARTIAL", "NABLA"):
-        letter = r"\partial" if rest[0] == "PARTIAL" else r"\nabla"
-    elif len(rest) == 2 and len(rest[1]) == 1:  # Latin
-        letter = rest[1].lower() if rest[0] == "SMALL" else rest[1]
-    else:  # Greek
-        greek = " ".join(rest[1:])
-        greek = GREEK_SYMBOL.get(greek, greek.lower())
-        if rest[0] == "CAPITAL":
-            if greek.upper() in GREEK_CAPITAL_LATIN:
-                letter = GREEK_CAPITAL_LATIN[greek.upper()]
-            else:
-                greek = greek.capitalize()
-                letter = "\\" + greek
-        else:
-            letter = "\\" + greek
-        if letter.startswith("\\") and letter[1:] not in GREEK and letter not in (r"\partial", r"\nabla"):
-            raise Unsure(f"letter {c!r}")
-    if style == "ITALIC":
-        return letter, "ord"
-    if style == "BOLD ITALIC":
-        return rf"\boldsymbol{{{letter}}}", "ord"
-    if style == "BOLD":
-        return rf"\mathbf{{{letter}}}", "ord"
-    raise Unsure(f"letter {c!r}")
+    return MATH_STYLES[style].format(letter), "ord"
 
 
 def _is_math_alnum(c: str) -> bool:
@@ -197,6 +191,8 @@ def _atom(g: Glyph) -> tuple[str, str]:
         return SYMBOLS[c], "bar" if c in "|‖" else "ord"
     if c.isalpha() and c.isascii():
         return rf"\mathrm{{{c}}}", "ord"
+    if unicodedata.normalize("NFKC", c) in GREEK_NAMES or c == "µ":
+        return rf"\mathrm{{{unicodedata.normalize('NFKC', c)}}}", "ord"  # upright: Ω of ohms, μ of micro
     if c.isalpha() and unicodedata.category(c) in ("Ll", "Lu") and ord(c) < 0x2000:
         return c, "ord"  # a Vietnamese letter among math letters ("giây")
     raise Unsure(f"symbol {c!r}")
@@ -239,12 +235,12 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
         inner = [o for o in bars if o is not b and b.x0 - 1 <= (o.x0 + o.x1) / 2 <= b.x1 + 1 and inside(o, b)]
         num = [g for g in members if g.cy < b.y]
         den = [g for g in members if g.cy > b.y]
-        if not num or not den:
+        if not num or not den or len(num) + len(den) != len(members):
             raise Unsure("bar without numerator or denominator")
         num_latex = _layout(num, [o for o in inner if o.y < b.y], depth + 1)
         den_latex = _layout(den, [o for o in inner if o.y > b.y], depth + 1)
         tokens.append(_Frac(min(b.x0, *(g.x0 for g in members)), max(b.x1, *(g.x1 for g in members)),
-                            rf"\frac{{{num_latex}}}{{{den_latex}}}", max(g.size for g in members)))
+                            rf"\frac{{{num_latex}}}{{{den_latex}}}", max(g.size for g in members), b.y))
         used.update(id(g) for g in members)
     if len([o for o in bars if not any(o is b or inside(o, b) for b in outer)]):
         raise Unsure("bar left over")
@@ -253,6 +249,10 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
         return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens))
     size = max(g.size for g in rest)
     base_y = median(g.oy for g in rest if g.size >= 0.9 * size)
+    for t in tokens:
+        # a fraction in an exponent ("2^{-t/T}") sits high: scripts holding fractions are not read
+        if abs(base_y - t.y - AXIS * size) > ON_BASE * size:
+            raise Unsure("fraction off the maths axis")
     scripts: list[tuple[Glyph, str]] = []
     for g in rest:
         dy = g.oy - base_y
@@ -268,14 +268,18 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
             tokens.append(g)  # smaller text on the baseline
     tokens.sort(key=lambda t: t.x0)
     attached: dict[int, dict[str, list[Glyph]]] = {}  # id(token) -> {"sup"/"sub"/"presup"/"presub": glyphs}
-    for g, role in scripts:
+    for g, role in sorted(scripts, key=lambda gr: gr[0].x0):
+        # a script set under or over a symbol (limits of "lim", a condition over an arrow) is not one of its scripts
+        if any(t.x0 + 0.05 * size < g.cx < t.x1 - 0.1 * size for t in tokens):
+            raise Unsure("script under or over a symbol")
         left = [t for t in tokens if t.x0 < g.cx - 0.05 * size]
         owner = left[-1] if left else None
         pre = owner is None
         if owner is not None:
-            right_edge = owner.x1
-            for s in attached.get(id(owner), {}).get(role, []):
-                right_edge = max(right_edge, s.x1)
+            right_edge = owner.x1  # past the owner's scripts so far ("v′₁": the subscript after the prime)
+            for r, gs in attached.get(id(owner), {}).items():
+                if not r.startswith("pre"):
+                    right_edge = max([right_edge, *(s.x1 for s in gs)])
             kind = _atom(owner)[1] if isinstance(owner, Glyph) else "ord"
             if kind in ("op", "open", "punct") or g.x0 - right_edge > EMPTY_BASE * size:
                 pre = True
@@ -286,6 +290,15 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
             attached.setdefault(id(nxt[0]), {}).setdefault("pre" + role, []).append(g)
         else:
             attached.setdefault(id(owner), {}).setdefault(role, []).append(g)
+    for t in tokens:
+        r = attached.get(id(t), {})
+        if isinstance(t, Glyph) and t.c.isdigit() and "sub" in r and "sup" in r:
+            # a number's own scripts start together; a stack ending together belongs to the symbol after it
+            # ("2 ¹₀n": Word sets the nuclide's prescripts flush against the coefficient)
+            starts = abs(min(g.x0 for g in r["sub"]) - min(g.x0 for g in r["sup"]))
+            ends = abs(max(g.x1 for g in r["sub"]) - max(g.x1 for g in r["sup"]))
+            if starts > 0.05 * size or ends < 0.05 * size:
+                raise Unsure("scripts between a number and a symbol")
     script_latex: dict[int, dict[str, str]] = {}
     for tid, roles in attached.items():
         script_latex[tid] = {role: _layout(gs, [], depth + 1) for role, gs in roles.items()}
@@ -451,24 +464,32 @@ def why(glyphs, bars, uprights, others: int = 0) -> str:
     return ""
 
 
+def _xml_char(ch: str) -> bool:
+    """A character a .docx can hold (no controls, surrogates, U+FFFE/U+FFFF or private use)."""
+    return ch in "\t\n" or (ord(ch) >= 0x20 and unicodedata.category(ch) not in ("Cs", "Co", "Cn"))
+
+
 def _text_pieces(gs: list[Glyph], size: float, before: str = "", after: str = "") -> list[Piece]:
     """A label or trailing text taken off the equation as plain runs, one per style ("b)": 𝒃 in bold
     italic, ")" upright)."""
     pieces: list[Piece] = []
     for n, g in enumerate(gs):
-        ch, bold, italic = g.c, g.bold, g.italic
+        ch, bold, italic, font = g.c, g.bold, g.italic, g.font
+        if not _xml_char(ch):
+            raise Unsure(f"text {ch!r}")
         if _is_math_alnum(ch):
             m = re.fullmatch(r"(?:\\(mathbf|boldsymbol)\{)?([A-Za-z0-9])\}?", _math_alnum(ch)[0])
             if not m:
                 raise Unsure("label letter")
             ch, bold, italic = m.group(2), bold or m.group(1) is not None, italic or m.group(1) != "mathbf"
+            font = "Cambria"  # Cambria Math has no bold or italic face: Word would fake them
         if n and g.x0 - gs[n - 1].x1 >= SPACE * size:
             ch = " " + ch
         last = pieces[-1] if pieces else None
-        if last and (last.bold, last.italic, last.color, last.font) == (bold, italic, g.color, g.font):
+        if last and (last.bold, last.italic, last.color, last.font) == (bold, italic, g.color, font):
             last.text += ch
         else:
-            pieces.append(Piece("text", ch, g.size, bold=bold, italic=italic, color=g.color, font=g.font))
+            pieces.append(Piece("text", ch, g.size, bold=bold, italic=italic, color=g.color, font=font))
     pieces[0].text = before + pieces[0].text
     pieces[-1].text += after
     return pieces
@@ -521,11 +542,13 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     if len(colors) > 1:
         raise Unsure("several colours")
     latex = _layout(body, bars)
-    latex_to_omml(latex)  # raises ValueError for anything the writer cannot take
+    color = colors.pop()
+    # raises ValueError for anything the writer cannot take (docx_builder._add_math passes the same)
+    latex_to_omml(latex, size_pt=size, text_font="Cambria Math", color=color)
     # the equation's size is that of its line; with only fractions on it (a lone "1/110"), the
     # line's size is unknown here (Word sets inline fractions about 0.7 of it): size 0, the caller's
     on_line = [g for g in line[k:m] if g in body]
-    pieces = [Piece("math", latex, max(g.size for g in on_line) if on_line else 0.0, color=colors.pop(), font="Cambria Math")]
+    pieces = [Piece("math", latex, max(g.size for g in on_line) if on_line else 0.0, color=color, font="Cambria Math")]
     if lead:
         pieces[:0] = _text_pieces(lead, size, after=" " if gap(lead[-1], line[k]) else "")
     if tail:
