@@ -12,14 +12,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import storage
+from . import mathocr, storage
 from .analyze import analyse
 from .convert import convert
 from .errors import TaskError
 from .settings import (
+    CAREFUL_WORKERS,
     DEFAULT_OCR_LANGUAGES,
+    FORMULAS,
     MAX_PENDING_TASKS,
     MAX_TASKS_PER_FILE,
+    MFR_MAX_PAGES,
     TASK_TTL_SECONDS,
     TESSDATA_DIR,
     WORKERS,
@@ -64,6 +67,8 @@ class Task:
     created: float = field(default_factory=time.time)
     started: float | None = None
     completed: float | None = None
+    # runs with the formula model ("Đọc kỹ"): at most CAREFUL_WORKERS such tasks at once (TaskManager)
+    careful: bool = field(default=False, repr=False)
 
     def to_json(self) -> dict:
         finished = self.status in ("done", "failed")
@@ -126,14 +131,40 @@ def _validate(payload: dict) -> Task:
     return Task(task_id=task_id, tool=tool, input_tokens=tokens, options=options)
 
 
+def careful_info() -> dict:
+    """What the page needs to offer "Đọc kỹ" (added to the analyse-document result): whether a careful conversion
+    can use the formula model now (installed, not turned off, not broken; not when every conversion uses it,
+    P2W_FORMULAS=model) and the most scanned pages a file may have for it."""
+    return {"available": FORMULAS != "model" and mathocr.available(), "max_scan_pages": MFR_MAX_PAGES}
+
+
+def _uses_model(task: Task) -> bool:
+    """A conversion that will read formulas with the formula model: OCR asked, "Đọc kỹ" (or P2W_FORMULAS=model),
+    the model usable. (A careful file with too many scanned pages is read without it but still counted: the page
+    does not offer "Đọc kỹ" for such a file.)"""
+    if task.tool != "pdf-to-word" or OCR_TYPES[task.options["ocr_type"]] == "basic":
+        return False
+    return (task.options["careful"] or FORMULAS == "model") and mathocr.available()
+
+
 class TaskManager:
-    def __init__(self, workers: int = WORKERS):
+    """Runs tasks on `workers` threads, oldest first, except that at most `careful_workers` conversions with the
+    formula model ("Đọc kỹ": up to ~2 minutes per scanned page on a 2-core server) run at once. A careful task
+    that has to wait stays "queued" without holding a thread, and the tasks behind it go ahead of it meanwhile."""
+
+    def __init__(self, workers: int = WORKERS, careful_workers: int = CAREFUL_WORKERS):
         self._tasks: dict[str, Task] = {}
         self._lock = threading.Lock()
-        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="task")
+        self._workers = max(1, workers)
+        self._careful_workers = max(1, careful_workers)
+        self._queue: list[Task] = []  # submitted, not started yet, oldest first
+        self._running = self._careful_running = 0
+        self._closed = False
+        self._pool = ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="task")
 
     def submit(self, payload: dict) -> Task:
         task = _validate(payload)
+        task.careful = _uses_model(task)
         with self._lock:
             if task.task_id in self._tasks:
                 raise ValueError("duplicate task_id")
@@ -144,12 +175,39 @@ class TaskManager:
             if len(unfinished) >= MAX_PENDING_TASKS:
                 raise Busy("busy")
             self._tasks[task.task_id] = task
-        self._pool.submit(self._run, task)
+            self._queue.append(task)
+            self._start_ready()
         return task
 
     def get(self, task_id: str) -> Task | None:
         with self._lock:
             return self._tasks.get(task_id)
+
+    def _start_ready(self) -> None:
+        """Hand the oldest tasks that may run to free threads (self._lock held): a careful one only while fewer
+        than careful_workers careful ones run."""
+        while self._running < self._workers and not self._closed:
+            task = next(
+                (t for t in self._queue if not t.careful or self._careful_running < self._careful_workers), None
+            )
+            if task is None:
+                return
+            try:
+                self._pool.submit(self._work, task)
+            except RuntimeError:  # the pool is shutting down (the service stops)
+                return
+            self._queue.remove(task)
+            self._running += 1
+            self._careful_running += task.careful
+
+    def _work(self, task: Task) -> None:
+        try:
+            self._run(task)
+        finally:
+            with self._lock:
+                self._running -= 1
+                self._careful_running -= task.careful
+                self._start_ready()
 
     def _run(self, task: Task) -> None:
         task.status, task.started = "processing", time.time()
@@ -160,7 +218,7 @@ class TaskManager:
         try:
             path = storage.path_for(task.input_tokens[0])
             if task.tool == "analyse-document":
-                task.result_options = analyse(path)
+                task.result_options = {**analyse(path), "careful": careful_info()}
             else:
                 mode = OCR_TYPES[task.options["ocr_type"]]
                 out, task.result_options = convert(
@@ -189,4 +247,7 @@ class TaskManager:
                 del self._tasks[task_id]
 
     def shutdown(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._queue.clear()
         self._pool.shutdown(wait=False, cancel_futures=True)

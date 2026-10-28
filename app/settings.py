@@ -61,6 +61,9 @@ MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
 # with the model a page takes up to about 2 minutes on a 2-core server (35 s on average on the test scans), and a
 # long scan would hold a worker for too long.
 MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 5))
+# Conversions with the formula model running at once (app/tasks.py): one holds a core and ~1.5 GB for minutes, so
+# the other worker stays free for default conversions; more careful ones wait in the queue (status "queued").
+CAREFUL_WORKERS = int(os.environ.get("P2W_CAREFUL_WORKERS", 1))
 # Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
 # detector registered in mathregions.DETECTORS.
