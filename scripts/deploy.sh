@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Cập nhật bản đang chạy trên máy chủ: lấy mã mới từ GitHub rồi so với bản đã triển khai lần trước (ghi trong
-# .git/pdf2word-deployed sau mỗi lần xong, nên "git pull" tay trước đó không làm sót gì; chưa có file này thì coi
-# như mọi thứ đổi): cài lại thư viện khi requirements.txt đổi, tải mô hình khi scripts/models.json đổi hoặc
+# .git/pdf2word-deployed sau mỗi lần xong; chưa có file này thì coi như mọi thứ đổi) và với bản có trên máy trước
+# khi pull (mã đổi ngoài deploy.sh – "git pull" tay, quay lại bản cũ bằng "git reset" – cũng được tính):
+# cài lại thư viện khi requirements.txt đổi, tải mô hình khi scripts/models.json đổi hoặc
 # mô hình còn thiếu/hỏng (fetch_models.py --check; lần tải hỏng được tải lại ở lần chạy sau), cài lại dịch vụ
 # systemd khi deploy/pdf2word.service đổi, restart chỉ khi mã Python, mô hình hoặc dịch vụ đổi (giao diện static/
-# được đọc thẳng từ ổ đĩa, không cần restart). Cuối cùng nhắc nếu một drop-in systemd đang tắt mô hình.
+# được đọc thẳng từ ổ đĩa, không cần restart). Cuối cùng nhắc nếu một drop-in systemd đang tắt mô hình hay đổi
+# cách đọc công thức.
 #   ./scripts/deploy.sh            cập nhật
 #   ./scripts/deploy.sh --restart  cập nhật và restart dù không có gì đổi
 # Biến môi trường: P2W_SERVICE (tên dịch vụ systemd, mặc định pdf2word), P2W_PORT (mặc định 8000).
@@ -31,6 +33,8 @@ if [ -z "${P2W_FROM:-}" ]; then  # P2W_FROM: đã pull, đang chạy bằng depl
   if ! git diff --quiet "$pre" HEAD -- scripts/deploy.sh; then
     P2W_FROM=$pre exec "$0" "$@"
   fi
+else
+  pre=$(git rev-parse "${P2W_FROM}^{commit}")
 fi
 new=$(git rev-parse HEAD)
 
@@ -42,24 +46,41 @@ fi
 if [ -z "$old" ]; then
   echo "Chưa biết bản đã triển khai lần trước – cài lại, tải mô hình và restart như mọi thứ đều đổi."
   changed=$(git ls-files)
-elif [ "$old" = "$new" ]; then
+elif [ "$old" = "$new" ] && [ "$pre" = "$new" ]; then
   echo "Đã là bản mới nhất ($(git log -1 --format='%h %s'))."
   changed=""
 else
-  echo "Bản mới:"
-  git log --format='  %h %s' "$old..$new"
   changed=$(git diff --name-only "$old" "$new")
+  if [ "$old" != "$new" ]; then
+    echo "Bản mới:"
+    git log --format='  %h %s' "$old..$new"
+  fi
+  if [ "$pre" != "$old" ]; then
+    # HEAD moved outside deploy.sh after the last deploy (a "git pull", or a rollback with "git reset" and a restart
+    # by hand): what changed from the code that was checked out counts too
+    echo "Mã trên máy khác bản đã triển khai lần trước (trước khi pull: $(git log -1 --format='%h %s' "$pre")) – tính cả thay đổi từ bản đó."
+    changed=$( { printf '%s\n' "$changed"; git diff --name-only "$pre" "$new"; } | sed '/^$/d' | sort -u)
+  fi
 fi
 
-# Ghi bản vừa triển khai xong; nhắc drop-in systemd đang tắt mô hình hay đổi cách đọc công thức.
+# Ghi bản vừa triển khai xong; nhắc drop-in systemd đang tắt mô hình hay đổi cách đọc công thức: xoá cả file chỉ
+# khi file không đặt gì khác, không thì sửa file bỏ các biến đó.
+NOTICE='^(P2W_(VIETOCR|MFR|MFR_SPLIT)=0|P2W_FORMULAS=(model|off))$'
 finish() {
   git rev-parse HEAD > "$STATE"
-  local f vars
+  local f vars rest
   for f in "${UNIT}.d"/*.conf; do
     [ -r "$f" ] || continue
-    vars=$(grep -E '^[[:space:]]*Environment=' "$f" | grep -oE 'P2W_(VIETOCR|MFR)=0|P2W_FORMULAS=[A-Za-z]*' | sort -u | tr '\n' ' ' || true)
-    if [ -n "$vars" ]; then
+    # the assignments of its Environment= lines, one a line (quotes dropped)
+    vars=$(sed -nE 's/^[[:space:]]*Environment=//p' "$f" | tr -d "\"'" | tr ' \t' '\n\n' | sed '/^$/d' || true)
+    rest=$( { grep -vE '^[[:space:]]*([#;].*)?$' "$f" | grep -vE '^[[:space:]]*(\[Service\]|Environment=)'
+              printf '%s\n' "$vars" | grep -vE "$NOTICE"; } | sed '/^$/d' || true)
+    vars=$(printf '%s\n' "$vars" | grep -E "$NOTICE" | sort -u | tr '\n' ' ' || true)
+    [ -n "$vars" ] || continue
+    if [ -z "$rest" ]; then
       echo "Chú ý: $f đặt ${vars% } – bỏ: sudo rm $f && sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE}"
+    else
+      echo "Chú ý: $f đặt ${vars% } (cùng các thiết lập khác) – bỏ các biến đó: sudoedit $f && sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE}"
     fi
   done
 }
