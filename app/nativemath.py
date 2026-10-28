@@ -501,7 +501,8 @@ def _attach_accents(glyphs: list[Glyph]) -> list[Glyph]:
             width = max(g.x1 - g.x0, 1.0)
             # Word stretches an accent only as wide as its base: one much wider than the letter covers
             # its neighbours too ("\\widehat{xOy}" centred on O)
-            if abs((x0 + x1) / 2 - g.cx) > 0.25 * width or x1 - x0 > max(1.1 * width, 0.45 * g.size):
+            # (an accent sits on the letter's accent point, up to 0.1 em right of its box centre in italics)
+            if abs((x0 + x1) / 2 - g.cx) > 0.25 * width + 0.1 * g.size or x1 - x0 > max(1.1 * width, 0.45 * g.size):
                 raise Unsure("accent over more than one letter")
         g.accents.append(kinds.pop())
     return rest
@@ -576,6 +577,14 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     fields = ("c", "x0", "y0", "x1", "y1", "oy", "size", "font", "bold", "italic", "color", "math_font", "drawn")
     glyphs = [Glyph(**{k: getattr(g, k) for k in fields}) for g in glyphs]  # accents go onto copies
     size = max(g.size for g in glyphs)
+    # drawn bars come in pairs of one height around formula glyphs (|x−1|); a lone stroke beside a formula is
+    # a border or a figure's line, not a bar of it
+    ups = sorted(uprights)
+    if len(ups) % 2 or any(
+        abs(a[1] - b[1]) > 0.15 * size or abs(a[3] - b[3]) > 0.15 * size or not any(a[2] < g.cx < b[0] for g in glyphs)
+        for a, b in zip(ups[::2], ups[1::2])
+    ):
+        raise Unsure("upright strokes not in pairs")
     for x0, y0, x1, y1 in uprights:
         line = [g for g in glyphs if g.size >= SCRIPT * size and y0 - 1 <= g.oy <= y1 + 1]
         if not line:
@@ -604,6 +613,8 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     while m > k + 1 and not line[m - 1].math_font:
         m -= 1
     lead, tail = line[:k], line[m:]
+    if any(g.accents for g in lead + tail):
+        raise Unsure("accent in a label")  # text runs cannot carry it: "(a⃗, b⃗)" would read "(a, b)"
     body = [g for g in glyphs if g not in lead and g not in tail]
     if lead and max(g.x1 for g in lead) > min(g.x0 for g in body) + 0.5:
         raise Unsure("label overlaps the formula")

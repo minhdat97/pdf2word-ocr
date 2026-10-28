@@ -220,6 +220,17 @@ class RefusalTest(unittest.TestCase):
         ln = Line().put("30").sup("0", gap=3).put("+", gap=2).put("60", gap=2)
         self.assertIsNone(build(ln.glyphs, [], []))
 
+    def test_lone_upright_and_label_accents(self):
+        # a single stroke beside a formula is a border or a figure's line, not a bar of it
+        ln = Line().put("𝐹", gap=1).put("=").put("𝑚").put("𝑎")
+        self.assertIsNone(build(ln.glyphs, [], [(49, BASE - 8, 49.4, BASE + 2)]))
+        # a label in its own colour cannot keep a vector arrow as text: the formula stays a picture
+        ln = Line().put("(", color="FF0000").put("𝑎", color="FF0000")
+        a = ln.glyphs[-1]
+        ln.glyphs.append(Glyph(nativemath.ARROW, a.x1, a.y0, a.x1, a.y1, a.oy, S, font="Cambria Math", color="FF0000"))
+        ln.put(")", color="FF0000").put("=", gap=2).put("1")
+        self.assertIsNone(build(ln.glyphs, [], []))
+
     def test_text_a_docx_cannot_hold(self):
         ln = Line().put("\uffff", font="Times New Roman").put("𝑥", gap=2.3).put("=", gap=2).put("1")
         self.assertPicture(ln.glyphs)

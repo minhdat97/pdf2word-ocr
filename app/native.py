@@ -87,6 +87,9 @@ CMAP_TOKEN = re.compile(r"<[0-9A-Fa-f\s]*>|\[|\]")  # a hex string cannot run pa
 CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is not read (its formulas stay pictures)
 CMAP_BUDGET = 1024 * 1024  # bytes of maps read per file
 FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
+FONT_READ_BUDGET = 1_000_000  # characters of font objects read per file (Word's: a few hundred per font)
+FORMS_MAX = 64  # form XObjects of a page looked through for math fonts
+TRACE_TEXTS_MAX = 20000  # text objects on a page before its glyph trace (for drawn marks) is not built
 FORMULA_GLYPHS_MAX = 300  # glyphs and strokes of one formula read as an equation (Word's largest here: 73)
 FORMULA_MARKS_MAX = 32  # combining marks of one formula
 PAGE_INK_MAX = 1.2e6  # pt² of page rendered once to measure brackets (A4 is 0.5e6); larger: pictures
@@ -109,9 +112,16 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
     the code read through a standard encoding (an exporter can write an empty map: R/T of
     "pV = R/T" then reads "!\"", and ")" may stand for any glyph). None: a map too large, packed
     otherwise than by Flate, or not read as written (refused once per file)."""
-    tu_kind, tu = doc.xref_get_key(xref, "ToUnicode")
-    enc_kind, enc = doc.xref_get_key(xref, "Encoding")
-    first, last = (doc.xref_get_key(xref, k) for k in ("FirstChar", "LastChar"))
+    per_font = doc.__dict__.setdefault("_p2w_simple_fonts", {})  # each font object once per file
+    if xref not in per_font:
+        per_font[xref] = _simple_font_map(doc, xref)
+    return per_font[xref]
+
+
+def _simple_font_map(doc: pymupdf.Document, xref: int) -> frozenset[str] | None:
+    tu_kind, tu = _read_key(doc, xref, "ToUnicode")
+    enc_kind, enc = _read_key(doc, xref, "Encoding")
+    first, last = (_read_key(doc, xref, k) for k in ("FirstChar", "LastChar"))
     try:  # a simple font's codes are one byte, whatever the file claims
         lo, hi = max(int(first[1]), 0), min(int(last[1]), 255)
     except ValueError:
@@ -184,13 +194,48 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
 FONT_REF = re.compile(r"/[^\s/<>\[\]()]+\s+(\d+)\s+0\s+R")
 
 
-def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, str, list[str]]] | None:
-    """(xref, Subtype, names) of the fonts the page's own resources name (inherited ones too):
-    BaseFont, and a Type0 font's descendant's name, which the text spans carry. Read from the
-    /Font dictionary itself, bounded (FONT_LIST_MAX), not by listing fonts: a file can name
-    thousands, in forms too. Forms' own fonts are not in it: their formulas stay pictures.
-    None: no resources or a dictionary too large."""
-    ref = page.xref
+def _spend(doc: pymupdf.Document, chars: int) -> None:
+    """Count characters of font objects read against a per-file budget (a value can be megabytes:
+    an array in an object stream). Raises ValueError past it."""
+    spent = doc.__dict__.get("_p2w_font_chars", 0) + chars
+    doc.__dict__["_p2w_font_chars"] = spent
+    if spent > FONT_READ_BUDGET:
+        raise ValueError("font objects too large to read")
+
+
+def _read_key(doc: pymupdf.Document, xref: int, key: str) -> tuple[str, str]:
+    kind, val = doc.xref_get_key(xref, key)
+    _spend(doc, len(val))
+    return kind, val
+
+
+def _read_object(doc: pymupdf.Document, xref: int) -> str:
+    text = doc.xref_object(xref, compressed=True)
+    _spend(doc, len(text))
+    return text
+
+
+def _font_info(doc: pymupdf.Document, x: int) -> tuple[str, list[str]]:
+    """(Subtype, names) of a font object, read once per file: BaseFont, and a Type0 font's
+    descendant's BaseFont, which the text spans carry."""
+    cache = doc.__dict__.setdefault("_p2w_font_info", {})
+    if x not in cache:
+        sub = _read_key(doc, x, "Subtype")[1].lstrip("/")
+        names = [_read_key(doc, x, "BaseFont")[1].lstrip("/")]
+        if sub == "Type0":
+            kind, desc = _read_key(doc, x, "DescendantFonts")  # Word writes "143 0 R" -> "[144 0 R]"
+            if kind == "xref":
+                desc = _read_object(doc, int(desc.split()[0]))
+            first = re.search(r"(\d+)\s+0\s+R", desc[:200])
+            if first:
+                names.append(_read_key(doc, int(first.group(1)), "BaseFont")[1].lstrip("/"))
+        cache[x] = (sub, names)
+    return cache[x]
+
+
+def _resources(doc: pymupdf.Document, ref: int, key: str) -> str | None:
+    """The page's (or a form's) /Resources/<key> dictionary as text: inherited ones too, bounded.
+    "": none. None: not found or too large."""
     for _ in range(8):
         kind, val = doc.xref_get_key(ref, "Resources")
         if kind != "null":
@@ -201,30 +246,53 @@ def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, st
         ref = int(val.split()[0])
     else:
         return None
-    fkind, fval = doc.xref_get_key(int(val.split()[0]), "Font") if kind == "xref" else doc.xref_get_key(ref, "Resources/Font")
-    if fkind == "xref":
-        fval = doc.xref_object(int(fval.split()[0]), compressed=True)
-    elif fkind != "dict":
-        return []
-    if len(fval) > FONT_LIST_MAX:
+    dkind, dval = doc.xref_get_key(int(val.split()[0]), key) if kind == "xref" else doc.xref_get_key(ref, f"Resources/{key}")
+    if dkind == "xref":
+        dval = doc.xref_object(int(dval.split()[0]), compressed=True)
+    elif dkind != "dict":
+        return ""
+    return None if len(dval) > FONT_LIST_MAX else dval
+
+
+def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, str, list[str]]] | None:
+    """(xref, Subtype, names) of the fonts the page's own resources name (inherited ones too),
+    read from the /Font dictionary itself, bounded (FONT_LIST_MAX, FONT_READ_BUDGET), not by listing
+    fonts: a file can name thousands, in forms too. None: no resources, a dictionary too large, or a
+    Unicode math font of the page's forms (N-up pages, pasted PDF pictures) that the page itself does
+    not list – its glyphs would pass as the page's own font of the same name."""
+    fval = _resources(doc, page.xref, "Font")
+    if fval is None:
         return None
     cache = doc.__dict__.setdefault("_p2w_font_lists", {})  # pages share their font dictionaries
     if fval not in cache:
-        out = []
-        for m in FONT_REF.finditer(fval):
+        xrefs = list(dict.fromkeys(int(m.group(1)) for m in FONT_REF.finditer(fval)))
+        cache[fval] = [(x, *_font_info(doc, x)) for x in xrefs]
+    fonts = cache[fval]
+    own = {x for x, _sub, _names in fonts}
+    forms, seen = [(page.xref, 0)], set()
+    while forms:
+        ref, depth = forms.pop()
+        xval = _resources(doc, ref, "XObject")
+        if xval is None:
+            return None
+        for m in FONT_REF.finditer(xval):
             x = int(m.group(1))
-            sub = doc.xref_get_key(x, "Subtype")[1].lstrip("/")
-            names = [doc.xref_get_key(x, "BaseFont")[1].lstrip("/")]
-            if sub == "Type0":
-                kind, desc = doc.xref_get_key(x, "DescendantFonts")  # Word writes "143 0 R" -> "[144 0 R]"
-                if kind == "xref":
-                    desc = doc.xref_object(int(desc.split()[0]), compressed=True)
-                desc = re.search(r"(\d+)\s+0\s+R", desc)
-                if desc:
-                    names.append(doc.xref_get_key(int(desc.group(1)), "BaseFont")[1].lstrip("/"))
-            out.append((x, sub, names))
-        cache[fval] = out
-    return cache[fval]
+            if x in seen:
+                continue
+            seen.add(x)
+            if len(seen) > FORMS_MAX or depth > 2:
+                return None
+            if doc.xref_get_key(x, "Subtype")[1] != "/Form":
+                continue
+            ffonts = _resources(doc, x, "Font")
+            if ffonts is None:
+                return None
+            for fm in FONT_REF.finditer(ffonts):
+                fx = int(fm.group(1))
+                if fx not in own and any(UNICODE_MATH_FONT.search(n) for n in _font_info(doc, fx)[1]):
+                    return None
+            forms.append((x, depth + 1))
+    return fonts
 
 
 def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | None:
@@ -1228,7 +1296,8 @@ class _Extractor:
                 try:
                     pix = page.get_pixmap(dpi=150, alpha=False)  # RGB: a grey render of an image page is slow
                     rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, :3]
-                    self._page_ink = (rgb @ np.array([0.299, 0.587, 0.114])).astype(np.uint8)
+                    self._page_ink = ((rgb[:, :, 0].astype(np.uint16) * 77 + rgb[:, :, 1].astype(np.uint16) * 150
+                                       + rgb[:, :, 2].astype(np.uint16) * 29) >> 8).astype(np.uint8)
                 except Exception:  # noqa: BLE001
                     self._page_ink = False
         if self._page_ink is False:
@@ -1257,6 +1326,12 @@ class _Extractor:
         if self._marks is None:
             self._marks = []
             try:
+                # the trace holds every glyph drawn, off the page too: only for pages of ordinary text
+                texts = [b for t, b in self.page.get_bboxlog() if t.endswith("-text")]
+                area = pymupdf.Rect(self.page.rect).normalize()
+                area = pymupdf.Rect(area.x0 - 5, area.y0 - 5, area.x1 + 5, area.y1 + 5)
+                if len(texts) > TRACE_TEXTS_MAX or any(not area.contains(pymupdf.Point(b[0], b[1])) for b in texts):
+                    return None
                 for span in self.page.get_texttrace():
                     for code, _glyph, _origin, bbox in span["chars"]:
                         if code > 0 and chr(code) in nativemath.COMBINING:
@@ -1290,7 +1365,7 @@ class _Extractor:
                           color=piece.color, font=piece.font)
             runs.append(run)
         # kept for _settle_equations, which may still turn it into its picture (as _runs would have)
-        f["piece_runs"], f["line_main"], f["line_baseline"] = runs, main, baseline
+        f["piece_runs"], f["line_main"], f["line_baseline"] = list(runs), main, baseline  # `runs` grows into its segment
         return runs
 
     def _close_formulas(self, found: list[dict], marks: list[tuple]) -> list[dict]:
@@ -2213,6 +2288,7 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
             alone = all(not (x.math or x.image or x.field or x.text == TAB or x.text.strip()) for x in runs if x is not r)
             if alone:
                 r.display = True
+                runs[:] = [r]  # the blanks beside it are the equation's own spacing: a display paragraph holds it alone
             elif f.get("frac_only") and r.size <= nativemath.SCRIPT * font_pt:
                 r.size = _half(font_pt)
             else:  # the picture, as _runs makes it: it shows the label and trailing text too
