@@ -45,8 +45,9 @@ class Line:
     def sub(self, text, **kw):
         return self.put(text, size=0.7 * S, dy=0.2 * S, **kw)
 
-    def frac(self, num, den, size=S):
-        """A fraction at the current position: returns its bar."""
+    def frac(self, num, den, size=0.72 * S):
+        """A fraction at the current position (Word sets an inline fraction's parts at 0.72 of the
+        line; a display fraction's at the line's size): returns its bar."""
         width = 0.5 * size * max(len(num), len(den))
         x0, axis = self.x, self.base - 0.25 * S
         for text, dy in ((num, -0.6 * S), (den, 0.7 * S)):
@@ -75,10 +76,10 @@ class LayoutTest(unittest.TestCase):
         bar = ln.frac("1", "2")
         ln.put("𝑚", gap=2)
         self.assertEqual(latex(build(ln.glyphs, [bar], [])), [r"=\frac{1}{2}m"])
-        # only a fraction: the equation takes the size of its line (the caller's)
+        # only a fraction: \dfrac at its parts' size, so Word draws them as large as the PDF does
         ln = Line()
         bar = ln.frac("1", "110", size=7)
-        self.assertEqual([(p.text, p.size) for p in build(ln.glyphs, [bar], [])], [(r"\frac{1}{110}", 0.0)])
+        self.assertEqual([(p.text, p.size) for p in build(ln.glyphs, [bar], [])], [(r"\dfrac{1}{110}", 7)])
 
     def test_fractions_nested_and_side_by_side(self):
         ln = Line().put("𝑥").put("=", gap=2)
@@ -86,13 +87,19 @@ class LayoutTest(unittest.TestCase):
         ln.x += 1
         bars.append(ln.frac("𝑣", "𝑢"))
         self.assertEqual(latex(build(ln.glyphs, bars, [])), [r"x=\frac{1}{2}\frac{v}{u}"])
-        # a fraction in a numerator: the shorter bar inside the longer one
+        # a fraction in a numerator: the shorter bar inside the longer one; alone, the outer one is a display
+        # fraction (\dfrac, parts at full size), the inner one shrinks inside it
         ln = Line()
         outer = Bar(50, 70, BASE - 2.5)
         inner = Bar(52, 57, BASE - 9.5)
-        for c, x, oy in (("1", 52, BASE - 12.5), ("2", 52, BASE - 4.5), ("𝑚", 58, BASE - 7.5), ("𝑀", 58, BASE + 7)):
-            ln.glyphs.append(Glyph(c, x, oy - 0.78 * 7, x + 5, oy + 0.22 * 7, oy, 7, font="Cambria Math"))
-        self.assertEqual(latex(build(ln.glyphs, [outer, inner], [])), [r"\frac{\frac{1}{2}m}{M}"])
+        for c, x, oy, sz in (("1", 52, BASE - 12.5, 5), ("2", 52, BASE - 4.5, 5), ("𝑚", 58, BASE - 7.5, 7), ("𝑀", 58, BASE + 7, 7)):
+            ln.glyphs.append(Glyph(c, x, oy - 0.78 * sz, x + 5, oy + 0.22 * sz, oy, sz, font="Cambria Math"))
+        pieces = build(ln.glyphs, [outer, inner], [])
+        self.assertEqual([(p.text, p.size) for p in pieces], [(r"\dfrac{\frac{1}{2}m}{M}", 7)])
+        # a display fraction on a line: parts as large as the line
+        ln = Line().put("𝑣").put("=", gap=2)
+        bar = ln.frac("𝑠", "𝑡", size=S)
+        self.assertEqual(latex(build(ln.glyphs, [bar], [])), [r"v=\dfrac{s}{t}"])
 
     def test_vector_arrows_primes_and_greek(self):
         ln = Line().put("𝑚").sub("1").put("𝑣").sub("1")
@@ -310,8 +317,30 @@ class SplitLinesTest(unittest.TestCase):
         self.assertEqual(sorted(map(sorted, parts)), [[0, 1, 2, 3, 4], [5, 6]])
 
 
+class BracketInkTest(unittest.TestCase):
+    """native._Extractor._ink_height: a stretched bracket has the text box of a plain one, so its drawn
+    height decides whether it encloses rows outside the formula (a matrix, a system)."""
+
+    def test_heights(self):
+        doc = pymupdf.open()
+        page = doc.new_page(width=300, height=200)
+        page.insert_text((50, 100), "(", fontsize=11, fontname="Times-Roman")
+        page.draw_line((120, 70), (120, 130), width=0.8)  # a bracket three rows tall
+        ex = native._Extractor(page, None)
+        plain = Glyph("(", 50, 100 - 0.78 * 11, 54, 100 + 0.22 * 11, 100, 11)
+        tall = Glyph("(", 119, 100 - 0.78 * 11, 121.5, 100 + 0.22 * 11, 100, 11)
+        self.assertLess(ex._ink_height(plain), 13)
+        self.assertGreater(ex._ink_height(tall), 55)
+        self.assertIsNone(ex._ink_height(Glyph("(", 200, 92, 204, 102, 100, 11)))  # no ink: unsure
+
+
+def _unmapped(page):
+    fonts = native._math_fonts(page)
+    return None if fonts is None else fonts[0]
+
+
 class UnmappedGlyphsTest(unittest.TestCase):
-    """native._unmapped_chars: glyph codes a Unicode math font gives without a real mapping, read
+    """native._math_fonts: glyph codes a Unicode math font gives without a real mapping, read
     within bounds whatever the file holds (the map is the uploader's)."""
 
     def page(self, cmap: bytes | None = b"", first=33, last=40, stream=True):
@@ -338,24 +367,24 @@ class UnmappedGlyphsTest(unittest.TestCase):
 
     def test_maps(self):
         _doc, page = self.page(b"begincmap 1 beginbfchar <21><0052> endbfchar 1 beginbfrange <22><23><0041> endbfrange endcmap")
-        self.assertEqual(native._unmapped_chars(page), set("$%&'("))
+        self.assertEqual(_unmapped(page), set("$%&'("))
         _doc, page = self.page(b"begincmap endcmap")  # an empty map: every code is raw
-        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+        self.assertEqual(_unmapped(page), set("!\"#$%&'("))
         _doc, page = self.page(None)  # no map, no standard encoding
-        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+        self.assertEqual(_unmapped(page), set("!\"#$%&'("))
 
     def test_hostile_maps(self):
         import time
         t = time.perf_counter()
         _doc, page = self.page(b"begincmap 1 beginbfrange <00000000><FFFFFFFF><0041> endbfrange endcmap", 0, 10 ** 9)
-        self.assertEqual(native._unmapped_chars(page), set())  # one-byte codes, all mapped
+        self.assertEqual(_unmapped(page), set())  # one-byte codes, all mapped
         _doc, page = self.page(b"begincmap " + b"beginbfchar " * 5000 + b"endcmap")
-        self.assertEqual(native._unmapped_chars(page), set("!\"#$%&'("))
+        self.assertEqual(_unmapped(page), set("!\"#$%&'("))
         self.assertLess(time.perf_counter() - t, 2)
         _doc, page = self.page(b"begincmap endcmap", stream=False)  # not a stream: pictures
-        self.assertIsNone(native._unmapped_chars(page))
+        self.assertIsNone(_unmapped(page))
         _doc, page = self.page(b"%" * (4 * native.CMAP_MAX + 1))  # too large to read: formulas stay pictures
-        self.assertIsNone(native._unmapped_chars(page))
+        self.assertIsNone(_unmapped(page))
 
 
 if __name__ == "__main__":

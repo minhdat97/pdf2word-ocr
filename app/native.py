@@ -82,16 +82,36 @@ def _math_alnum(c: str) -> bool:
 
 
 CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
+HEX = re.compile(r"<([0-9A-Fa-f\s]*)>")  # cannot run past a "<": linear on any line
 CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is not read (its formulas stay pictures)
-STANDARD_ENCODINGS = {"WinAnsiEncoding", "MacRomanEncoding", "StandardEncoding"}
-NO_CID_TEXT = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES & ~pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE
+FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
+MATH_FONTS_MAX = 16  # simple Unicode math fonts on a page that are checked; more: pictures
+STANDARD_ENCODINGS = {"/WinAnsiEncoding", "/MacRomanEncoding", "/StandardEncoding"}
+NO_CID_TEXT = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES & ~pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE
 
 
-def _simple_font_unmapped(doc: pymupdf.Document, xref: int, encoding: str) -> set[str] | None:
-    """Text a one-byte math font gives for codes its ToUnicode map leaves out: the raw codes
-    (an exporter can write an empty map: R/T of "pV = R/T" then reads "!\"", and ")" may stand
-    for any glyph). None: a map too large to read."""
+def _font_key(name: str) -> str:
+    """A font name as both the font list and the text spans give it ("BCDOEE+CambriaMath",
+    "Cambria Math Regular", "STIXTwoMath-Regular" / "STIX Two Math Regular")."""
+    key = re.sub(r"[^a-z0-9]", "", name.split("+", 1)[-1].lower())
+    return re.sub(r"(regular|roman|book|psmt|mt|ps)+$", "", key) or key
+
+
+def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | None:
+    """Text a one-byte math font may give for codes its ToUnicode map leaves out: the raw code, or
+    the code read through a standard encoding (an exporter can write an empty map: R/T of
+    "pV = R/T" then reads "!\"", and ")" may stand for any glyph). None: a map too large to read."""
     tu_kind, tu = doc.xref_get_key(xref, "ToUnicode")
+    enc_kind, enc = doc.xref_get_key(xref, "Encoding")
+    first, last = (doc.xref_get_key(xref, k) for k in ("FirstChar", "LastChar"))
+    try:  # a simple font's codes are one byte, whatever the file claims
+        lo, hi = max(int(first[1]), 0), min(int(last[1]), 255)
+    except ValueError:
+        lo, hi = 0, 255
+    cache = doc.__dict__.setdefault("_p2w_maps", {})  # per file, by map: fonts often share one
+    key = (tu if tu_kind == "xref" else None, lo, hi, enc_kind, enc if enc_kind == "name" else "")
+    if key in cache:
+        return cache[key]
     mapped: set[int] = set()
     if tu_kind == "xref":
         ref = int(tu.split()[0])
@@ -103,11 +123,11 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int, encoding: str) -> se
             return None
         cmap, pos = data.decode("latin-1"), 0
         while m := CMAP_BEGIN.search(cmap, pos):  # one pass: an unclosed block ends the map
-            end = cmap.find("end" + m.group(1), m.end())
-            if end < 0:
+            stop = cmap.find("end" + m.group(1), m.end())
+            if stop < 0:
                 break
-            for line in cmap[m.end():end].splitlines():
-                codes = [c.replace(" ", "") for c in re.findall(r"<([^>]*)>", line)]  # "<21><d835 dc5d>"
+            for line in cmap[m.end():stop].splitlines():
+                codes = [c.replace(" ", "") for c in HEX.findall(line)]  # "<21><d835 dc5d>"
                 try:
                     if m.group(1) == "bfchar" and len(codes) >= 2:
                         mapped.add(int(codes[0], 16))
@@ -115,45 +135,68 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int, encoding: str) -> se
                         mapped.update(range(max(int(codes[0], 16), 0), min(int(codes[1], 16), 255) + 1))
                 except ValueError:
                     continue
-            pos = end
-    elif encoding in STANDARD_ENCODINGS:
-        return set()  # a standard encoding names every glyph
-    first, last = (doc.xref_get_key(xref, k) for k in ("FirstChar", "LastChar"))
-    try:  # a simple font's codes are one byte, whatever the file claims
-        lo, hi = max(int(first[1]), 0), min(int(last[1]), 255)
-    except ValueError:
-        lo, hi = 0, 255
-    return {chr(code) for code in range(lo, hi + 1) if code not in mapped}
+            pos = stop
+    elif enc_kind == "name" and enc in STANDARD_ENCODINGS:
+        cache[key] = frozenset()  # a standard encoding names every glyph
+        return cache[key]
+    out = set()
+    for code in range(lo, hi + 1):
+        if code not in mapped:
+            out.add(chr(code))
+            for codec in ("cp1252", "mac_roman"):  # how MuPDF may read it instead
+                out.update(bytes([code]).decode(codec, errors="ignore"))
+    cache[key] = frozenset(out)
+    return cache[key]
 
 
-def _unmapped_chars(page: pymupdf.Page) -> set[str] | None:
-    """Text that the page's Unicode math fonts give without a real mapping (see
-    _simple_font_unmapped). None: glyphs that cannot be told apart, so the page's formulas
-    stay pictures – a CID font's glyph outside its map (MuPDF writes the glyph id as the
-    character: "ӈ" for ℎ; read without that, it is U+FFFD), or a font that cannot be read."""
+def _font_list_size(doc: pymupdf.Document, page: pymupdf.Page) -> int | None:
+    """Characters of the page's font dictionary (inherited resources too), without listing its
+    fonts: a file can name thousands. None: not found."""
+    ref = page.xref
+    for _ in range(8):
+        kind, val = doc.xref_get_key(ref, "Resources")
+        if kind != "null":
+            break
+        kind, val = doc.xref_get_key(ref, "Parent")
+        if kind != "xref":
+            return None
+        ref = int(val.split()[0])
+    else:
+        return None
+    font_kind, font = doc.xref_get_key(int(val.split()[0]), "Font") if kind == "xref" else doc.xref_get_key(ref, "Resources/Font")
+    if font_kind == "xref":
+        return len(doc.xref_object(int(font.split()[0])))
+    return len(font) if font_kind == "dict" else 0
+
+
+def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | None:
+    """(text the page's Unicode math fonts give without a real mapping (see _simple_font_unmapped),
+    names of the page's fonts). None: glyphs that cannot be told apart, so the page's formulas stay
+    pictures – a CID font's glyph outside its map (MuPDF writes the glyph id as the character: "ӈ"
+    for ℎ; read without that, it is U+FFFD), a font list or map too large to read, a broken font."""
     doc = page.parent
     try:
-        cache = doc.__dict__.setdefault("_p2w_math_fonts", {})  # per file: pages share their fonts
-        out: set[str] = set()
-        cid_fonts = False
-        for xref, _ext, kind, base, _name, encoding, *_ in page.get_fonts(full=True):
-            if not UNICODE_MATH_FONT.search(base):
-                continue
-            if kind == "Type0":
-                cid_fonts = True
-                continue
-            if xref not in cache:
-                cache[xref] = _simple_font_unmapped(doc, xref, encoding)
-            if cache[xref] is None:
+        size = _font_list_size(doc, page)
+        if size is None or size > FONT_LIST_MAX:
+            return None
+        fonts = page.get_fonts(full=False)  # a formula's font must be one of these (not a form's own)
+        names = frozenset(_font_key(f[3]) for f in fonts)
+        unmapped: set[str] = set()
+        simple = [f for f in fonts if f[2] != "Type0" and UNICODE_MATH_FONT.search(f[3])]
+        if len(simple) > MATH_FONTS_MAX:
+            return None
+        for xref, *_ in simple:
+            chars = _simple_font_unmapped(doc, xref)
+            if chars is None:
                 return None
-            out |= cache[xref]
-        if cid_fonts:
-            for b in page.get_text("rawdict", flags=NO_CID_TEXT)["blocks"]:
+            unmapped |= chars
+        if any(f[2] == "Type0" for f in fonts):  # whatever its name: the span's own font name may differ
+            for b in page.get_text("dict", flags=NO_CID_TEXT)["blocks"]:
                 for ln in b.get("lines", ()):
                     for s in ln["spans"]:
-                        if UNICODE_MATH_FONT.search(s["font"]) and any(c["c"] == "\ufffd" for c in s["chars"]):
+                        if UNICODE_MATH_FONT.search(s["font"]) and "\ufffd" in s["text"]:
                             return None
-        return out
+        return frozenset(unmapped), names
     except Exception:  # noqa: BLE001 – a broken font object: pictures, the file still converts
         return None
 
@@ -380,16 +423,24 @@ def _split_lines(members: list[int], nodes: list[list], fractions: list[tuple[in
         for j in ks:
             box |= nodes[j][0]
         boxes.append((pymupdf.Rect(box.x0 - 1, box.y0 - 0.15 * top, box.x1 + 0.3 * top, box.y1 + 0.15 * top), line))
+    if len(members) * max(len(boxes), 1) > 20000:
+        return [members]  # a huge group: kept whole (one picture) rather than sorted glyph by glyph
+    boxes = [(tuple(box), line) for box, line in boxes]
     for k in members:
         if k in line_of or k in parts:
             continue
         r = nodes[k][0]
-        centre = pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
-        inside = {line for box, line in boxes if centre in box}
+        cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+        inside = {line for (x0, y0, x1, y1), line in boxes if x0 <= cx <= x1 and y0 <= cy <= y1}
         if len(inside) > 1:
             return [members]
         if inside:
-            line_of[k] = inside.pop()
+            line = inside.pop()
+            # a script of the next line under the denominator is that line's: the group stays whole
+            oy = nodes[k][4]["origin"][1] if nodes[k][4] is not None else None
+            if oy is not None and oy > ys[line] and nearest(oy) != line:
+                return [members]
+            line_of[k] = line
         elif nodes[k][4] is not None:
             line_of[k] = nearest(nodes[k][4]["origin"][1])
         else:
@@ -608,7 +659,9 @@ class _Extractor:
         self._unmarked_doc = None
         self._ink_refs: tuple[float | None, float | None] | None = None
         self._bold_cache: dict[tuple, bool] = {}
-        self._unmapped: set[str] | None | bool = False  # _unmapped_chars(page), worked out when needed
+        self._math_fonts: tuple | None | bool = False  # _math_fonts(page), worked out when needed
+        self._tiny: list[pymupdf.Rect] = []  # glyphs under 4 pt: left out of formulas, but drawn
+        self._marks: list[tuple[str, pymupdf.Rect]] | None = None  # combining marks as drawn (get_texttrace)
 
     # --- spans and rows ---------------------------------------------------
 
@@ -891,7 +944,10 @@ class _Extractor:
                         has_formula and _maybe_opaque(s["text"])
                     )
                     for c in s["chars"]:
-                        if not c["c"].strip() or s["size"] < 4:
+                        if not c["c"].strip():
+                            continue
+                        if s["size"] < 4:
+                            self._tiny.append(pymupdf.Rect(c["bbox"]))
                             continue
                         span_of[id(c)] = s
                         kind = 2 if formula_span or _math_alnum(c["c"]) else 1 if joins else 0
@@ -1016,10 +1072,14 @@ class _Extractor:
 
     def _equation(self, f: dict, span_of: dict[int, dict], fraction_bars: set[int]) -> list | None:
         """The formula as a Word equation (nativemath pieces), or None to keep its picture."""
-        if self._unmapped is False:
-            self._unmapped = _unmapped_chars(self.page)
-        if self._unmapped is None:
+        if self._math_fonts is False:
+            self._math_fonts = _math_fonts(self.page)
+        if self._math_fonts is None:
             return None
+        unmapped, font_names = self._math_fonts
+        ink = pymupdf.Rect(f["rect"].x0 - 1, f["rect"].y0 - 1, f["rect"].x1 + 1, f["rect"].y1 + 1)
+        if any(not (r & ink).is_empty for r in self._tiny):
+            return None  # glyphs too small to be read are part of it: its picture shows them
         glyphs = []
         for c in f["chars"]:
             s = span_of.get(id(c))
@@ -1027,14 +1087,35 @@ class _Extractor:
                 return None  # Symbol / MathType glyphs: their text may not be what is drawn
             unicode_math = bool(UNICODE_MATH_FONT.search(s["font"]))
             # MathType glyphs without real text ("!\"#") stay a picture; Cambria Math's ") + (" is real
-            if s is None or (_opaque(s["text"]) and not unicode_math) or (unicode_math and c["c"] in self._unmapped):
+            if _opaque(s["text"]) and not unicode_math:
                 return None
+            if unicode_math and (c["c"] in unmapped or _font_key(s["font"]) not in font_names):
+                return None  # text the font's map does not give, or a font the page does not list
             x0, y0, x1, y1 = c["bbox"]
+            stretched = False
+            if c["c"] in nativemath.COMBINING:  # the text layer puts a mark at the end of the glyph before it
+                drawn = self._drawn_mark(c, ink, f)
+                if drawn is None:
+                    return None
+                if drawn[2] - drawn[0] >= 0.5:  # drawn with a width (a stretched hat or arrow): where it is drawn
+                    x0, y0, x1, y1 = drawn
+                    stretched = True
             glyphs.append(nativemath.Glyph(
                 c["c"], x0, y0, x1, y1, c["origin"][1], s["size"], font=_family(s["font"]) or "",
                 bold=_bold(s), italic=_italic(s), color=_color(s, honour_alpha=not self.invisible_layer),
-                math_font=unicode_math,
+                math_font=unicode_math, drawn=stretched,
             ))
+        # a bracket drawn taller than everything the formula holds encloses rows outside it (a matrix, a
+        # system): the text layer gives a stretched bracket the box of a plain one, so its ink is measured
+        content = [g for g in glyphs if g.c not in "()[]{}"]
+        if content and len(content) < len(glyphs):
+            top = min([g.oy - 0.78 * g.size for g in content] + [self.drawings[i]["rect"].y0 for i in f["drawings"]])
+            bottom = max([g.oy + 0.22 * g.size for g in content] + [self.drawings[i]["rect"].y1 for i in f["drawings"]])
+            for g in glyphs:
+                if g.c in "()[]{}":
+                    ink = self._ink_height(g)
+                    if ink is None or ink > bottom - top + 0.5 * g.size:
+                        return None
         bars, uprights, others = [], [], 0
         for i in f["drawings"]:
             r = pymupdf.Rect(self.drawings[i]["rect"])
@@ -1045,6 +1126,46 @@ class _Extractor:
             else:
                 others += 1
         return nativemath.build(glyphs, bars, uprights, others)
+
+    def _ink_height(self, g) -> float | None:
+        """Height of a bracket's ink: the dark stroke through its middle, at 150 dpi, within its column."""
+        s = 150 / 72
+        clip = pymupdf.Rect(g.x0 - 0.3, g.oy - 3.5 * g.size, g.x1 + 0.3, g.oy + 2.5 * g.size) & self.page.rect
+        if clip.is_empty or clip.width < 1:
+            return None
+        try:
+            pix = self.page.get_pixmap(dpi=150, clip=clip, colorspace=pymupdf.csGRAY, alpha=False)
+        except Exception:  # noqa: BLE001
+            return None
+        img = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w)
+        count, labels = cv2.connectedComponents((img < 150).astype(np.uint8), connectivity=8)
+        mid = int((g.oy - 0.25 * g.size - clip.y0) * s)  # the maths axis: a bracket's middle
+        hits = set(np.unique(labels[max(mid - 2, 0):mid + 3, :])) - {0}
+        if not hits:
+            return None
+        rows = np.flatnonzero(np.isin(labels, list(hits)).any(axis=1))
+        return (rows[-1] - rows[0] + 1) / s
+
+    def _drawn_mark(self, char: dict, ink: pymupdf.Rect, f: dict) -> tuple | None:
+        """Where a combining mark of the formula is drawn (get_texttrace: the text layer reports it
+        at the end of the glyph before it, a hat over "ABC" too). The formula's marks of one kind are
+        matched to the drawn ones in order across; None when they do not pair up."""
+        if self._marks is None:
+            self._marks = []
+            try:
+                for span in self.page.get_texttrace():
+                    for code, _glyph, _origin, bbox in span["chars"]:
+                        if code > 0 and chr(code) in nativemath.COMBINING:
+                            self._marks.append((chr(code), pymupdf.Rect(bbox)))
+            except Exception:  # noqa: BLE001
+                return None
+        ch = char["c"]
+        drawn = sorted((r for c, r in self._marks if c == ch and ink.contains(pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))),
+                       key=lambda r: r.x0)
+        mine = sorted((c for c in f["chars"] if c["c"] == ch), key=lambda c: c["bbox"][0])
+        if len(drawn) != len(mine):
+            return None
+        return tuple(drawn[next(n for n, c in enumerate(mine) if c is char)])
 
     def _equation_runs(self, f: dict, main: float) -> list[Run]:
         """Runs of a formula rebuilt as an equation: the equation and any label set before or

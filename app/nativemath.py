@@ -31,6 +31,7 @@ AXIS = 0.28  # height of the maths axis (fraction bars) over the baseline, in em
 # punctuation are Word's own (0.15–0.17 em after a dot before a script or fraction: "945. 10³").
 SPACE = 0.16
 EMPTY_BASE = 0.2  # a script this far (em) from the symbol before it has no base: "( ⁰C)", "80,6 ⁰F"
+PUNCT_SPACE = 0.2  # after a dot or comma Word sets 0.15-0.17 em itself: a wider gap holds a typed space ("a. x")
 EMPTY_BASE_WIDTH = 0.28  # em: the box Word keeps for that empty base, left of the script's glyphs
 
 ARROW = "⃗"  # combining right arrow above: Word's \vec
@@ -84,6 +85,7 @@ class Glyph:
     italic: bool = False
     color: str | None = None
     math_font: bool = True
+    drawn: bool = False  # a combining mark drawn with a width, its box where it is drawn (not where the text layer puts it)
     accents: list[str] = field(default_factory=list)
 
     @property
@@ -106,9 +108,17 @@ class Bar:
 class _Frac:
     x0: float
     x1: float
-    latex: str
-    size: float
+    num: str
+    den: str
+    size: float  # its largest glyph
     y: float  # the bar: on the line's maths axis, a quarter em over the baseline
+    latex: str = ""
+
+    def write(self, line_size: float | None) -> None:
+        """\\frac where Word shrinks the parts (an inline fraction: about 0.72 of the line), \\dfrac
+        where they are as large as the line (a display fraction) or there is no line to compare with."""
+        full = line_size is None or self.size >= SCRIPT * line_size
+        self.latex = rf"\{'dfrac' if full else 'frac'}{{{self.num}}}{{{self.den}}}"
 
 
 @dataclass(eq=False)
@@ -127,7 +137,7 @@ class Piece:
 
     kind: str  # "text" | "math"
     text: str
-    size: float  # math: 0 when the equation holds only fractions (the size of its line is not known here)
+    size: float  # math: its line's size (an equation of fractions only: their parts' size, written \dfrac)
     bold: bool = False
     italic: bool = False
     color: str | None = None
@@ -216,8 +226,9 @@ def _escape_text(s: str) -> str:
     return "".join(out)
 
 
-def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
-    """LaTeX of glyphs set on one line, with fractions (bars) and scripts."""
+def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: float | None = None) -> str:
+    """LaTeX of glyphs set on one line, with fractions (bars) and scripts. outer_size: size of the
+    line this one sits in (a numerator's line), for a line of fractions only."""
     if depth > 8:
         raise Unsure("nesting")
     # Fractions: a bar with no longer bar over or under it holds everything centred in its span.
@@ -237,19 +248,23 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
         den = [g for g in members if g.cy > b.y]
         if not num or not den or len(num) + len(den) != len(members):
             raise Unsure("bar without numerator or denominator")
-        num_latex = _layout(num, [o for o in inner if o.y < b.y], depth + 1)
-        den_latex = _layout(den, [o for o in inner if o.y > b.y], depth + 1)
+        part_size = max(g.size for g in members)
+        num_latex = _layout(num, [o for o in inner if o.y < b.y], depth + 1, part_size)
+        den_latex = _layout(den, [o for o in inner if o.y > b.y], depth + 1, part_size)
         tokens.append(_Frac(min(b.x0, *(g.x0 for g in members)), max(b.x1, *(g.x1 for g in members)),
-                            rf"\frac{{{num_latex}}}{{{den_latex}}}", max(g.size for g in members), b.y))
+                            num_latex, den_latex, part_size, b.y))
         used.update(id(g) for g in members)
     if len([o for o in bars if not any(o is b or inside(o, b) for b in outer)]):
         raise Unsure("bar left over")
     rest = [g for g in glyphs if id(g) not in used]
     if not rest:
+        for t in tokens:
+            t.write(outer_size)
         return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens))
     size = max(g.size for g in rest)
     base_y = median(g.oy for g in rest if g.size >= 0.9 * size)
     for t in tokens:
+        t.write(size)
         # a fraction in an exponent ("2^{-t/T}") sits high: scripts holding fractions are not read
         if abs(base_y - t.y - AXIS * size) > ON_BASE * size:
             raise Unsure("fraction off the maths axis")
@@ -262,10 +277,18 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
             tokens.append(g)
         elif dy < -0.1 * size:
             scripts.append((g, "sup"))
+        elif dy > 0.45 * size:
+            raise Unsure("glyph far under the baseline")  # a limit under "min" (subscripts drop 0.20-0.25 em)
         elif dy > 0.06 * size:
             scripts.append((g, "sub"))
         else:
             tokens.append(g)  # smaller text on the baseline
+    for g in rest:
+        # a small glyph back on the baseline right after a script is a script of that script ("x_{a^2}")
+        if g.size < SCRIPT * size and abs(g.oy - base_y) <= 0.1 * size and any(
+            s.size > g.size + 0.3 and -0.1 * size <= g.x0 - s.x1 <= 0.1 * size for s, _ in scripts
+        ):
+            raise Unsure("script of a script")
     tokens.sort(key=lambda t: t.x0)
     attached: dict[int, dict[str, list[Glyph]]] = {}  # id(token) -> {"sup"/"sub"/"presup"/"presub": glyphs}
     for g, role in sorted(scripts, key=lambda gr: gr[0].x0):
@@ -275,12 +298,18 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
         left = [t for t in tokens if t.x0 < g.cx - 0.05 * size]
         owner = left[-1] if left else None
         pre = owner is None
+        if owner is not None and g.x0 < owner.x1 - 0.25 * size and not any(
+            gs for r, gs in attached.get(id(owner), {}).items() if r == role
+        ):
+            raise Unsure("script starting under its symbol")  # Word cuts in at most 0.21 em (W_s)
         if owner is not None:
             right_edge = owner.x1  # past the owner's scripts so far ("v′₁": the subscript after the prime)
             for r, gs in attached.get(id(owner), {}).items():
                 if not r.startswith("pre"):
                     right_edge = max([right_edge, *(s.x1 for s in gs)])
             kind = _atom(owner)[1] if isinstance(owner, Glyph) else "ord"
+            if kind == "op" and g.x0 - right_edge <= EMPTY_BASE * size:
+                raise Unsure("script of an operator")  # "A →ᵗ B": not the next symbol's prescript
             if kind in ("op", "open", "punct") or g.x0 - right_edge > EMPTY_BASE * size:
                 pre = True
         if pre:
@@ -301,7 +330,7 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0) -> str:
                 raise Unsure("scripts between a number and a symbol")
     script_latex: dict[int, dict[str, str]] = {}
     for tid, roles in attached.items():
-        script_latex[tid] = {role: _layout(gs, [], depth + 1) for role, gs in roles.items()}
+        script_latex[tid] = {role: _layout(gs, [], depth + 1, size) for role, gs in roles.items()}
     script_right = {tid: max(g.x1 for gs in roles.values() for g in gs) for tid, roles in attached.items()}
     return _emit(tokens, script_latex, script_right, size)
 
@@ -403,12 +432,13 @@ def _emit(tokens: list, script_latex: dict, script_right: dict, size: float) -> 
     for n, it in enumerate(items):
         if n:
             prev = items[n - 1]
+            gap = it.x0 - prev.x1
             if (
-                it.x0 - prev.x1 >= SPACE * size
+                gap >= SPACE * size
                 and prev.kind not in ("op", "open", "bar", "punct", "frac")  # Word pads fractions itself
                 and it.kind not in ("op", "punct", "close", "bar", "frac")
                 and not it.latex.startswith("{}")
-            ):
+            ) or (prev.kind == "punct" and gap >= PUNCT_SPACE * size and it.kind not in ("op", "close")):
                 out += r"\ "
             elif it.latex[:1].isalpha() and COMMAND_END.search(out):
                 out += " "  # "\Delta U": a command name must not run into the next letter
@@ -417,20 +447,33 @@ def _emit(tokens: list, script_latex: dict, script_right: dict, size: float) -> 
 
 
 def _attach_accents(glyphs: list[Glyph]) -> list[Glyph]:
-    """Combining marks (no width, at the right edge of their letter) go onto that letter."""
+    """Combining marks go onto their letter. A mark drawn with a width (native.py reads where it is
+    drawn, since the text layer moves every mark to the end of the glyph before it) must be centred
+    over one letter: a stretched hat or arrow over "ABC" is not a mark of "C". A mark without width
+    sits at the right edge of its letter (its ink reaches back over it), as the text layer has it."""
     marks = [g for g in glyphs if g.c in COMBINING]
     rest = [g for g in glyphs if g.c not in COMBINING]
-    pieces: dict[int, tuple[Glyph, list[str]]] = {}
+    pieces: dict[int, tuple[Glyph, list[Glyph]]] = {}
     for m in marks:
-        cands = [g for g in rest if abs(g.x1 - m.x0) <= 0.6 and abs(g.oy - m.oy) <= 0.12 * m.size and g.size >= SCRIPT * m.size]
+        if m.drawn:
+            on_line = [g for g in rest if g.size >= SCRIPT * m.size and abs(g.oy - m.oy) <= ON_BASE * m.size]
+            cands = sorted(on_line, key=lambda g: abs(g.cx - m.cx))[:1]
+        else:
+            cands = [g for g in rest if abs(g.x1 - m.x0) <= 0.6 and abs(g.oy - m.oy) <= 0.12 * m.size and g.size >= SCRIPT * m.size]
         if len(cands) != 1:
             raise Unsure("accent without its letter")
-        pieces.setdefault(id(cands[0]), (cands[0], []))[1].append(COMBINING[m.c])
-    for g, kinds in pieces.values():
+        pieces.setdefault(id(cands[0]), (cands[0], []))[1].append(m)
+    for g, ms in pieces.values():
+        kinds = {COMBINING[m.c] for m in ms}
         # Word draws a stretched arrow in pieces: two over a capital, more over several letters
-        if len(set(kinds)) > 1 or len(kinds) > 2:
+        if len(kinds) > 1 or len(ms) > 2:
             raise Unsure("accent over more than one letter")
-        g.accents.append(kinds[0])
+        if any(m.drawn for m in ms):
+            x0, x1 = min(m.x0 for m in ms), max(m.x1 for m in ms)
+            width = max(g.x1 - g.x0, 1.0)
+            if abs((x0 + x1) / 2 - g.cx) > 0.25 * width or x1 - x0 > 1.8 * width:
+                raise Unsure("accent over more than one letter")
+        g.accents.append(kinds.pop())
     return rest
 
 
@@ -500,7 +543,7 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
         raise Unsure("strokes other than bars")
     if not any(g.math_font for g in glyphs):
         raise Unsure("no glyph of a Unicode math font")  # MathType's Times + Symbol: a picture
-    fields = ("c", "x0", "y0", "x1", "y1", "oy", "size", "font", "bold", "italic", "color", "math_font")
+    fields = ("c", "x0", "y0", "x1", "y1", "oy", "size", "font", "bold", "italic", "color", "math_font", "drawn")
     glyphs = [Glyph(**{k: getattr(g, k) for k in fields}) for g in glyphs]  # accents go onto copies
     size = max(g.size for g in glyphs)
     for x0, y0, x1, y1 in uprights:
@@ -536,6 +579,16 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
         raise Unsure("label overlaps the formula")
     if tail and min(g.x0 for g in tail) < max(g.x1 for g in body) - 0.5:
         raise Unsure("trailing text overlaps the formula")
+    # the label's own scripts would be left in the equation ("(a+b)" in red, its ² in black)
+    if lead and min(g.x0 for g in body) < line[k].x0 - 0.5 or tail and max(g.x1 for g in body) > line[m - 1].x1 + 0.5:
+        raise Unsure("scripts of the label")
+    depth = 0
+    for g in sorted(body, key=lambda g: g.x0):
+        depth += (g.c in OPENERS) - (g.c in CLOSERS)
+        if depth < 0:
+            break
+    if depth != 0:
+        raise Unsure("unbalanced brackets")  # one row of a system or a piecewise function: "\{x-y=0"
     if any(not g.math_font for g in body):
         raise Unsure("text font inside the formula")
     colors = {g.color for g in body}
@@ -548,7 +601,8 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     # the equation's size is that of its line; with only fractions on it (a lone "1/110"), the
     # line's size is unknown here (Word sets inline fractions about 0.7 of it): size 0, the caller's
     on_line = [g for g in line[k:m] if g in body]
-    pieces = [Piece("math", latex, max(g.size for g in on_line) if on_line else 0.0, color=color, font="Cambria Math")]
+    # fractions only (\dfrac): their parts' size; else the line's
+    pieces = [Piece("math", latex, max(g.size for g in (on_line or body)), color=color, font="Cambria Math")]
     if lead:
         pieces[:0] = _text_pieces(lead, size, after=" " if gap(lead[-1], line[k]) else "")
     if tail:

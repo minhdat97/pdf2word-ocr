@@ -79,9 +79,10 @@ def _format(run, r: Run) -> None:
         run.underline = True
     if r.color:
         run.font.color.rgb = RGBColor.from_string(r.color)
-    if r.font:
-        run.font.name = r.font
-        run._r.get_or_add_rPr().get_or_add_rFonts().set(qn("w:cs"), r.font)
+    font = _xml_text(r.font) if r.font else None  # a PDF's font name may hold any byte
+    if font:
+        run.font.name = font
+        run._r.get_or_add_rPr().get_or_add_rFonts().set(qn("w:cs"), font)
     if r.script == "super":
         run.font.superscript = True
     elif r.script == "sub":
@@ -162,7 +163,7 @@ def _add_math(p, r: Run, size: float) -> None:
     converter rejects falls back to the run's picture, else to its text."""
     try:
         # a rebuilt Word equation (native PDF) keeps its colour and writes its words in its own font
-        p._p.append(latex_to_omml(r.math, size_pt=r.size or size, text_font=r.font or FONT, color=r.color))
+        p._p.append(latex_to_omml(r.math, size_pt=r.size or size, text_font=_xml_text(r.font or FONT), color=r.color))
     except ValueError:
         if r.image:
             _add_formula(p, r)
@@ -206,7 +207,8 @@ def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
                 _format(run, r)
                 if i < len(parts) - 1:
                     run.add_break()
-    _keep_inline(p, max((r.size or size for r in runs if r.math), default=size))
+    if any(r.math and r.font for r in runs):  # rebuilt equations of native pages (OCR ones have no font)
+        _keep_inline(p, max((r.size or size for r in runs if r.math), default=size))
 
 
 def _keep_inline(p, size: float) -> None:
