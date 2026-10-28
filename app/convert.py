@@ -449,4 +449,6 @@ def convert(
         "formulas": formulas if ocr_pages else None,  # how formulas of scanned pages were read: model / scripts / off
         "formulas_skipped": skip_formulas,  # the model was wanted, the file has too many scanned pages for it
         "vietocr_skipped": skip_vietocr,
+        # formula regions of scanned pages kept as pictures (fractions, roots: by default always, careful: unread)
+        "formula_pictures": sum(p.formula_pictures for p in pages),
     }

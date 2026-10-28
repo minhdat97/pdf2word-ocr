@@ -18,6 +18,7 @@ const ERRORS = {
   server_full: "Máy chủ đang bận. Hãy thử lại sau ít phút.",
 };
 const fmt = (n, d = 1) => n.toLocaleString("vi-VN", { maximumFractionDigits: d });
+const duration = (s) => (s < 100 ? `${fmt(s)} giây` : `${Math.floor(s / 60)} phút ${Math.round(s % 60)} giây`);
 let state = {};
 
 // ?debug hiện nhật ký các request (khi cần dò lỗi).
@@ -69,11 +70,12 @@ function putFile(url, file, onProgress) {
 
 const newTaskId = () => crypto.randomUUID().replaceAll("-", "");
 
-// Bỏ cuộc khi 10 phút không có tin mới: thời gian chờ trong hàng đợi không tính, file scan dài có đọc công
-// thức (mỗi trang vài chục giây) không bị dừng giữa chừng khi các trang vẫn đang xong dần.
+// Bỏ cuộc khi 10 phút không có tin mới: thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, file
+// scan dài hay "Đọc kỹ" (trang dày 1–2 phút trên máy chủ) không bị dừng giữa chừng khi các trang vẫn đang xong dần.
 const PATIENCE_MS = 10 * 60 * 1000;
 
-async function runTask(tool, options, label) {
+// label: chữ của dòng trạng thái theo trang ("Đang chuyển"); hint: thêm sau số trang; waiting: lúc còn chờ lượt.
+async function runTask(tool, options, label, hint = "", waiting = "Đang chờ đến lượt…") {
   const task_id = newTaskId();
   await api("POST", "/v1/tasks", { tool, task_id, input_tokens: [state.token], options });
   let deadline = Date.now() + PATIENCE_MS;
@@ -94,7 +96,8 @@ async function runTask(tool, options, label) {
     const step = `${data.status} ${current}`;
     if (data.status === "queued" || step !== seen) deadline = Date.now() + PATIENCE_MS;
     seen = step;
-    if (total && label) setProgress(current / total, `${label} trang ${Math.min(current + 1, total)}/${total}…`);
+    if (label && data.status === "queued") setProgress(null, waiting);
+    else if (total && label) setProgress(current / total, `${label} trang ${Math.min(current + 1, total)}/${total}${hint}…`);
     if (data.status === "done" || data.status === "failed") {
       log("GET", `/v1/tasks/${task_id}`, null, res);
       if (data.status === "failed") throw Object.assign(new Error(data.result.error_fe), { code: data.result.error_fe });
@@ -135,11 +138,37 @@ function reset() {
   $("input").value = "";
   $("strip").checked = true;
   $("full").checked = false;
+  $("careful").checked = false;
+  $("carefulrow").hidden = true;
   for (const d of document.querySelectorAll("#work details")) d.open = false;
+}
+
+// Số trang sẽ đọc chữ từ ảnh với lựa chọn hiện tại (như máy chủ đếm cho "Đọc kỹ").
+function ocrPages() {
+  const a = state.analysis;
+  if (!a || new FormData($("options")).get("mode") !== "ocr") return 0;
+  return $("full").checked ? a.page_count : (a.pages || []).filter((p) => p.kind === "scan").length;
+}
+
+// "Đọc kỹ công thức": chỉ khi có trang scan sẽ được đọc và máy chủ đọc kỹ được; file quá dài thì tắt kèm lý do.
+function showCareful() {
+  const info = (state.analysis && state.analysis.careful) || {};
+  const pages = ocrPages();
+  const max = info.max_scan_pages || 0;
+  $("carefulrow").hidden = !(info.available && pages);
+  const tooMany = pages > max;
+  $("careful").disabled = tooMany;
+  if (tooMany) $("careful").checked = false;
+  $("carefulrow").classList.toggle("off", tooMany);
+  $("carefulmeta").textContent = tooMany
+    ? `– chỉ cho file tối đa ${max} trang scan (file này ${pages} trang)`
+    : `– đọc cả phân số, căn; chậm, tối đa ${max} trang scan`;
+  state.carefulOk = Boolean(info.available && pages && !tooMany);
 }
 
 function showMode() {
   $("ocrrow").hidden = new FormData($("options")).get("mode") !== "ocr";
+  showCareful();
 }
 
 async function handleFile(file) {
@@ -161,6 +190,7 @@ async function handleFile(file) {
     setProgress(null, "Đang đọc file…");
     const analysis = (await runTask("analyse-document", {})).options;
     if (analysis.password_protected) throw Object.assign(new Error("password"), { code: "password" });
+    state.analysis = analysis;
     const total = analysis.page_count;
     $("fmeta").textContent += ` · ${total} trang`;
 
@@ -184,36 +214,57 @@ async function handleFile(file) {
 }
 
 async function convert(e) {
-  e.preventDefault();
+  if (e) e.preventDefault();
   const mode = new FormData($("options")).get("mode");
   const ocrType = mode === "ocr" ? ($("full").checked ? "ocr-full" : "ocr") : "";
+  const careful = Boolean(ocrType && state.carefulOk && $("careful").checked);
   const options = {
     ocr_type: ocrType,
     languages: ocrType ? $("lang").value.split("+") : [],
     strip_watermarks: $("strip").checked,
+    careful,
   };
   $("options").hidden = true;
+  $("done").hidden = true;
   $("error").hidden = true;
   $("busy").hidden = false;
-  setProgress(null, "Đang chuyển…");
+  const hint = careful ? " – mỗi trang scan khoảng 1–2 phút" : "";
+  setProgress(null, careful ? `Đang đọc kỹ${hint}…` : "Đang chuyển…");
   const started = performance.now();
   try {
-    const result = await runTask("pdf-to-word", options, "Đang chuyển");
+    const result = careful
+      ? await runTask("pdf-to-word", options, "Đang đọc kỹ", hint, "Đang chờ đến lượt đọc kỹ…")
+      : await runTask("pdf-to-word", options, "Đang chuyển");
     const info = result.options;
     const stem = state.name.replace(/\.pdf$/i, "");
     $("download").href = `/v1/files/${result.output_files[0]}?name=${encodeURIComponent(stem + ".docx")}`;
     const seconds = (performance.now() - started) / 1000;
-    $("summary").textContent = `${info.page_count} trang · ${fmt(seconds)} giây`;
+    $("summary").textContent = `${info.page_count} trang · ${duration(seconds)}`;
 
     const notes = [];
     if (info.used_ocr) notes.push(`Đã đọc chữ từ ảnh ở ${info.pages_ocr || "một số"} trang – nên soát lại chính tả.`);
     if (info.pages_image) notes.push(`${info.pages_image} trang scan giữ dạng ảnh. Chọn "Đọc chữ từ ảnh" để sửa được chữ.`);
     if (info.legacy_font_spans) notes.push("Đã đổi font VNI/TCVN3 sang Unicode.");
     if (info.removed_watermarks || info.removed_lines) notes.push("Đã bỏ watermark, chữ chìm và link ở đầu/chân trang.");
-    if (info.vietocr_skipped) notes.push("File scan rất dài nên chỉ đọc chữ nhanh, chưa đọc công thức – nên soát kỹ hơn.");
-    else if (info.formulas_skipped) notes.push("File scan dài nên chưa đọc công thức – công thức giữ dạng chữ thường.");
-    $("notes").replaceChildren(...notes.map((t) => Object.assign(document.createElement("li"), { textContent: t })));
-    $("notes").hidden = !notes.length;
+    if (info.vietocr_skipped) notes.push("File scan rất dài nên chữ chỉ được đọc nhanh – nên soát kỹ chính tả.");
+    if (info.careful && info.formulas_skipped) {
+      notes.push(`File hơn ${(state.analysis.careful || {}).max_scan_pages || 5} trang scan nên chưa đọc kỹ công thức.`);
+    } else if (info.careful && info.formulas && info.formulas !== "model") {
+      notes.push("Máy chủ chưa đọc kỹ được lúc này – công thức được đọc như thường.");
+    }
+    const items = notes.map((t) => Object.assign(document.createElement("li"), { textContent: t }));
+    if (!info.careful && info.formula_pictures && state.carefulOk) {
+      // Phân số, căn giữ dạng ảnh: "Đọc kỹ" đọc được – chuyển lại ngay với ô đó bật.
+      const again = Object.assign(document.createElement("button"), {
+        type: "button", className: "linkbtn", textContent: "chuyển lại, đọc kỹ",
+      });
+      again.onclick = () => { $("careful").checked = true; convert(); };
+      const li = document.createElement("li");
+      li.append(`${info.formula_pictures} công thức (phân số, căn) giữ dạng ảnh – `, again);
+      items.push(li);
+    }
+    $("notes").replaceChildren(...items);
+    $("notes").hidden = !items.length;
 
     const pageKinds = [
       info.pages_native && `${info.pages_native} chữ gốc`,

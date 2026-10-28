@@ -42,7 +42,9 @@ class FormulaLimitTest(unittest.TestCase):
 
         def fake_ocr_page(page, languages):
             wanted.append((ocr.formula_reader(), vietocr._wanted.get() and vietocr.available()))
-            return image_page(page)
+            layout = image_page(page)
+            layout.formula_pictures = 2  # e.g. two fractions kept as pictures
+            return layout
 
         path = scan_pdf(pages)
         try:
@@ -93,6 +95,7 @@ class FormulaLimitTest(unittest.TestCase):
             self.assertFalse(info["formulas_skipped"])  # the model was not wanted
             self.assertEqual((info["careful"], info["formulas"]), (False, "scripts"))
             self.assertEqual(wanted, [("scripts", True)] * pages)
+            self.assertEqual(info["formula_pictures"], 2 * pages)  # the page offers "Đọc kỹ" for these
 
     def test_skip_is_per_thread(self):
         seen = {}

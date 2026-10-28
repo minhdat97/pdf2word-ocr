@@ -134,3 +134,4 @@ class PageLayout:
     conf_sum: float = 0.0
     legacy_spans: int = 0  # spans converted from VNI/TCVN3
     ocr_regions: int = 0  # raster regions replaced by OCR text
+    formula_pictures: int = 0  # OCR: formula regions kept as pictures (fractions, roots not read)

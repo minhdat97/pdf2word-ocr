@@ -1297,6 +1297,7 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
             mathocr.broken()
         else:  # the detector or the reader without the model failed on this page: its OCR text
             log.exception("formula reading failed on a page")
+    formula_pictures = sum(isinstance(w.math, FormulaPicture) for ln in lines for w in ln.words)
     s = 72 / dpi
     pictures = []
     if whole_page:
@@ -1304,6 +1305,7 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     h, w = gray.shape
     layout = build_layout(lines, grids, gray, dpi, pymupdf.Rect(0, 0, w * s, h * s), rgb)
     layout.pictures = pictures
+    layout.formula_pictures = formula_pictures
     return layout
 
 

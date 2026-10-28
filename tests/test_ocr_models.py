@@ -58,6 +58,22 @@ class BrokenModelTest(unittest.TestCase):
         self.assertTrue(mathocr._reader_failed)
         self.assertIsNone(mathocr.get_reader())
 
+    def test_formula_pictures_are_counted(self):
+        def keep_as_picture(lines, grids, gray, ink, rgb, dpi):  # a region read as "tall" and not read: a picture
+            first = lines[0].words[0]
+            pic = ocr.FormulaPicture(ocr._png(rgb[first.y0 : first.y1, first.x0 : first.x1]), 10.0, 10.0, 0.0)
+            lines[0].words[0] = ocr.Word(first.x0, first.y0, first.x1, first.y1, 50.0, ocr.OBJ, first.line_no,
+                                         first.em_px, math=pic)
+            return 1
+
+        with mock.patch.object(vietocr, "reader", return_value=None), \
+                mock.patch.object(ocr, "read_formulas", side_effect=keep_as_picture):
+            layout = ocr.ocr_page(self.page, ["vie"])
+        self.assertEqual(layout.formula_pictures, 1)
+        with mock.patch.object(vietocr, "reader", return_value=None), \
+                mock.patch.object(ocr, "read_formulas", return_value=0):
+            self.assertEqual(ocr.ocr_page(self.page, ["vie"]).formula_pictures, 0)
+
     def test_reading_without_the_model_failing_keeps_ocr_text(self):
         with mock.patch.object(vietocr, "reader", return_value=None), \
                 mock.patch.object(ocr.mathregions, "find", side_effect=RuntimeError("bad region")), \
