@@ -215,6 +215,11 @@ class RefusalTest(unittest.TestCase):
         self.assertEqual(latex(build(Line().put("𝑛").put("!").glyphs, [], [])), ["n!"])
         self.assertIsNone(build(Line().put("𝑛").put("!", gap=3).glyphs, [], []))  # "!" set apart: not a factorial
 
+    def test_script_before_an_operator(self):
+        # "30 ⁰ + 60": a script with no symbol of its own after it is not read
+        ln = Line().put("30").sup("0", gap=3).put("+", gap=2).put("60", gap=2)
+        self.assertIsNone(build(ln.glyphs, [], []))
+
     def test_text_a_docx_cannot_hold(self):
         ln = Line().put("\uffff", font="Times New Roman").put("𝑥", gap=2.3).put("=", gap=2).put("1")
         self.assertPicture(ln.glyphs)

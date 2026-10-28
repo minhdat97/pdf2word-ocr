@@ -85,6 +85,7 @@ def _math_alnum(c: str) -> bool:
 CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
 CMAP_TOKEN = re.compile(r"<[0-9A-Fa-f\s]*>|\[|\]")  # a hex string cannot run past a "<": linear
 CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is not read (its formulas stay pictures)
+CMAP_BUDGET = 1024 * 1024  # bytes of maps read per file
 FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
 FORMULA_GLYPHS_MAX = 300  # glyphs and strokes of one formula read as an equation (Word's largest here: 73)
 FORMULA_MARKS_MAX = 32  # combining marks of one formula
@@ -121,6 +122,9 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
     key = (tu if tu_kind == "xref" else None, lo, hi, enc_kind, enc if enc_kind == "name" else "")
     if key in cache:
         return cache[key]
+    if enc_kind == "name" and enc in STANDARD_ENCODINGS:
+        cache[key] = frozenset()  # a standard encoding names every glyph the map leaves out
+        return cache[key]
     cache[key] = None  # a map that cannot be read is refused once per file
     mapped: set[int] = set()
     if tu_kind == "xref":
@@ -140,6 +144,10 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
             return None
         if len(data) > 4 * CMAP_MAX:
             return None
+        budget = doc.__dict__.get("_p2w_map_bytes", 0) + len(data)
+        doc.__dict__["_p2w_map_bytes"] = budget
+        if budget > CMAP_BUDGET:
+            return None  # maps of a few KB each in Word's files: more is not read (formulas stay pictures)
         cmap, pos = data.decode("latin-1"), 0
         while m := CMAP_BEGIN.search(cmap, pos):  # one pass: an unclosed block ends the map
             stop = cmap.find("end" + m.group(1), m.end())
@@ -163,9 +171,6 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
             except (ValueError, IndexError):
                 return None  # a map not read as written: its glyphs are not trusted
             pos = stop
-    elif enc_kind == "name" and enc in STANDARD_ENCODINGS:
-        cache[key] = frozenset()  # a standard encoding names every glyph
-        return cache[key]
     out = set()
     for code in range(lo, hi + 1):
         if code not in mapped:
@@ -211,7 +216,10 @@ def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, st
             sub = doc.xref_get_key(x, "Subtype")[1].lstrip("/")
             names = [doc.xref_get_key(x, "BaseFont")[1].lstrip("/")]
             if sub == "Type0":
-                desc = re.search(r"(\d+)\s+0\s+R", doc.xref_get_key(x, "DescendantFonts")[1])
+                kind, desc = doc.xref_get_key(x, "DescendantFonts")  # Word writes "143 0 R" -> "[144 0 R]"
+                if kind == "xref":
+                    desc = doc.xref_object(int(desc.split()[0]), compressed=True)
+                desc = re.search(r"(\d+)\s+0\s+R", desc)
                 if desc:
                     names.append(doc.xref_get_key(int(desc.group(1)), "BaseFont")[1].lstrip("/"))
             out.append((x, sub, names))
@@ -437,13 +445,20 @@ def _fraction_parts(bar: pymupdf.Rect, marks: list[tuple]) -> list[int]:
     # a part on the baseline of text beside the bar belongs to that text line (a lone glyph of the line above
     # an overline "\overline{abc}"): a fraction's parts sit off the baseline of the line around them
     parts = set(over + under)
-    for rect, size, c, node in marks:
-        if node in parts:
-            oy = c["origin"][1]
-            for r2, _s2, c2, n2 in marks:
-                if n2 is None and abs(c2["origin"][1] - oy) <= 0.1 * size and (r2.x1 < bar.x0 - 1 or r2.x0 > bar.x1 + 1) \
-                        and max(r2.x0 - rect.x1, rect.x0 - r2.x1) <= 1.5 * size:
-                    return []
+    mine = [(rect, size, c["origin"][1]) for rect, size, c, node in marks if node in parts]
+    lo_y = min(oy - 0.1 * size for _r, size, oy in mine)
+    hi_y = max(oy + 0.1 * size for _r, size, oy in mine)
+    lo_x = min(r.x0 - 1.5 * size for r, size, _oy in mine)
+    hi_x = max(r.x1 + 1.5 * size for r, size, _oy in mine)
+    beside = [(r2, c2["origin"][1]) for r2, _s2, c2, n2 in marks
+              if n2 is None and lo_y <= c2["origin"][1] <= hi_y and r2.x1 >= lo_x and r2.x0 <= hi_x
+              and (r2.x1 < bar.x0 - 1 or r2.x0 > bar.x1 + 1)]
+    if len(mine) * len(beside) > 20000:
+        return []  # a crowd of glyphs around one bar: not read as a fraction (its formula stays a picture)
+    for rect, size, oy in mine:
+        for r2, oy2 in beside:
+            if abs(oy2 - oy) <= 0.1 * size and max(r2.x0 - rect.x1, rect.x0 - r2.x1) <= 1.5 * size:
+                return []
     return over + under
 
 
@@ -1412,6 +1427,10 @@ class _Extractor:
         full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
         ground = _rgb(self._ground_page().get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
         h, w = full.shape[:2]
+        if not h or not w:  # nothing to show (a box off the page, or a /Rotate page: its text frame is not the render's):
+            # an empty picture – an empty array crashes cv2 and with it the worker
+            ok, buf = cv2.imencode(".png", np.zeros((1, 1, 4), np.uint8))
+            return pymupdf.Rect(rect), buf.tobytes()
         if ground.shape != full.shape:  # rounding of the clip: never expected
             ground = np.full_like(full, 255)
         ink = np.abs(full.astype(np.int16) - ground).max(axis=2) > 10
@@ -2187,9 +2206,9 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
         elif isinstance(e, Table):
             holders += [(c.runs, e.font_pt) for row in e.cells for c in row]
     for runs, font_pt in holders:
-        for r in runs:
+        for r in list(runs):  # a picture takes its label runs out of `runs` as we go
             f = pending.get(id(r))
-            if f is None:
+            if f is None or not any(x is r for x in runs):
                 continue
             alone = all(not (x.math or x.image or x.field or x.text == TAB or x.text.strip()) for x in runs if x is not r)
             if alone:

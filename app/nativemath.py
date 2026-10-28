@@ -341,6 +341,9 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
             nxt = [t for t in tokens if t.x0 >= g.x1 - 0.5]
             if not nxt:
                 raise Unsure("script without a base")
+            if isinstance(nxt[0], Glyph) and _atom(nxt[0])[1] in ("op", "punct", "close", "bar"):
+                # "30 ⁰ + 60 ⁰", an inline binomial "(ⁿₖ)": a script with no symbol of its own after it
+                raise Unsure("script before an operator or a closing bracket")
             attached.setdefault(id(nxt[0]), {}).setdefault("pre" + role, []).append(g)
         else:
             attached.setdefault(id(owner), {}).setdefault(role, []).append(g)
