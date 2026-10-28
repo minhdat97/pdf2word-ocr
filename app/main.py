@@ -3,7 +3,8 @@
 1. POST /v1/upload-url        -> presigned-style upload URL + file token
 2. PUT  <upload url>          -> raw PDF bytes
 3. POST /v1/tasks             -> {"tool": "analyse-document", ...}
-4. GET  /v1/tasks/{task_id}   -> poll until done (text / scan / mixed)
+4. GET  /v1/tasks/{task_id}   -> poll until done (text / scan / mixed); a queued task nobody polls for
+                                 10 minutes is dropped (POST /v1/tasks/{task_id}/cancel drops it at once)
 5. POST /v1/tasks             -> {"tool": "pdf-to-word", "options": {"ocr_type": "ocr", ...}}
 6. GET  /v1/tasks/{task_id}   -> poll until done, read output_files
 7. GET  /v1/files/{token}     -> download the .docx
@@ -93,7 +94,7 @@ CSP = (
 async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(300)
-        removed = storage.cleanup_expired()
+        removed = storage.cleanup_expired(keep=manager.in_use())  # not the uploads queued tasks still need
         manager.cleanup()
         if removed:
             log.info("removed %d expired files", removed)
@@ -194,7 +195,7 @@ def create_task(payload: dict, request: Request):
     try:
         task = manager.submit(payload)
     except Busy as exc:
-        return _error(503 if exc.code == "busy" else 429, exc.code)
+        return _error(503 if exc.code in ("busy", "careful_busy") else 429, exc.code)
     except ValueError as exc:
         return _error(400, str(exc))
     return {"success": True, "data": {"task_id": task.task_id}}
@@ -206,6 +207,15 @@ def get_task(task_id: str):
     if task is None:
         return _error(404, "task not found")
     return {"success": True, "data": task.to_json()}
+
+
+@app.post("/v1/tasks/{task_id}/cancel")
+def cancel_task(task_id: str):
+    """The page was closed or reloaded (navigator.sendBeacon): its queued task is dropped, a running one stops at
+    its next page, so a careful conversion nobody waits for does not hold the turn of the next one."""
+    if not manager.cancel(task_id):
+        return _error(404, "task not found")
+    return {"success": True}
 
 
 @app.get("/v1/languages")

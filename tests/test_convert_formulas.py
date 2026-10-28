@@ -36,15 +36,21 @@ def scan_pdf(pages: int) -> Path:
 
 class FormulaLimitTest(unittest.TestCase):
     def run_convert(
-        self, pages: int, limit: int, vietocr_limit: int = 30, careful: bool = True
+        self, pages: int, limit: int, vietocr_limit: int = 30, careful: bool = True, breaks: bool = False
     ) -> tuple[dict, list[tuple[str, bool]]]:
         wanted = []
+        self.unused = 0
 
         def fake_ocr_page(page, languages):
             wanted.append((ocr.formula_reader(), vietocr._wanted.get() and vietocr.available()))
+            if breaks:  # the model failed on this page (app/ocr.py reads it again without the model)
+                mathocr._reader_failed = True
             layout = image_page(page)
             layout.formula_pictures = 2  # e.g. two fractions kept as pictures
             return layout
+
+        def unused():
+            self.unused += 1
 
         path = scan_pdf(pages)
         try:
@@ -56,8 +62,9 @@ class FormulaLimitTest(unittest.TestCase):
                 mock.patch.object(convert, "ocr_page", fake_ocr_page),
                 mock.patch.object(mathocr, "installed", return_value=True),  # the model counts as present
                 mock.patch.object(ocr, "FORMULAS", "scripts"),
+                mock.patch.object(mathocr, "_reader_failed", False),
             ):
-                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None, careful=careful)
+                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None, careful=careful, model_unused=unused)
                 out.unlink()
         finally:
             path.unlink()
@@ -71,6 +78,7 @@ class FormulaLimitTest(unittest.TestCase):
         self.assertEqual(wanted, [("scripts", True)] * 3)
         self.assertTrue(mathocr._wanted.get())  # back on after the conversion
         self.assertIsNone(ocr._formulas.get())
+        self.assertEqual(self.unused, 1)  # its careful turn given back before the first page
 
     def test_very_long_scan_skips_vietocr(self):
         info, wanted = self.run_convert(3, 1, vietocr_limit=2)
@@ -88,6 +96,14 @@ class FormulaLimitTest(unittest.TestCase):
         self.assertFalse(info["formulas_skipped"])
         self.assertEqual((info["careful"], info["formulas"]), (True, "model"))
         self.assertEqual(wanted, [("model", True)] * 2)
+        self.assertEqual(self.unused, 0)
+
+    def test_model_broken_on_a_page_is_reported(self):
+        # careful, but the model failed to load on the first page: the result says the default way, so the page shows
+        # its note instead of calling the file read carefully
+        info, wanted = self.run_convert(2, 2, breaks=True)
+        self.assertEqual((info["careful"], info["formulas"]), (True, "scripts"))
+        self.assertEqual(wanted, [("model", True), ("scripts", True)])
 
     def test_default_conversion_reads_without_the_model(self):
         for pages in (2, 3):
@@ -96,6 +112,35 @@ class FormulaLimitTest(unittest.TestCase):
             self.assertEqual((info["careful"], info["formulas"]), (False, "scripts"))
             self.assertEqual(wanted, [("scripts", True)] * pages)
             self.assertEqual(info["formula_pictures"], 2 * pages)  # the page offers "Đọc kỹ" for these
+            self.assertEqual(self.unused, 1)
+
+    def test_careful_pictures_of_text_pages_read_the_default_way(self):
+        # "Đọc kỹ" is for scanned pages (MFR_MAX_PAGES counts them): a picture OCR'd on a page with text is read the
+        # default way, whatever its number
+        seen = []
+
+        def fake_native_page(page, languages, strip=False):
+            seen.append((ocr.formula_reader(), languages))
+            return image_page(page)
+
+        doc = pymupdf.open()
+        for _ in range(3):
+            doc.new_page(width=200, height=280).insert_text((20, 40), "Câu 1. Một vật dao động điều hoà.", fontsize=9)
+        path = Path(tempfile.mkstemp(suffix=".pdf")[1])
+        doc.save(path)
+        try:
+            with (
+                mock.patch.object(convert, "native_page", fake_native_page),
+                mock.patch.object(mathocr, "installed", return_value=True),
+                mock.patch.object(ocr, "FORMULAS", "scripts"),
+            ):
+                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None, careful=True)
+                out.unlink(missing_ok=True)
+        except convert.TaskError as exc:  # no text in the stand-in layouts
+            self.assertEqual(exc.code, "no_text_found")
+        finally:
+            path.unlink()
+        self.assertEqual(seen, [("scripts", ["vie"])] * 3)
 
     def test_skip_is_per_thread(self):
         seen = {}
@@ -130,6 +175,7 @@ class CarefulOptionTest(unittest.TestCase):
         out = Path(tempfile.mkstemp(suffix=".docx")[1])
         with (
             mock.patch.object(tasks, "convert", return_value=(out, {})) as conv,
+            mock.patch.object(storage, "exists", return_value=True),
             mock.patch.object(storage, "store_output", return_value="y.docx"),
             mock.patch.object(storage, "path_for", return_value=Path("x.pdf")),
         ):

@@ -17,6 +17,8 @@ from .analyze import analyse
 from .convert import convert
 from .errors import TaskError
 from .settings import (
+    ABANDON_SECONDS,
+    CAREFUL_QUEUE,
     CAREFUL_WORKERS,
     DEFAULT_OCR_LANGUAGES,
     FORMULAS,
@@ -37,8 +39,8 @@ OCR_TYPES = {"": "basic", "ocr": "ocr", "solid-ocr": "ocr", "ocr-full": "ocr-ful
 
 
 class Busy(Exception):
-    """A task refused for load: `code` is "busy" (the queue is full) or
-    "too_many_tasks" (this file already has one running, or has had enough)."""
+    """A task refused for load: `code` is "busy" (the queue is full), "careful_busy" (CAREFUL_QUEUE careful
+    conversions wait already) or "too_many_tasks" (this file already has one running, or has had enough)."""
 
     def __init__(self, code: str):
         super().__init__(code)
@@ -69,6 +71,8 @@ class Task:
     completed: float | None = None
     # runs with the formula model ("Đọc kỹ"): at most CAREFUL_WORKERS such tasks at once (TaskManager)
     careful: bool = field(default=False, repr=False)
+    seen: float = field(default_factory=time.time, repr=False)  # last time its page asked about it
+    cancelled: bool = field(default=False, repr=False)  # its page was closed: stop at the next page
 
     def to_json(self) -> dict:
         finished = self.status in ("done", "failed")
@@ -139,9 +143,9 @@ def careful_info() -> dict:
 
 
 def _uses_model(task: Task) -> bool:
-    """A conversion that will read formulas with the formula model: OCR asked, "Đọc kỹ" (or P2W_FORMULAS=model),
-    the model usable. (A careful file with too many scanned pages is read without it but still counted: the page
-    does not offer "Đọc kỹ" for such a file.)"""
+    """A conversion that may read formulas with the formula model: OCR asked, "Đọc kỹ" (or P2W_FORMULAS=model),
+    the model usable. (One that turns out not to – a file with too many scanned pages or none – gives its turn back
+    as soon as convert() knows: TaskManager._run.)"""
     if task.tool != "pdf-to-word" or OCR_TYPES[task.options["ocr_type"]] == "basic":
         return False
     return (task.options["careful"] or FORMULAS == "model") and mathocr.available()
@@ -150,13 +154,16 @@ def _uses_model(task: Task) -> bool:
 class TaskManager:
     """Runs tasks on `workers` threads, oldest first, except that at most `careful_workers` conversions with the
     formula model ("Đọc kỹ": up to ~2 minutes per scanned page on a 2-core server) run at once. A careful task
-    that has to wait stays "queued" without holding a thread, and the tasks behind it go ahead of it meanwhile."""
+    that has to wait stays "queued" without holding a thread, and the tasks behind it go ahead of it meanwhile;
+    at most `careful_queue` wait. A queued task whose page was closed (cancel()) or has not asked about it for
+    ABANDON_SECONDS is dropped; a running one cancelled stops at its next page."""
 
-    def __init__(self, workers: int = WORKERS, careful_workers: int = CAREFUL_WORKERS):
+    def __init__(self, workers: int = WORKERS, careful_workers: int = CAREFUL_WORKERS, careful_queue: int = CAREFUL_QUEUE):
         self._tasks: dict[str, Task] = {}
         self._lock = threading.Lock()
         self._workers = max(1, workers)
         self._careful_workers = max(1, careful_workers)
+        self._careful_queue = max(0, careful_queue)
         self._queue: list[Task] = []  # submitted, not started yet, oldest first
         self._running = self._careful_running = 0
         self._closed = False
@@ -168,24 +175,70 @@ class TaskManager:
         with self._lock:
             if task.task_id in self._tasks:
                 raise ValueError("duplicate task_id")
+            self._drop_abandoned()
             unfinished = [t for t in self._tasks.values() if t.status in ("queued", "processing")]
             same_file = [t for t in self._tasks.values() if t.input_tokens == task.input_tokens]
             if len(same_file) >= MAX_TASKS_PER_FILE or any(t.input_tokens == task.input_tokens for t in unfinished):
                 raise Busy("too_many_tasks")
             if len(unfinished) >= MAX_PENDING_TASKS:
                 raise Busy("busy")
+            waiting = sum(t.careful for t in self._queue)
+            if task.careful and self._careful_running + waiting >= self._careful_workers + self._careful_queue:
+                raise Busy("careful_busy")
             self._tasks[task.task_id] = task
             self._queue.append(task)
             self._start_ready()
         return task
 
     def get(self, task_id: str) -> Task | None:
+        """The task, now known to be still wanted (its page asks about it)."""
         with self._lock:
-            return self._tasks.get(task_id)
+            task = self._tasks.get(task_id)
+            if task is not None:
+                task.seen = time.time()
+            return task
+
+    def cancel(self, task_id: str) -> bool:
+        """Its page was closed: a queued task is dropped, a running one stops at its next page."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status in ("done", "failed"):
+                return False
+            if task in self._queue:
+                self._drop(task, "cancelled")
+            else:
+                task.cancelled = True
+            return True
+
+    def in_use(self) -> set[str]:
+        """Input files of the tasks not finished yet (storage.cleanup_expired keeps them)."""
+        with self._lock:
+            return {tok for t in self._tasks.values() if t.status in ("queued", "processing") for tok in t.input_tokens}
+
+    def _drop(self, task: Task, code: str) -> None:
+        """A queued task that will not run (self._lock held)."""
+        self._queue.remove(task)
+        task.status, task.error, task.completed = "failed", code, time.time()
+        log.info("task %s dropped: %s", task.task_id, code)
+
+    def _drop_abandoned(self) -> None:
+        """Queued tasks nobody asked about for ABANDON_SECONDS (self._lock held)."""
+        now = time.time()
+        for task in [t for t in self._queue if now - t.seen > ABANDON_SECONDS]:
+            self._drop(task, "abandoned")
+
+    def _release_careful(self, task: Task) -> None:
+        """A careful task that will not use the model after all gives its turn to the next one."""
+        with self._lock:
+            if task.careful:
+                task.careful = False
+                self._careful_running -= 1
+                self._start_ready()
 
     def _start_ready(self) -> None:
         """Hand the oldest tasks that may run to free threads (self._lock held): a careful one only while fewer
         than careful_workers careful ones run."""
+        self._drop_abandoned()
         while self._running < self._workers and not self._closed:
             task = next(
                 (t for t in self._queue if not t.careful or self._careful_running < self._careful_workers), None
@@ -213,9 +266,13 @@ class TaskManager:
         task.status, task.started = "processing", time.time()
 
         def progress(done: int, total: int) -> None:
+            if task.cancelled:
+                raise TaskError("cancelled")
             task.progress = {"current": done, "total": total}
 
         try:
+            if not storage.exists(task.input_tokens[0]):  # (kept while the task waits: storage.cleanup_expired)
+                raise TaskError("input_tokens")
             path = storage.path_for(task.input_tokens[0])
             if task.tool == "analyse-document":
                 task.result_options = {**analyse(path), "careful": careful_info()}
@@ -223,7 +280,7 @@ class TaskManager:
                 mode = OCR_TYPES[task.options["ocr_type"]]
                 out, task.result_options = convert(
                     path, mode, task.options["languages"], progress, task.options["strip_watermarks"],
-                    task.options["careful"],
+                    task.options["careful"], model_unused=lambda: self._release_careful(task),
                 )
                 task.output_files = [storage.store_output(out, "docx")]
             task.status = "done"

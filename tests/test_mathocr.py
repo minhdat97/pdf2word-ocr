@@ -436,8 +436,29 @@ class ModelPartsTest(unittest.TestCase):
             for name in ("encoder_model.onnx", "tokenizer.json") + M.SPLIT_FILES:
                 (Path(tmp) / name).write_bytes(b"")
             self.assertTrue(M.available())
+            with mock.patch.object(M, "MFR_SPLIT", False):  # P2W_MFR_SPLIT=0: the whole decoder is needed
+                self.assertFalse(M.available())
             (Path(tmp) / M.SPLIT_FILES[0]).unlink()
             self.assertFalse(M.available())
+
+    def test_split_switched_off_loads_the_whole_decoder(self):
+        loaded = []
+
+        class Session:
+            def __init__(self, path, *args, **kwargs):
+                loaded.append(Path(path).name)
+
+        fake_ort = mock.MagicMock(InferenceSession=Session)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sys.modules, {"onnxruntime": fake_ort}), \
+                mock.patch.object(M, "Vocab"):
+            for name in M.MODEL_FILES + M.SPLIT_FILES:
+                (Path(tmp) / name).write_bytes(b"")
+            M.FormulaReader(Path(tmp))
+            self.assertEqual(loaded, ["encoder_model.onnx", *M.SPLIT_FILES])
+            loaded.clear()
+            with mock.patch.object(M, "MFR_SPLIT", False):
+                M.FormulaReader(Path(tmp))
+            self.assertEqual(loaded, ["encoder_model.onnx", "decoder_model.onnx"])
 
     def test_no_model_files(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(M, "MFR_DIR", Path(tmp)):

@@ -391,10 +391,14 @@ def convert(
     progress: Callable[[int, int], None],
     strip: bool = False,
     careful: bool = False,
+    model_unused: Callable[[], None] | None = None,
 ) -> tuple[Path, dict]:
     """Convert a PDF to .docx. careful ("Đọc kỹ"): the formula model reads the formulas of scanned pages (up to about
     2 minutes per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES of them; otherwise they
-    are read as settings.FORMULAS says (by default superscripts and subscripts without the model)."""
+    are read as settings.FORMULAS says (by default superscripts and subscripts without the model). Pictures OCR'd on
+    pages with text are read as settings.FORMULAS says too: MFR_MAX_PAGES counts scanned pages only.
+    model_unused: called as soon as it is known that the formula model will not be used (app/tasks.py gives the
+    careful turn to the next conversion)."""
     if mode not in MODES:
         raise TaskError("invalid_options", mode)
     doc = open_pdf(pdf_path)
@@ -405,10 +409,12 @@ def convert(
     with formulas_mode(how):
         # long scans without the slower models, so one file does not hold a worker for long (a small server)
         skip_formulas = ocr_pages > MFR_MAX_PAGES and formula_reader() == "model"
+        uses_model = bool(ocr_pages) and not skip_formulas and formula_reader() == "model"
+    if not uses_model and model_unused is not None:
+        model_unused()
     skip_vietocr = ocr_pages > VIETOCR_MAX_PAGES and vietocr.available()
     pages: list[PageLayout] = []
     with formulas_mode(how), mathocr.skipped(skip_formulas), vietocr.skipped(skip_vietocr):
-        formulas = formula_reader()
         for i, (page, kind) in enumerate(zip(doc, kinds, strict=True)):
             progress(i, total)
             if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
@@ -417,8 +423,12 @@ def convert(
                 # (tens of thousands of vector paths would take the layout analysis hours)
                 layout = image_page(page)
             else:
-                layout = native_page(page, languages if mode == "ocr" else None, strip=strip)
+                with formulas_mode(None):  # its pictures read as by default, not "Đọc kỹ" (see above)
+                    layout = native_page(page, languages if mode == "ocr" else None, strip=strip)
             pages.append(layout)
+        # the model may have failed to load or broken on a page (mathocr.broken()): the pages after it, and that page
+        # again, were read the default way (app/ocr.py), so the result says so
+        formulas = formula_reader()
     progress(total, total)
 
     sources = Counter(p.source for p in pages)

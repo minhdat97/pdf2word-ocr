@@ -69,11 +69,12 @@ def used_bytes() -> int:
     return sum(f.stat().st_size for f in DATA_DIR.iterdir() if f.is_file())
 
 
-def cleanup_expired(now: float | None = None) -> int:
+def cleanup_expired(now: float | None = None, keep: set[str] | frozenset[str] = frozenset()) -> int:
+    """Delete files older than FILE_TTL_SECONDS, except `keep` (tokens of uploads a task still waits for)."""
     now = now or time.time()
     removed = 0
     for f in DATA_DIR.iterdir():
-        if f.is_file() and now - f.stat().st_mtime > FILE_TTL_SECONDS:
+        if f.is_file() and f.name not in keep and now - f.stat().st_mtime > FILE_TTL_SECONDS:
             f.unlink(missing_ok=True)
             removed += 1
     return removed

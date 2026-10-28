@@ -1,6 +1,8 @@
 """The task queue (app/tasks.py): at most CAREFUL_WORKERS conversions with the formula model ("Đọc kỹ") run at
-once; a careful task that waits stays "queued" without holding a thread, the tasks behind it go ahead; the queue
-and per-file limits hold. Conversions are fakes that wait for the test to let them finish.
+once; a careful task that waits stays "queued" without holding a thread, the tasks behind it go ahead; at most
+CAREFUL_QUEUE careful ones wait; one that will not use the model gives its turn back; a closed page's task is
+dropped or stopped, an unpolled one dropped; the queue and per-file limits hold. Conversions are fakes that wait for
+the test to let them finish.
 
     python -m unittest discover -s tests
 """
@@ -27,20 +29,26 @@ class FakeConversions:
         self.release: dict[str, threading.Event] = {}
         self.lock = threading.Lock()
         self.careful_now = self.careful_most = 0
+        self.no_model: set[str] = set()  # files whose conversion finds it will not use the model
 
     def events(self, name: str) -> tuple[threading.Event, threading.Event]:
         with self.lock:
             return self.started.setdefault(name, threading.Event()), self.release.setdefault(name, threading.Event())
 
-    def __call__(self, path, mode, languages, progress, strip=False, careful=False):
+    def __call__(self, path, mode, languages, progress, strip=False, careful=False, model_unused=None):
         started, release = self.events(Path(path).name)
+        progress(0, 2)
+        uses = careful and Path(path).name not in self.no_model
+        if not uses and model_unused is not None:
+            model_unused()
         with self.lock:
-            self.careful_now += careful
+            self.careful_now += uses
             self.careful_most = max(self.careful_most, self.careful_now)
         started.set()
         release.wait(WAIT)
         with self.lock:
-            self.careful_now -= careful
+            self.careful_now -= uses
+        progress(1, 2)
         return Path(path), {"careful": careful}
 
 
@@ -69,14 +77,22 @@ class QueueTest(unittest.TestCase):
         self.manager.shutdown()
         self.manager._pool.shutdown(wait=True)  # before the patches go
 
-    def submit(self, careful: bool = False, ocr_type: str = "ocr", token: str | None = None) -> tasks.Task:
+    def submit(self, careful: bool = False, ocr_type: str = "ocr", token: str | None = None,
+               tool: str = "pdf-to-word") -> tasks.Task:
         self.n += 1
         token = token or f"f{self.n}.pdf"
         self.fake.events(token)
         return self.manager.submit({
-            "task_id": f"{self.n:032x}", "tool": "pdf-to-word", "input_tokens": [token],
+            "task_id": f"{self.n:032x}", "tool": tool, "input_tokens": [token],
             "options": {"ocr_type": ocr_type, "languages": ["vie"], "careful": careful},
         })
+
+    def wait_done(self, task: tasks.Task) -> None:
+        for _ in range(WAIT * 100):
+            if task.status in ("done", "failed"):
+                return
+            threading.Event().wait(0.01)
+        self.fail(f"task {task.task_id} not finished")
 
     def started(self, task: tasks.Task) -> bool:
         return self.fake.started[task.input_tokens[0]].wait(WAIT)
@@ -156,6 +172,73 @@ class QueueTest(unittest.TestCase):
         with self.assertRaises(tasks.Busy) as same:  # this file already has a task running
             self.submit(token=a.input_tokens[0])
         self.assertEqual(same.exception.code, "too_many_tasks")
+
+    def test_careful_queue_is_capped(self):
+        # 20 careful conversions from one school must not fill the queue for everyone: 1 runs, 3 wait, then refused
+        careful = [self.submit(careful=True) for _ in range(4)]
+        self.assertTrue(self.started(careful[0]))
+        with self.assertRaises(tasks.Busy) as busy:
+            self.submit(careful=True)
+        self.assertEqual(busy.exception.code, "careful_busy")
+        self.assertTrue(self.started(self.submit()))  # a default conversion still runs on the free thread
+        self.submit(tool="analyse-document")
+        self.finish_task(careful[0])
+        self.assertTrue(self.started(careful[1]))
+        self.submit(careful=True)  # one waiting place again
+
+    def test_careful_without_the_model_gives_its_turn_back(self):
+        # a careful file the conversion reads without the model (too many scanned pages): the next careful one runs
+        self.fake.no_model.add("long-scan.pdf")
+        a = self.submit(careful=True, token="long-scan.pdf")
+        b = self.submit(careful=True)
+        self.assertTrue(self.started(a))
+        self.assertTrue(self.started(b))
+        self.assertEqual(self.fake.careful_most, 1)
+        self.finish_task(b)
+        c = self.submit(careful=True)  # a still runs, holding no careful turn: c is not blocked by it
+        self.assertTrue(self.started(c))
+        for t in (a, c):
+            self.finish_task(t)
+        self.wait_done(a)
+        self.assertEqual(self.manager._careful_running, 0)
+
+    def test_closed_page_drops_or_stops_its_task(self):
+        a = self.submit(careful=True)
+        self.assertTrue(self.started(a))
+        b = self.submit(careful=True)
+        self.assertTrue(self.manager.cancel(b.task_id))  # queued: dropped at once, never runs
+        self.assertEqual((b.status, b.to_json()["result"]["error_fe"]), ("failed", "cancelled"))
+        self.assertTrue(self.manager.cancel(a.task_id))  # running: stops at its next page
+        self.finish_task(a)
+        self.wait_done(a)
+        self.assertEqual((a.status, a.error), ("failed", "cancelled"))
+        c = self.submit(careful=True)
+        self.assertTrue(self.started(c))
+        self.assertFalse(self.fake.started[b.input_tokens[0]].is_set())
+        self.assertFalse(self.manager.cancel("f" * 32))
+        self.finish_task(c)
+
+    def test_unpolled_queued_task_is_dropped(self):
+        a = self.submit(careful=True)
+        self.assertTrue(self.started(a))
+        b, c = self.submit(careful=True), self.submit(careful=True)
+        clock = [tasks.time.time()]
+        with mock.patch.object(tasks.time, "time", side_effect=lambda: clock[0]):
+            clock[0] += tasks.ABANDON_SECONDS - 1
+            self.manager.get(c.task_id)  # c's page still asks, b's was closed
+            clock[0] += 2
+            self.finish_task(a)
+            self.assertTrue(self.started(c))
+        self.assertEqual((b.status, b.error), ("failed", "abandoned"))
+        self.assertFalse(self.fake.started[b.input_tokens[0]].is_set())
+        self.assertEqual(self.manager.in_use(), set(c.input_tokens))
+        self.finish_task(c)
+
+    def test_input_gone_while_waiting(self):
+        with mock.patch.object(tasks.storage, "exists", side_effect=[True, False]):
+            a = self.submit()
+            self.wait_done(a)
+        self.assertEqual((a.status, a.error), ("failed", "input_tokens"))  # not "corrupt_pdf"
 
     def test_one_careful_runs_alone_when_the_limit_is_one_worker(self):
         manager = tasks.TaskManager(workers=1, careful_workers=1)

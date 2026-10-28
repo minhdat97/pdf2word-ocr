@@ -59,12 +59,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .settings import MFR_DIR, MFR_ENABLED, MFR_THREADS
+from .settings import MFR_DIR, MFR_ENABLED, MFR_SPLIT, MFR_THREADS
 
 log = logging.getLogger("pdf2word.mathocr")
 
 MODEL_FILES = ("encoder_model.onnx", "decoder_model.onnx", "tokenizer.json")
 SPLIT_FILES = ("cross_kv.onnx", "decoder_step.onnx")  # used in place of decoder_model.onnx when both are there
+# (unless P2W_MFR_SPLIT=0)
 BOS, EOS, PAD = 1, 2, 0
 SIZE = 384  # the encoder's input side; crops are stretched to a square
 MAX_TOKENS = 200  # a reading that does not end by then is dropped
@@ -191,7 +192,7 @@ class FormulaReader:
         # decoder_model.onnx split in two (scripts/split_mfr_decoder.py): the cross-attention keys and values of a crop
         # computed once (cross_kv.onnx), not again at every step of decoder_model.onnx
         self.cross = self.decoder = None
-        if all((model_dir / f).is_file() for f in SPLIT_FILES):
+        if MFR_SPLIT and all((model_dir / f).is_file() for f in SPLIT_FILES):
             self.cross = ort.InferenceSession(str(model_dir / SPLIT_FILES[0]), so, providers=providers)
             self.step = ort.InferenceSession(str(model_dir / SPLIT_FILES[1]), so, providers=providers)
         else:
@@ -279,7 +280,7 @@ def installed() -> bool:
     if not MFR_ENABLED:
         return False
     have = {f for f in MODEL_FILES + SPLIT_FILES if (MFR_DIR / f).is_file()}
-    return set(MODEL_FILES) <= have or {"encoder_model.onnx", "tokenizer.json", *SPLIT_FILES} <= have
+    return set(MODEL_FILES) <= have or (MFR_SPLIT and {"encoder_model.onnx", "tokenizer.json", *SPLIT_FILES} <= have)
 
 
 def available() -> bool:

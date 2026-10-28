@@ -64,6 +64,10 @@ VIETOCR_WORDS = os.environ.get("P2W_VIETOCR_WORDS", "unsure").strip().lower() or
 MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
 MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
 MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
+# The decoder split in two (cross_kv.onnx + decoder_step.onnx, scripts/split_mfr_decoder.py) when both files are there:
+# the same readings, about twice as fast. P2W_MFR_SPLIT=0 uses the whole decoder_model.onnx instead (the files stay;
+# deleting them would not last: deploy.sh fetches missing model files again).
+MFR_SPLIT = os.environ.get("P2W_MFR_SPLIT", "1") != "0"
 # A file with more scanned pages than this reads its formulas without the model (as by default, FORMULAS "scripts"):
 # with the model a page takes up to about 2 minutes on a 2-core server (35 s on average on the test scans), and a
 # long scan would hold a worker for too long.
@@ -71,6 +75,12 @@ MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 5))
 # Conversions with the formula model running at once (app/tasks.py): one holds a core and ~1.5 GB for minutes, so
 # the other worker stays free for default conversions; more careful ones wait in the queue (status "queued").
 CAREFUL_WORKERS = int(os.environ.get("P2W_CAREFUL_WORKERS", 1))
+# Careful conversions waiting for their turn at most (more are refused: "careful_busy"), so they never fill the queue
+# (MAX_PENDING_TASKS) for everyone else: 1 running + 3 waiting is ~25 minutes of dense pages at most.
+CAREFUL_QUEUE = int(os.environ.get("P2W_CAREFUL_QUEUE", 3))
+# A queued task nobody asked about for this long (its page closed, or asleep) is dropped when its turn comes
+# ("abandoned"): the page asks every 0.7 s, a hidden tab at least once a minute; a closed page also says so at once.
+ABANDON_SECONDS = int(os.environ.get("P2W_ABANDON_SECONDS", 600))
 # Where formula regions are looked for on OCR pages (app/mathregions.py): "rules" (answer options,
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
 # detector registered in mathregions.DETECTORS.
