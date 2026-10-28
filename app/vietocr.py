@@ -6,7 +6,8 @@ them, or a letter â ă ê ô with no tone mark or a grave accent; every word wi
 P2W_VIETOCR_WORDS=all). refine_words takes its tone marks when both read the
 same letters, and its whole word where Tesseract was unsure and VietOCR was not.
 
-The model runs on onnxruntime (models/vietocr, fetched by scripts/fetch_models.py):
+The model runs on onnxruntime (models/vietocr, fetched by scripts/fetch_models.py; models/vietocr-int8 with
+P2W_VIETOCR_INT8=1, model_dir()):
 encoder.onnx (image -> keys and values for the decoder's cross-attention),
 decoder.onnx (one step: last character + cached keys/values -> next-character
 probabilities), config.json (vocabulary, image sizes, decoder shape).
@@ -32,7 +33,15 @@ from pathlib import Path
 import numpy as np
 
 from .ocr_fix import _TONES, _toneless
-from .settings import VIETOCR_DIR, VIETOCR_ENABLED, VIETOCR_THREADS, VIETOCR_WORDS
+from .settings import (
+    VIETOCR_DIR,
+    VIETOCR_DIR_SET,
+    VIETOCR_ENABLED,
+    VIETOCR_INT8,
+    VIETOCR_INT8_DIR,
+    VIETOCR_THREADS,
+    VIETOCR_WORDS,
+)
 
 log = logging.getLogger("pdf2word.vietocr")
 
@@ -217,8 +226,16 @@ _reader: VietOCR | None = None
 _failed = False
 
 
+def model_dir() -> Path:
+    """VietOCR's folder: P2W_VIETOCR_DIR when set; else the int8 copy (models/vietocr-int8) when P2W_VIETOCR_INT8 is on
+    and it has every file (fetch_models.py puts a model's files in place all together); else models/vietocr."""
+    if not VIETOCR_DIR_SET and VIETOCR_INT8 and all((VIETOCR_INT8_DIR / f).is_file() for f in MODEL_FILES):
+        return VIETOCR_INT8_DIR
+    return VIETOCR_DIR
+
+
 def available() -> bool:
-    return VIETOCR_ENABLED and all((VIETOCR_DIR / f).is_file() for f in MODEL_FILES)
+    return VIETOCR_ENABLED and all((model_dir() / f).is_file() for f in MODEL_FILES)
 
 
 # VietOCR wanted by the conversion running in this thread (convert() skips it for very long scans).
@@ -246,10 +263,12 @@ def reader() -> VietOCR | None:
         return _reader
     with _lock:
         if _reader is None and not _failed:
+            folder = model_dir()
             try:
-                _reader = VietOCR(VIETOCR_DIR, VIETOCR_THREADS)
+                _reader = VietOCR(folder, VIETOCR_THREADS)
+                log.info("VietOCR loaded from %s", folder)
             except Exception:
-                log.exception("VietOCR not loaded from %s", VIETOCR_DIR)
+                log.exception("VietOCR not loaded from %s", folder)
                 _failed = True
     return _reader
 

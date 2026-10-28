@@ -1,9 +1,10 @@
 """Make models/vietocr from VietOCR's vgg_transformer weights (Apache-2.0).
 
-Not needed to run the tool once models/vietocr is there. scripts/models.json has
-no download URL for VietOCR yet: copy the result to the server with
-scripts/fetch_models.py --from DIR (a running service finds it). Needs torch,
-vietocr, pyyaml, onnx, onnxscript and onnxruntime:
+Not needed to run the tool: scripts/fetch_models.py downloads these files (the
+release named in scripts/models.json). To use another export, copy it to the server
+with scripts/fetch_models.py --from DIR after updating the manifest's SHA-256 (a
+running service finds it). Needs torch, vietocr, pyyaml, onnx, onnxscript and
+onnxruntime:
 
     python scripts/export_vietocr.py vgg_transformer.pth base.yml vgg-transformer.yml models/vietocr
 

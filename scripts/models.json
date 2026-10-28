@@ -2,17 +2,27 @@
   "vietocr": {
     "about": "VietOCR vgg_transformer (Apache-2.0), exported to ONNX with float16 weights by scripts/export_vietocr.py",
     "files": [
-      {"name": "encoder.onnx", "url": "", "sha256": "34ee81f63015358f06cd354b0ed7be35bbf2c026e248251426fe3e0b87f89d88", "size": 58325002},
-      {"name": "decoder.onnx", "url": "", "sha256": "cb95b993fd95b8c97e4c2fdaa343079ff57d9c7bc7d17fdf9caab5fdd2a6b02f", "size": 17789735},
-      {"name": "config.json", "url": "", "sha256": "a2cf9c9043dcb49311a447e6bd0f6443a008642dfea241c5068a1733c148c244", "size": 609}
+      {"name": "encoder.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-encoder.onnx", "sha256": "34ee81f63015358f06cd354b0ed7be35bbf2c026e248251426fe3e0b87f89d88", "size": 58325002},
+      {"name": "decoder.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-decoder.onnx", "sha256": "cb95b993fd95b8c97e4c2fdaa343079ff57d9c7bc7d17fdf9caab5fdd2a6b02f", "size": 17789735},
+      {"name": "config.json", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-config.json", "sha256": "a2cf9c9043dcb49311a447e6bd0f6443a008642dfea241c5068a1733c148c244", "size": 609}
+    ]
+  },
+  "vietocr-int8": {
+    "about": "The same VietOCR with the encoder's convolutions in int8 (scripts/quantize_vietocr.py); decoder.onnx and config.json as in vietocr. Used with P2W_VIETOCR_INT8=1",
+    "files": [
+      {"name": "encoder.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-int8-encoder.onnx", "sha256": "2d773c9ce31611f33677b652b04cac31eb6c80a3b2636b04eb25ec4a39055d4c", "size": 56636513},
+      {"name": "decoder.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-decoder.onnx", "sha256": "cb95b993fd95b8c97e4c2fdaa343079ff57d9c7bc7d17fdf9caab5fdd2a6b02f", "size": 17789735},
+      {"name": "config.json", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/vietocr-config.json", "sha256": "a2cf9c9043dcb49311a447e6bd0f6443a008642dfea241c5068a1733c148c244", "size": 609}
     ]
   },
   "mfr": {
-    "about": "pix2text-mfr-1.5 formula recognition (MIT), ONNX files as published (revision 1cef9f0bdcd6a4c63df7de1311fb0894593340cc), read by app/mathocr.py",
+    "about": "pix2text-mfr-1.5 formula recognition (MIT), ONNX files as published (revision 1cef9f0bdcd6a4c63df7de1311fb0894593340cc), read by app/mathocr.py; cross_kv.onnx and decoder_step.onnx are decoder_model.onnx split in two by scripts/split_mfr_decoder.py (used in its place; decoder_model.onnx stays for the fallback)",
     "files": [
       {"name": "encoder_model.onnx", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/encoder_model.onnx", "sha256": "080a3f660f08bc9ebcacdd96e34be6b6400f8c7e62d7cd0dd8251badc37f610b", "size": 87510770},
       {"name": "decoder_model.onnx", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/decoder_model.onnx", "sha256": "917deb98e91a0453c5f234f58a0f32f9fb037de8527c7eb4ed394daf9e692f2a", "size": 32026253},
-      {"name": "tokenizer.json", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/tokenizer.json", "sha256": "4ffbeb2143e6a38324bb6111b7a8109530d38a076a8439aa5777535f0a32758a", "size": 113168}
+      {"name": "tokenizer.json", "url": "https://huggingface.co/breezedeus/pix2text-mfr-1.5/resolve/1cef9f0bdcd6a4c63df7de1311fb0894593340cc/tokenizer.json", "sha256": "4ffbeb2143e6a38324bb6111b7a8109530d38a076a8439aa5777535f0a32758a", "size": 113168},
+      {"name": "cross_kv.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/mfr-cross_kv.onnx", "sha256": "73044af66156574d1f9cd446dc99507860309d23da2a5b78596099ec0fa1d054", "size": 4740144},
+      {"name": "decoder_step.onnx", "url": "https://github.com/minhdat97/pdf2word-ocr/releases/download/models-2026-10-28/mfr-decoder_step.onnx", "sha256": "a6ea7f17edaac060c442c90bd5c5d30e6f7080c6ed0c05e63a2e9fa289b4bd37", "size": 27403795}
     ]
   }
 }

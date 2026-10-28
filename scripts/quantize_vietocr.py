@@ -13,8 +13,8 @@ the server before relying on it.
 
 The PDFs are scans of Vietnamese text (a few hundred words or more, found with Tesseract as in a
 conversion; at most MAX_CROPS are used). Needs onnx and onnxruntime (its quantization tools) besides
-the app's requirements, and about 6 GB of memory. Copy the folder to the server and set
-P2W_VIETOCR_DIR=models/vietocr-int8.
+the app's requirements, and about 6 GB of memory. The copy used by the tool is published with the other
+models (scripts/models.json, "vietocr-int8"); the service uses it with P2W_VIETOCR_INT8=1.
 """
 
 import argparse

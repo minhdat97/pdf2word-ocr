@@ -170,6 +170,9 @@ class SelectTest(unittest.TestCase):
 class LoaderTest(unittest.TestCase):
     def setUp(self):
         vietocr._failed, vietocr._reader = False, None
+        int8 = mock.patch.object(vietocr, "VIETOCR_INT8", False)  # the folder each test names
+        int8.start()
+        self.addCleanup(int8.stop)
 
     def tearDown(self):
         vietocr._failed, vietocr._reader = False, None
@@ -191,6 +194,23 @@ class LoaderTest(unittest.TestCase):
             for name in vietocr.MODEL_FILES:  # fetch_models.py --from DIR while the service runs
                 (Path(tmp) / name).write_bytes(b"x")
             self.assertEqual(vietocr.reader(), "reader")
+
+    def test_int8_folder(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as fp16, tempfile.TemporaryDirectory() as int8, \
+                mock.patch.object(vietocr, "VIETOCR_DIR", Path(fp16)), \
+                mock.patch.object(vietocr, "VIETOCR_INT8_DIR", Path(int8)), \
+                mock.patch.object(vietocr, "VIETOCR_DIR_SET", False):
+            for name in vietocr.MODEL_FILES[:-1]:
+                (Path(int8) / name).write_bytes(b"x")
+            self.assertEqual(vietocr.model_dir(), Path(fp16))  # int8 off
+            with mock.patch.object(vietocr, "VIETOCR_INT8", True):
+                self.assertEqual(vietocr.model_dir(), Path(fp16))  # int8 folder incomplete: float16
+                (Path(int8) / vietocr.MODEL_FILES[-1]).write_bytes(b"x")
+                self.assertEqual(vietocr.model_dir(), Path(int8))
+                with mock.patch.object(vietocr, "VIETOCR_DIR_SET", True):
+                    self.assertEqual(vietocr.model_dir(), Path(fp16))  # P2W_VIETOCR_DIR wins
 
     def test_broken_model_is_turned_off(self):
         vietocr._reader = "reader"
