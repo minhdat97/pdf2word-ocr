@@ -344,6 +344,40 @@ class GarbledLabelsTest(unittest.TestCase):
         nxt = row[row.index(label) + 1]
         self.assertIsInstance(nxt.math, MathDecision)
 
+    def test_label_is_written_when_not_read(self):
+        # the default way reads no option without a superscript or subscript, and a reading may be refused: the
+        # garbled label is written all the same, the option keeps its OCR words ("c.9" keeps its "9")
+        for how in ("scripts", "model"):
+            c, lines = self.page()
+            gray, ink, rgb = c.arrays()
+
+            class Refused:
+                def read(self, images):
+                    return [("", 0.0) for _ in images]
+
+            with mock.patch.object(mathocr, "available", return_value=True), ocr.formulas_mode(how), \
+                    mock.patch.object(mathocr, "get_reader", return_value=Refused()), \
+                    mock.patch.object(mathregions, "MATH_DETECT", "rules"):
+                ocr.read_formulas(lines, [], gray, ink, rgb, 300)
+            row = sorted(lines[1].words, key=lambda w: w.x0)
+            self.assertEqual([w.text for w in row], ["A.", "9", "km.", "B.", "9", "km.", "C.", "9", "km.", "D.", "9", "km."], how)
+            label = next(w for w in row if w.text == "C.")
+            self.assertEqual((label.x0, label.color), (800, "3366FF"))
+            nine = row[row.index(label) + 1]
+            self.assertEqual((nine.x0, nine.x1, nine.math), (824, 850, None))
+
+    def test_label_left_alone_when_the_word_over_it_does_not_split(self):
+        c, lines = self.page()
+        gray, ink, rgb = c.arrays()
+        glued = next(w for w in lines[1].words if w.text == "c.9")
+        glued.text = "e9"  # no mark after the letter: where the label ends in the text is not known
+        with ocr.formulas_mode("scripts"), mock.patch.object(mathregions, "MATH_DETECT", "rules"):
+            ocr.read_formulas(lines, [], gray, ink, rgb, 300)
+        texts = [w.text for w in sorted(lines[1].words, key=lambda w: w.x0)]
+        self.assertIn("e9", texts)
+        self.assertNotIn("C.", texts)
+        self.assertIn("D.", texts)
+
 
 if __name__ == "__main__":
     unittest.main()

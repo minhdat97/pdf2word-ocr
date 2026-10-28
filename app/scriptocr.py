@@ -16,12 +16,16 @@ them well but costs about 2 s a region on a small server. This reader needs neit
    (_char): as many characters as glyphs, "," and "." of a number from the glyph (going under the baseline or
    not; Tesseract often drops a small comma), a script's "-" where the geometry found a minus and nowhere else, a
    digit only for a glyph standing on the line at digit height, nothing raised read on the line, "0" and "O" by
-   the glyph's width, the case of letters whose cases differ in size only (o, v, x...) by height, a closed
-   triangle read "A" or "4" is a Δ; each character but "," and "." at least MIN_CONF sure; a word after a script
-   is a unit.
+   the glyph's width, the case of letters whose cases differ in size only (o, v, x...) by height (in a script by
+   SCRIPT_CASE_XH, or against a digit or capital of the same script; y/Y and p/P only against one: the canvas
+   shows neither), no "D" or "Q" (a Đ, a 0 or an O), no "t" "f" "j" "L" for a bare stem (a 1), a closed triangle
+   read "A" or "4" is a Δ; each character but "," and "." at least MIN_CONF sure; a word after a script is a unit.
 4. The two readings must agree. Tesseract misreads a lone letter at one size and not at the other ("Tr" for "T",
-   "I." for "J."): one reading still counts when the scripts read the same both times and the page's OCR text has
-   its letters.
+   "I." for "J."): one reading still counts when they differ in letters only (same digits and scripts) and the
+   page's OCR text has its letters.
+   A script letter that can stand for a digit or a Vietnamese letter Tesseract cannot read here (O for 0 or Đ, b
+   or d for đ, t for 1, B for 8...: _UNSURE) must be in the page's OCR text too, after the letter it is put on
+   ("R_{O}" for R_Đ is refused: OCR read "Rp").
 5. The runs are written as LaTeX (scripts in ^{} and _{}) and mathocr.judge() decides as for a model reading
    (Tesseract's digits of the region agree, no unknown word, no subscript after a digit...): a MathDecision of
    kind "text", written as superscript and subscript runs.
@@ -80,8 +84,19 @@ ROUND_DIGIT = 0.7
 LOWER_XH, UPPER_XH = 1.2, 1.35  # o/O, v/V...: a glyph at most / at least this high (x-heights)
 SUPER = re.compile(r"[-+]?\d{1,3}|[-+]?[A-Za-z]")  # exponents: "-21", "3", "-1", "n"
 SUB = re.compile(r"\d{1,2}|[A-Za-z]{1,3}|[A-Za-z]\d")  # indices: "1", "A", "O", "cqp", "A1"
-_ROUND = set("0OoDQ")
+_ROUND = set("0OoDQ")  # round glyphs Tesseract reads as one another; only "0", "O", "o" are kept (by width)
 _ONE = set("lIi|")
+_STEM = set("tfjL")  # in a script, letters a bare stem is not (a "1" without its flag and foot)
+STEM_WIDTH = 0.35  # a glyph narrower than this for its height is a stem
+# Script letters that may stand for something the canvas cannot show: a digit (mathocr._DIGIT_LOOK) or "Đ"/"đ"
+# (the canvas has no Vietnamese: R_Đ reads R_O, U_Đ reads U_b, F_đh reads F_dh). The page's OCR must hold them.
+_UNSURE = set("".join(mathocr._DIGIT_LOOK.values())) - {"|"} | set("Ddbp")
+# Script letters whose two cases differ in size only (the canvas scales every script to a capital's height) and
+# the script heights (x-heights of the text) that tell them apart: at most the first is small, at least the second
+# a capital (scripts at ~50-80 % of the text: capitals measured 0.85-0.96, small letters 0.55-0.75).
+_SCRIPT_CASE = mathocr.CASE_BY_HEIGHT
+SCRIPT_CASE_XH = (0.7, 0.84)
+_DESCENDER_CASE = set("PY")  # p/P, y/Y: alike once put on the baseline; told only by another glyph of the script
 _DESCENDS = set("gjpqyJQ")
 _RAISED = set("-=+'")  # glyphs of a run on the line that do not reach down to it
 
@@ -332,16 +347,20 @@ def _char(page, ch: str, unit: list[int], role: str, base: float, xh: float, min
     if role != "base":
         if (ch == "-") != is_minus:
             return None
+        if ch in "DQ":
+            return None  # a Đ, an O or a 0 (Tesseract reads Đ as D or O here)
         if ch in _ROUND:
-            return "O" if w >= ROUND_LETTER * h else "0" if w <= ROUND_DIGIT * h else None
+            return "o" if w >= ROUND_LETTER * h else "0" if w <= ROUND_DIGIT * h else None  # (o/O: _script_case)
         if ch in _ONE:
             return None  # "1", "l" or "I": the glyph does not tell
-        if ch.isalpha() and ch.upper() in mathocr.CASE_BY_HEIGHT:
-            return ch.upper()  # a script glyph found is as high as a capital
+        if ch in _STEM and w < STEM_WIDTH * h:
+            return None  # a "1" that lost its flag and foot
         return ch if ch.isalnum() or ch in "-+" else None
     on_line = abs(y1 - base) <= 0.25 * xh
     if y1 < base - RAISED_XH * xh and ch not in _RAISED:
         return None  # a raised glyph the geometry did not take for a script ("2" of 10^{23} read "°")
+    if ch in "DQ":
+        return None  # a Đ, an O or a 0
     if ch in _ROUND:
         if not on_line:
             return None
@@ -368,6 +387,37 @@ def _char(page, ch: str, unit: list[int], role: str, base: float, xh: float, min
         elif h >= UPPER_XH * xh:
             ch = ch.upper()
     return ch if _shape(ch, unit, w, h, y1 - base, xh) else None
+
+
+_TALL_REF = set("ABEFGHKMNRT") | set("bdhk")  # script letters as high as a digit, case shown by their shape
+
+
+def _script_case(page, units: list[list[int]], chars: list[str], xh: float) -> list[str] | None:
+    """The case of a script's letters the canvas cannot show (_SCRIPT_CASE, _DESCENDER_CASE): against a digit or a
+    capital of the same script (as high, standing on the same line), else by SCRIPT_CASE_XH for the ones that differ
+    in size; None when a case is not told."""
+    boxes = [page.union(u) for u in units]
+    refs = [b for b, c in zip(boxes, chars) if c.isdigit() or c in _TALL_REF]
+    out = []
+    for c, (x0, y0, x1, y1) in zip(chars, boxes):
+        up = c.upper()
+        if not c.isalpha() or (up not in _SCRIPT_CASE and up not in _DESCENDER_CASE):
+            out.append(c)
+            continue
+        h, small = y1 - y0, None
+        if refs:
+            rh = max(b[3] - b[1] for b in refs)
+            rb = sorted(b[3] for b in refs)[len(refs) // 2]
+            if up in _DESCENDER_CASE:
+                small = True if y1 >= rb + 0.15 * rh else False if abs(y1 - rb) <= 0.08 * rh and h >= 0.85 * rh else None
+            else:
+                small = True if h <= 0.8 * rh else False if h >= 0.9 * rh else None
+        elif up in _SCRIPT_CASE:
+            small = True if h <= SCRIPT_CASE_XH[0] * xh else False if h >= SCRIPT_CASE_XH[1] * xh else None
+        if small is None:
+            return None
+        out.append(c.lower() if small else up)
+    return out
 
 
 _SMALL = set("acemnorsuvwxz")  # letters of x-height
@@ -492,8 +542,8 @@ def _latex(page, segs: list[_Seg], base: float, xh: float) -> tuple[str, float] 
             return f"{read!r}: {len(read)} characters for {len(glyphs)} glyphs"
         it = iter(shared)
         shared = [m if m is not None else next(it) for m in marks]
-        out = ""
-        for k, (chars, unit, box) in enumerate(zip(shared, units, boxes)):
+        gots = []
+        for k, (chars, unit) in enumerate(zip(shared, units)):
             if marks[k] is not None:
                 got = chars
             elif len(chars) > 1:  # a "/" touching a letter ("m/"), as Tesseract read them
@@ -504,6 +554,14 @@ def _latex(page, segs: list[_Seg], base: float, xh: float) -> tuple[str, float] 
                 got = _char(page, chars, unit, seg.role, base, xh, seg.minus)
                 if got is None:
                     return f"glyph {chars!r} ({seg.role})"
+            gots.append(got)
+        if seg.role != "base":
+            cased = _script_case(page, units, gots, xh)
+            if cased is None:
+                return f"case of {''.join(gots)!r} ({seg.role})"
+            gots = cased
+        out = ""
+        for k, (got, box) in enumerate(zip(gots, boxes)):
             if k and seg.role == "base" and box[0] - boxes[k - 1][2] >= SPACE_XH * xh and _space(out, got):
                 out += "\\ "
             out += got
@@ -524,8 +582,8 @@ def _latex(page, segs: list[_Seg], base: float, xh: float) -> tuple[str, float] 
 
 
 def _reading(page, segs: list[_Seg], words: list, base: float, xh: float, region) -> tuple:
-    """One canvas reading: (LaTeX and confidence, or why it cannot be used; what Tesseract read on the scripts,
-    run by run, or None when its words do not fall on the runs)."""
+    """One canvas reading: (LaTeX and confidence, or why it cannot be used; what Tesseract read, run by run (role,
+    text), or None when its words do not fall on the runs)."""
     segs = [replace(seg, words=[]) for seg in segs]
     runs = [seg for seg in segs if seg.marks is None]
     if len(words) == len(runs):  # one word a run (Tesseract's boxes are loose: the order tells)
@@ -533,7 +591,7 @@ def _reading(page, segs: list[_Seg], words: list, base: float, xh: float, region
             seg.words.append((text, conf))
     elif any(not _assign(segs, word) for word in words):
         return "a word between runs: " + " ".join(w[0] for w in words), None
-    scripts = tuple("".join(t for t, _ in seg.words) for seg in runs if seg.role != "base")
+    scripts = tuple((seg.role, "".join(t for t, _ in seg.words)) for seg in runs)
     result = _latex(page, segs, base, xh)
     if isinstance(result, str):
         return result, scripts
@@ -585,15 +643,18 @@ def read_regions(regions: list, gray: np.ndarray, ink: np.ndarray, lines: list, 
             first = (valid[0][0], min(c for _, c in valid))
         else:
             # Tesseract misreads a lone letter at one size and not at the other ("Tr" for "T", "I." for "J."): a
-            # reading counts when the page's OCR text holds its letters and the scripts read the same both times
-            same_scripts = len({sc for _, sc in tries}) == 1 and tries[0][1] is not None
-            first = next((r for r in valid if same_scripts and _letters_seen(r[0], region.ocr_text)), None)
+            # reading counts when the two differ in letters only and the page's OCR text holds its letters
+            alike = _letters_only(tries)
+            first = next((r for r in valid if alike and _letters_seen(r[0], region.ocr_text)), None)
             if first is None:
                 why[i] = "readings differ: " + " | ".join(r if isinstance(r, str) else r[0] for r in readings)
                 continue
         tex, conf = first
         if not _letters_seen(_free_letters(tex), region.ocr_text):
             why[i] = f"letters not in OCR: {tex}"
+            continue
+        if not _script_letters_seen(tex, region.ocr_text):
+            why[i] = f"script letters not in OCR: {tex}"
             continue
         right = max(page.union(seg.comps)[2] for seg in segs)
         kept = [w for w in region.words if w.cx < right]
@@ -617,6 +678,44 @@ def _free_letters(tex: str) -> str:
     tex = re.sub(r"\}(\\ )?[A-Za-zΩ/.()]+", "}", tex)  # a unit after a script
     tex = re.sub(r"[A-Za-z](?=[_^]\{)", "", tex)  # the letter a script is put on
     return re.sub(r"[_^]\{[^{}]*\}|\\[A-Za-z]+", "", tex)
+
+
+def _letters_only(tries: list[tuple]) -> bool:
+    """Two canvas readings that may differ in letters only: Tesseract's words fell on the runs both times, the
+    scripts read the same, every run has the same digits, and where both readings are valid they are the same with
+    letters (and "/", read "l" at one size: "g/cm", "glem") left out ("6,47.10" against "6,42.10" is a digit
+    misread at one size: no reading)."""
+    runs = [r for _, r in tries]
+    if any(r is None for r in runs):
+        return False
+    if len({tuple(t for role, t in r if role != "base") for r in runs}) != 1:
+        return False
+    if len({tuple(re.sub(r"\D", "", t) for _, t in r) for r in runs}) != 1:
+        return False
+    valid = [t for t, _ in tries if not isinstance(t, str)]
+    return len({re.sub(r"[A-Za-z/]", "?", tex) for tex, _ in valid}) <= 1
+
+
+def _script_letters_seen(tex: str, ocr_text: str) -> bool:
+    """The letters of a script that may stand for a digit or a "Đ"/"đ" (_UNSURE) appear in Tesseract's text of the
+    region, after the letter the script is put on (any case, without marks; "đ" is not "d"): T_{t} for T_1 is
+    refused when OCR read "T,", R_{O} for R_Đ when it read "Rp"."""
+    seen = mathocr._letters(ocr_text).lower()
+    pos = 0
+    for m in re.finditer(r"([A-Za-z]?)[_^]\{([^{}]*)\}", tex):
+        on, script = m.group(1).lower(), [c for c in m.group(2) if c.isalpha()]
+        if not any(c in _UNSURE for c in script):
+            continue
+        if on and (at := seen.find(on, pos)) >= 0:
+            pos = at + 1
+        for c in script:
+            at = seen.find(c.lower(), pos)
+            if at < 0:
+                if c in _UNSURE:
+                    return False
+                continue
+            pos = at + 1
+    return True
 
 
 def _letters_seen(tex: str, ocr_text: str) -> bool:

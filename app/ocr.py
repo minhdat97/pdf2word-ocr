@@ -1133,6 +1133,39 @@ def _overlaps(w: Word, box: tuple) -> bool:
     return min(w.x1, box[2]) > max(w.x0, box[0]) and min(w.y1, box[3]) > max(w.y0, box[1])
 
 
+# A garbled label glued to its option by OCR ("c.9" for "C. 9"): what follows the label's letter and mark
+_GLUED_LABEL = re.compile(r"^[A-Za-zĐđ][.,:;](\S.*)$")
+
+
+def _relabel(lines: list[Line], region, label) -> None:
+    """An unread region whose answer label OCR garbled or lost (region.label): the label written over its glyphs,
+    the region's other words kept. A word over the label only goes; one running on into the option ("c.9") keeps
+    what follows the label's letter and mark; any other word over the label (or a label read well) leaves the
+    line as OCR read it."""
+    lx0, ly0, lx1, ly1 = label.box
+    width = max(1, lx1 - lx0)
+    over = [(ln, w) for ln in lines for w in ln.words
+            if _overlaps(w, label.box) and min(w.x1, lx1) - max(w.x0, lx0) >= 0.5 * width]
+    edits: list[tuple[Line, Word, Word | None]] = []
+    for ln, w in over:
+        if w.math is not None or _LABEL_ONLY.match(w.text):
+            return
+        if w.x1 <= lx1 + 0.3 * (region.em_px or region.line.em_px):
+            edits.append((ln, w, None))
+            continue
+        m = _GLUED_LABEL.match(w.text)
+        if m is None:
+            return
+        edits.append((ln, w, replace(w, x0=max(w.x0, lx1 + 1), text=m.group(1))))
+    for ln, w, rest in edits:
+        at = next(i for i, o in enumerate(ln.words) if o is w)
+        ln.words[at : at + 1] = [rest] if rest is not None else []
+    line_no = region.line.words[0].line_no if region.line.words else 0
+    mark = Word(lx0, ly0, lx1, ly1, 90.0, label.text, line_no, region.em_px or region.line.em_px, color=label.color)
+    at = next((i for i, w in enumerate(region.line.words) if w.x0 > lx0), len(region.line.words))
+    region.line.words.insert(at, mark)
+
+
 def _formula_picture(region, rgb: np.ndarray, gray: np.ndarray, s: float) -> FormulaPicture:
     """The region cut from the colour page (paper whitened where the grey page was), sized in
     points and lowered by how far it reaches below its line's baseline."""
@@ -1158,13 +1191,17 @@ def formulas_mode(how: str | None) -> Iterator[None]:
         _formulas.reset(token)
 
 
+def _default_reader() -> str:
+    """How formulas are read without the model: FORMULAS, "scripts" when that is "model"."""
+    return FORMULAS if FORMULAS in ("scripts", "off") else "scripts"
+
+
 def formula_reader() -> str:
     """How this conversion reads formula regions: "model", "scripts" or "off" (formulas_mode(), else
     settings.FORMULAS). Where the model is not installed or the conversion skips it (a long scan, app/convert.py),
-    "model" falls back to the default way (FORMULAS; "scripts" when that is "model" too)."""
-    default = FORMULAS if FORMULAS in ("scripts", "off") else "scripts"
+    "model" falls back to the default way (_default_reader())."""
     how = _formulas.get() or FORMULAS
-    return "model" if how == "model" and mathocr.available() else default
+    return "model" if how == "model" and mathocr.available() else _default_reader()
 
 
 def read_formulas(
@@ -1176,14 +1213,19 @@ def read_formulas(
     other word centred in its box (not an answer label) give way to one placeholder word on the
     region's line holding the reading; an unread "tall" region becomes a placeholder holding its
     picture; other regions keep their OCR words. A region carrying an answer label OCR garbled or
-    lost (region.label) also gets that label written in place of the words over the label's glyphs;
-    so does an equation read with a label in front ("D.\\frac{3}{2}"): the label is written as text
-    before it, not inside the Word equation.
+    lost (region.label) also gets that label written in place of the words over the label's glyphs,
+    read or not (_relabel); so does an equation read with a label in front ("D.\\frac{3}{2}"): the label
+    is written as text before it, not inside the Word equation. When the model fails to load, the page
+    is read the default way (formula_reader()).
     Regions in ruled tables are skipped (table cells are plain text). Returns the number of
     placeholders. Nothing happens when formula reading is off."""
     how = formula_reader() if lines else "off"
+    reader = mathocr.get_reader() if how == "model" else None
+    if how == "model" and reader is None:  # the model failed to load (mathocr marks it failed): the default way
+        how = _default_reader()
     if how == "off":
         return 0
+
     def in_table(box) -> bool:
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         return any(g.x0 <= cx <= g.x1 and g.y0 <= cy <= g.y1 for g in grids)
@@ -1195,9 +1237,6 @@ def read_formulas(
     if how == "scripts":
         decisions = scriptocr.read_regions(regions, gray, ink, lines, dpi)
     else:
-        reader = mathocr.get_reader()
-        if reader is None:
-            return 0
         decisions = mathocr.read_regions(
             gray, [r.box for r in regions], [r.ocr_text for r in regions], [r.em_px for r in regions], reader,
             [r.case_from_ink for r in regions],
@@ -1229,6 +1268,8 @@ def read_formulas(
             else:
                 label, decision, start = mathregions.Label(box, lead[0]), lead[1], box[2] + 1
         if decision is None and region.kind != "tall":
+            if label is not None:
+                _relabel(lines, region, label)
             continue
         gone: list[Word] = []
         for ln in lines:
@@ -1292,9 +1333,13 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     # before pictures are cut out, so formula ink is not taken for a figure
     try:
         read_formulas(lines, grids, gray, ink, rgb, dpi)  # words change only once all regions are read
-    except Exception:  # damaged or mismatched model files: OCR text, formula model off
+    except Exception:  # damaged or mismatched model files: formula model off, this page read again the default way
         if formula_reader() == "model":
             mathocr.broken()
+            try:
+                read_formulas(lines, grids, gray, ink, rgb, dpi)
+            except Exception:
+                log.exception("formula reading failed on a page")
         else:  # the detector or the reader without the model failed on this page: its OCR text
             log.exception("formula reading failed on a page")
     formula_pictures = sum(isinstance(w.math, FormulaPicture) for ln in lines for w in ln.words)
