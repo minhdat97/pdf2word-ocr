@@ -444,6 +444,7 @@ def _space(before: str, after: str) -> bool:
     return not (before[-1:].isdigit() or before[-1:] in ",.") or not after[:1].isdigit()
 
 
+_SLASHED = re.compile(r"[A-Za-z]+(?:/[A-Za-z]+)+")
 _MORE_UNITS = {"s", "h", "g", "l", "lit"}  # with mathregions.UNITS and mathocr.WORDS (read when used: the modules
 # import each other)
 
@@ -509,6 +510,8 @@ def _latex(page, segs: list[_Seg], base: float, xh: float) -> tuple[str, float] 
         if seg.role == "base":
             if prev == "}" and out[:1].isalpha() and not _unit(out):
                 return f"no unit: {out!r}"
+            if any(not _unit(t) for t in _SLASHED.findall(out)):
+                return f"no unit: {out!r}"  # "g/em" for "g/cm"
             if gap >= SPACE_XH * xh and _space(prev, out):
                 tex += "\\ "
             tex += out
@@ -589,6 +592,9 @@ def read_regions(regions: list, gray: np.ndarray, ink: np.ndarray, lines: list, 
                 why[i] = "readings differ: " + " | ".join(r if isinstance(r, str) else r[0] for r in readings)
                 continue
         tex, conf = first
+        if not _letters_seen(_free_letters(tex), region.ocr_text):
+            why[i] = f"letters not in OCR: {tex}"
+            continue
         right = max(page.union(seg.comps)[2] for seg in segs)
         kept = [w for w in region.words if w.cx < right]
         ocr_text = " ".join(w.text for w in kept) if len(kept) < len(region.words) else region.ocr_text
@@ -602,6 +608,15 @@ def read_regions(regions: list, gray: np.ndarray, ink: np.ndarray, lines: list, 
         else:
             why[i] = f"{reason}: {tex}"
     return out
+
+
+def _free_letters(tex: str) -> str:
+    """The letters of a reading no check of this reader vouches for: not a script's, not the letter a script is
+    put on (two readings agree on it), not the unit after a script (_unit). The page's OCR text must hold them
+    ("l g/em^{3}" for "1 g/cm^{3}" is refused: OCR read "1 g/cm")."""
+    tex = re.sub(r"\}(\\ )?[A-Za-zΩ/.()]+", "}", tex)  # a unit after a script
+    tex = re.sub(r"[A-Za-z](?=[_^]\{)", "", tex)  # the letter a script is put on
+    return re.sub(r"[_^]\{[^{}]*\}|\\[A-Za-z]+", "", tex)
 
 
 def _letters_seen(tex: str, ocr_text: str) -> bool:
