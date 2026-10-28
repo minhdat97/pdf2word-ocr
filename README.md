@@ -64,7 +64,11 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
 - **Mặc định, không cần mô hình** (`app/scriptocr.py`): số mũ và chỉ số dưới của số, đơn vị và chữ
   ("6,42.10⁻²¹ J.", "mol⁻¹", "g/cm³", "4v_O = 9v_H", "n₁") được đọc bằng Tesseract: hình học tách đoạn
   nâng lên/hạ xuống, Tesseract đọc lại (hai lần, chỉ chữ số, chữ Latinh và vài dấu) rồi từng ký tự được
-  đối chiếu với nét chữ; không chắc thì giữ chữ OCR. Phân số, căn thành ảnh trong dòng. Cần Tesseract
+  đối chiếu với nét chữ; không chắc thì giữ chữ OCR. Chữ trong chỉ số có thể là chữ số hay Đ/đ (Tesseract
+  đọc ở đây không có chữ Việt: R_Đ ra "R_O", U_Đ ra "U_b", F_đh ra "F_dh"; "1" mất chân ra "t") phải có trong
+  chữ OCR của trang, "D" không bao giờ nhận; chữ hoa/thường của chỉ số (x/X, v/V, y/Y…) theo chiều cao nét,
+  không rõ thì giữ chữ OCR; hai lần đọc khác nhau ở chữ số thì không lấy lần nào. Phân số, căn thành ảnh trong
+  dòng. Nhãn A.–D. Tesseract đọc sai hay bỏ sót ("c.9") được viết lại cả khi vùng không đọc. Cần Tesseract
   4.1 trở lên (danh sách ký tự có dấu cách, `hocr_char_boxes`): chạy `tests/test_scriptocr.py` trên máy
   chủ, phép thử in một trang rồi đọc lại. `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
 - **"Đọc kỹ"** (ô "Đọc kỹ công thức" của giao diện; tuỳ chọn `"careful": true` của tác vụ, xem Luồng API):
@@ -74,14 +78,21 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   lấy về `models/mfr/` ba file đã công bố và hai nửa của bộ giải mã (`cross_kv.onnx`: khoá/giá trị
   cross-attention của một vùng, tính một lần; `decoder_step.onnx`; tách bằng `scripts/split_mfr_decoder.py`,
   tải từ bản phát hành): kết quả như bộ giải mã nguyên khối, phần đọc công thức nhanh khoảng gấp đôi.
-  Thiếu một trong hai file thì dùng `decoder_model.onnx` (máy chủ chỉ có ba file cũ vẫn chạy; bỏ hai file
-  tách rồi restart là quay về bộ giải mã nguyên khối). Chậm (xem Máy chủ nhỏ) nên chỉ cho file có tối đa
+  Thiếu một trong hai file thì dùng `decoder_model.onnx` (máy chủ chỉ có ba file cũ vẫn chạy).
+  `P2W_MFR_SPLIT=0` (đặt trong drop-in systemd) quay về bộ giải mã nguyên khối dù có hai file tách; đừng
+  xoá hai file: `deploy.sh` thấy thiếu là tải lại. Chậm (xem Máy chủ nhỏ) nên chỉ cho file có tối đa
   `P2W_MFR_MAX_PAGES` (5) trang scan và mỗi lúc chỉ một lần chuyển "Đọc kỹ" (`P2W_CAREFUL_WORKERS`): lần
   khác chờ trong hàng đợi (trạng thái `queued`, giao diện ghi "Đang chờ đến lượt đọc kỹ…"), không giữ
-  luồng nào, lần chuyển thường xếp sau nó vẫn chạy. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và
+  luồng nào, lần chuyển thường xếp sau nó vẫn chạy; tối đa `P2W_CAREFUL_QUEUE` (3) lần chờ, thêm nữa thì bị
+  từ chối (`careful_busy`, giao diện: "Đang có nhiều người đọc kỹ…"), nên "Đọc kỹ" không lấp hàng đợi chung.
+  Lần chuyển "Đọc kỹ" không dùng mô hình (file quá số trang scan, không có trang scan) trả lượt ngay khi bắt
+  đầu. Chỉ trang scan được đọc bằng mô hình: ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô hình
+  không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
+  `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và
   máy chủ đọc kỹ được (có mô hình, không tắt, không hỏng); file quá số trang scan thì ô tắt kèm lý do; khi
   đọc kỹ dòng trạng thái ghi "mỗi trang scan khoảng 1–2 phút". Lần chuyển thường có phân số, căn giữ dạng
-  ảnh (file đọc kỹ được) thì ghi chú ghi số công thức kèm nút "chuyển lại, đọc kỹ". Qua API, file dài hơn,
+  ảnh (file đọc kỹ được) thì ghi chú ghi số công thức kèm nút "chuyển lại, đọc kỹ" (file Word vừa chuyển
+  vẫn tải được trong lúc chờ, cả khi lần đọc kỹ không xong). Qua API, file dài hơn,
   máy không có mô hình hay mô hình hỏng thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` /
   `formulas`).
 
@@ -96,7 +107,9 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
-`P2W_CAREFUL_WORKERS` (1: số lần chuyển "Đọc kỹ" chạy cùng lúc),
+`P2W_MFR_SPLIT` (`0`: bộ giải mã nguyên khối),
+`P2W_CAREFUL_WORKERS` (1: số lần chuyển "Đọc kỹ" chạy cùng lúc), `P2W_CAREFUL_QUEUE` (3: số lần "Đọc kỹ" chờ
+tối đa), `P2W_ABANDON_SECONDS` (600: việc chờ không ai hỏi chừng ấy giây bị bỏ),
 `P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
 
@@ -122,9 +135,11 @@ Trang "Đọc kỹ" dày nhất (~2 phút) còn xa mức 10 phút giao diện b�
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
-  127.0.0.1): 40 lần tải lên, 120 lần xử lý mỗi 10 phút. Hàng đợi tối đa 20 việc; mỗi file một
-  việc chạy cùng lúc, tối đa 6 lần. Tổng file lưu tối đa 4 GB. Trang dài hơn 3000pt bị từ chối;
-  trang hơn 20.000 nét vẽ giữ thành ảnh.
+  127.0.0.1): 40 lần tải lên, 120 lần xử lý mỗi 10 phút. Hàng đợi tối đa 20 việc, trong đó "Đọc kỹ"
+  tối đa 1 chạy + 3 chờ; mỗi file một việc chạy cùng lúc, tối đa 6 lần. Trang đóng hay tải lại thì việc
+  của nó bị huỷ (đang chờ: bỏ ngay; đang chạy: dừng ở trang sau); việc đang chờ mà 10 phút không ai hỏi
+  bị bỏ khi tới lượt. Tổng file lưu tối đa 4 GB; file của việc chưa xong không bị xoá khi quá 1 giờ (xoá ở
+  lần dọn sau khi việc xong). Trang dài hơn 3000pt bị từ chối; trang hơn 20.000 nét vẽ giữ thành ảnh.
 - Header: CSP chỉ cho script/CSS của chính trang (`static/app.js`, `app.css`), cấm nhúng iframe,
   nosniff, HSTS; `/v1/*` có `Cache-Control: no-store` (Cloudflare mặc định lưu đệm .pdf/.docx).
   Không có `/docs`, `/openapi.json`. File lưu với quyền 600.
@@ -134,13 +149,15 @@ Bảo vệ khi chạy công khai:
 
 Cập nhật bản chạy trên máy chủ (dịch vụ systemd `pdf2word`): `./scripts/deploy.sh`. Script `git pull` rồi
 so với bản đã triển khai lần trước (ghi trong `.git/pdf2word-deployed` sau mỗi lần xong; chưa có thì coi
-như mọi thứ đổi), nên `git pull` tay trước đó không làm sót gì: cài lại thư viện khi `requirements.txt`
+như mọi thứ đổi) và với bản có trên máy trước khi pull, nên `git pull` tay trước đó hay quay lại bản cũ
+bằng tay (`git reset --hard <commit>` rồi restart) không làm sót gì: cài lại thư viện khi `requirements.txt`
 đổi, tải mô hình khi `scripts/models.json` đổi hoặc `fetch_models.py --check` thấy thiếu/hỏng (tải hỏng
 thì lần chạy sau tải tiếp), cài lại dịch vụ khi bản đã cài khác `deploy/pdf2word.service`, restart khi
 `app/`, mô hình hay dịch vụ đổi (giao diện `static/` đọc thẳng từ ổ đĩa). Dịch vụ không lên thì bản đó
 không được ghi, lần chạy sau làm lại. Cuối cùng nhắc một dòng nếu một drop-in systemd
-(`/etc/systemd/system/pdf2word.service.d/*.conf`) đặt `P2W_VIETOCR=0`, `P2W_MFR=0` hay `P2W_FORMULAS`,
-kèm lệnh xoá. `--restart` để restart dù không có gì đổi.
+(`/etc/systemd/system/pdf2word.service.d/*.conf`) đặt `P2W_VIETOCR=0`, `P2W_MFR=0`, `P2W_MFR_SPLIT=0`
+hay `P2W_FORMULAS=model|off`: lệnh xoá file khi file không đặt gì khác, không thì lệnh sửa file
+(`sudoedit`) để bỏ các biến đó. `--restart` để restart dù không có gì đổi.
 
 ## Luồng API
 
@@ -151,6 +168,7 @@ kèm lệnh xoá. `--restart` để restart dù không có gì đổi.
 | Phân tích | `POST /v1/tasks` `{"tool":"analyse-document"}` |
 | Convert | `POST /v1/tasks` `{"tool":"pdf-to-word","options":{"ocr_type":"ocr","languages":["vie"]}}` (thêm `"careful":true` để "Đọc kỹ") |
 | Poll | `GET /v1/tasks/<task_id>` → `status`, `progress`, `result.output_files`, `result.error_fe` |
+| Huỷ | `POST /v1/tasks/<task_id>/cancel` (trang gửi khi đóng/tải lại): việc đang chờ bỏ ngay, đang chạy dừng ở trang sau |
 | Tải về | `GET /v1/files/<token>?name=...` |
 
 Kết quả `analyse-document` có thêm `careful`: `{"available": true, "max_scan_pages": 5}` (máy chủ
@@ -162,9 +180,12 @@ Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý
 trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, nên file scan dài
 hay "Đọc kỹ" vẫn nhận được kết quả.
 
-`task_id` do client sinh (32 ký tự hex). Mã lỗi `error_fe` cho giao diện: `password`,
-`corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`,
-`internal_server_error`. Mở trang với `?debug` để thấy mục "Nhật ký API" (toàn bộ request/response).
+`task_id` do client sinh (32 ký tự hex). Việc đang chờ mà `P2W_ABANDON_SECONDS` (10 phút) không ai
+hỏi trạng thái thì bị bỏ khi tới lượt. `POST /v1/tasks` trả 503 `busy` (hàng đợi đầy), 503 `careful_busy`
+(đã có 3 lần "Đọc kỹ" chờ), 429 `too_many_tasks`/`rate_limited`. Mã lỗi `error_fe` cho giao diện:
+`password`, `corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`, `input_tokens` (file
+không còn), `cancelled`, `abandoned`, `internal_server_error`. Mở trang với `?debug` để thấy mục "Nhật ký
+API" (toàn bộ request/response).
 
 ## Chế độ (`ocr_type`)
 
@@ -497,7 +518,10 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
 - Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
   đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
   dùng font Symbol) vẫn là chữ.
-- Đọc công thức mặc định (không mô hình): phân số, căn, gạch trên luôn thành ảnh; vùng có chữ Tesseract
+- Đọc công thức mặc định (không mô hình): chỉ số có chữ Đ/đ (R_Đ, F_đh), chỉ số chữ y/p hay chữ x, v, s…
+  đứng một mình mà chiều cao không rõ hoa/thường (nét cao 0,70–0,84 x-height của dòng), chữ trong chỉ số
+  có thể là chữ số (O, t, B…) mà Tesseract đọc dòng không thấy thì giữ chữ OCR; phân số, căn, gạch trên
+  luôn thành ảnh; vùng có chữ Tesseract
   đọc thêm ký tự ("9v_O"), "/" không đọc được ("g/m³"), Δ dính chữ sau nó ("Δx = x_A + x_B") hay nét
   số mũ vỡ (scan 200 dpi) thì giữ chữ OCR; dấu phẩy thập phân mất trong phương án không có số mũ
   ("1,33") không lấy lại được.
@@ -536,8 +560,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   lộn xộn).
 - "Đọc kỹ" chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang đề nhiều công thức): chỉ cho file tối đa
   `P2W_MFR_MAX_PAGES` (5) trang scan, mỗi lúc một lần – lần sau có thể chờ tới ~9 phút sau một file 5 trang
-  dày; quá `P2W_VIETOCR_MAX_PAGES` (30) trang scan thì bỏ cả VietOCR; máy chủ chạy hết việc dù người dùng đã
-  đóng trang; chưa giới hạn thời gian mỗi việc.
+  dày; quá `P2W_VIETOCR_MAX_PAGES` (30) trang scan thì bỏ cả VietOCR; trang bị đóng mà không kịp báo (máy
+  tắt, mất mạng) thì việc đang chạy vẫn chạy hết, việc đang chờ chỉ bị bỏ sau 10 phút; chưa giới hạn thời
+  gian mỗi việc. Lượt "Đọc kỹ" chỉ một mỗi lúc cho mọi người, chưa chia theo IP.
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 
