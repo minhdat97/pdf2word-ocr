@@ -80,3 +80,7 @@ MFR_SKIP_KINDS = frozenset(k.strip() for k in os.environ.get("P2W_MFR_SKIP_KINDS
 # fractions/radicals/bars over letters, words with superscripts or subscripts), "off", or another
 # detector registered in mathregions.DETECTORS.
 MATH_DETECT = os.environ.get("P2W_MATH_DETECT", "rules").strip().lower() or "rules"
+# How formula regions are read: "model" (the formula model where it is installed and not skipped for the file; a
+# long scan that skips it gets "scripts"), "scripts" (app/scriptocr.py: superscripts and subscripts of numbers
+# and units read by Tesseract, no model; fractions and roots kept as pictures), "off".
+FORMULAS = os.environ.get("P2W_FORMULAS", "model").strip().lower() or "model"

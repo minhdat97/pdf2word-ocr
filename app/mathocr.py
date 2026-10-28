@@ -271,11 +271,16 @@ _reader_lock = threading.Lock()
 _wanted: ContextVar[bool] = ContextVar("formulas_wanted", default=True)
 
 
-def available() -> bool:
-    if not (MFR_ENABLED and _wanted.get()):
+def installed() -> bool:
+    """The model's files are there and it is not turned off (P2W_MFR=0) – whether or not this conversion uses it."""
+    if not MFR_ENABLED:
         return False
     have = {f for f in MODEL_FILES + SPLIT_FILES if (MFR_DIR / f).is_file()}
     return set(MODEL_FILES) <= have or {"encoder_model.onnx", "tokenizer.json", *SPLIT_FILES} <= have
+
+
+def available() -> bool:
+    return _wanted.get() and installed()
 
 
 @contextmanager

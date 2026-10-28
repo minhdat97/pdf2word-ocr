@@ -88,6 +88,7 @@ class MathRegion:
     line: object = None  # the app.ocr.Line the result is written into
     label: Label | None = None  # an answer label to write in front of the result (see above)
     case_from_ink: bool = False  # ocr_text's first letter got its case from the glyph's height (_case_by_height)
+    page: object = field(default=None, repr=False, compare=False)  # the rules detector's _Page (app/scriptocr.py)
 
 
 Detector = Callable[[list, np.ndarray, np.ndarray, np.ndarray, int], list[MathRegion]]
@@ -957,6 +958,7 @@ def rules(lines: list, gray: np.ndarray, ink: np.ndarray, rgb: np.ndarray | None
     inline = inline_regions(page, options + tall)
     for region in options + tall + inline:
         _case_by_height(page, region)
+        region.page = page
     return options + tall + inline
 
 

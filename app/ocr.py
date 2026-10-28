@@ -23,13 +23,13 @@ import cv2
 import numpy as np
 import pymupdf
 
-from . import mathocr, mathregions, vietocr
+from . import mathocr, mathregions, scriptocr, vietocr
 from .errors import TaskError
 from .layout import alignment, cell_align, looks_like_link
 from .model import TAB, Cell, PageLayout, Paragraph, Picture, Run, Table
 from .ocr_fix import fix_lines, fix_table
 from .omml import latex_to_omml
-from .settings import MFR_SKIP_KINDS, OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
+from .settings import FORMULAS, MFR_SKIP_KINDS, OCR_DPI, OCR_MAX_SIDE_PX, TESSDATA_DIR, TESSERACT_CMD
 
 # Tesseract's per-line metrics relative to the font size in pixels, measured
 # on samples/ (20pt title, 12pt body, 11pt table): x_size ~0.91em and
@@ -1137,11 +1137,22 @@ def _formula_picture(region, rgb: np.ndarray, gray: np.ndarray, s: float) -> For
     return FormulaPicture(_png(crop), (x1 - x0) * s, (y1 - y0) * s, depth)
 
 
+def formula_reader() -> str:
+    """How this conversion reads formula regions: "model", "scripts" or "off" (settings.FORMULAS). "model" becomes
+    "scripts" in a conversion that skips the model (a long scan, app/convert.py), "off" without the model."""
+    if FORMULAS in ("scripts", "off"):
+        return FORMULAS
+    if mathocr.available():
+        return "model"
+    return "scripts" if mathocr.installed() else "off"
+
+
 def read_formulas(
     lines: list[Line], grids: list[_Grid], gray: np.ndarray, ink: np.ndarray, rgb: np.ndarray, dpi: int,
 ) -> int:
     """Read the formula regions a detector finds (app/mathregions.py) with the formula model
-    (app/mathocr.py). Where the model's reading is trusted, the region's OCR words and every
+    (app/mathocr.py), or with Tesseract for superscripts and subscripts only (app/scriptocr.py, formula_reader()).
+    Where the reading is trusted, the region's OCR words and every
     other word centred in its box (not an answer label) give way to one placeholder word on the
     region's line holding the reading; an unread "tall" region becomes a placeholder holding its
     picture; other regions keep their OCR words. A region carrying an answer label OCR garbled or
@@ -1149,8 +1160,9 @@ def read_formulas(
     so does an equation read with a label in front ("D.\\frac{3}{2}"): the label is written as text
     before it, not inside the Word equation.
     Regions in ruled tables are skipped (table cells are plain text). Returns the number of
-    placeholders. Nothing happens without the model."""
-    if not lines or not mathocr.available():
+    placeholders. Nothing happens when formula reading is off."""
+    how = formula_reader() if lines else "off"
+    if how == "off":
         return 0
     def in_table(box) -> bool:
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
@@ -1158,15 +1170,20 @@ def read_formulas(
 
     found = mathregions.find(lines, gray, ink, rgb, dpi)
     regions = [r for r in found if any(ln is r.line for ln in lines) and not in_table(r.box)]
-    reader = mathocr.get_reader() if regions else None
-    if reader is None:
+    if not regions:
         return 0
-    read = [r for r in regions if r.kind not in MFR_SKIP_KINDS]  # kinds not read: no reading (a tall one: picture)
-    got = dict(zip(map(id, read), mathocr.read_regions(
-        gray, [r.box for r in read], [r.ocr_text for r in read], [r.em_px for r in read], reader,
-        [r.case_from_ink for r in read],
-    )))
-    decisions = [got.get(id(r)) for r in regions]
+    if how == "scripts":
+        decisions = scriptocr.read_regions(regions, gray, ink, lines, dpi)
+    else:
+        reader = mathocr.get_reader()
+        if reader is None:
+            return 0
+        read = [r for r in regions if r.kind not in MFR_SKIP_KINDS]  # kinds not read: no reading (a tall one: picture)
+        got = dict(zip(map(id, read), mathocr.read_regions(
+            gray, [r.box for r in read], [r.ocr_text for r in read], [r.em_px for r in read], reader,
+            [r.case_from_ink for r in read],
+        )))
+        decisions = [got.get(id(r)) for r in regions]
     s = 72 / dpi
     placed = 0
     for region, decision in zip(regions, decisions, strict=True):
