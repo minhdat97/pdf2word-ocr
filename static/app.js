@@ -87,6 +87,9 @@ window.addEventListener("pagehide", (e) => {
 // Bỏ cuộc khi 10 phút không có tin mới: thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, file
 // scan dài hay "Đọc kỹ" (trang dày 1–2 phút trên máy chủ) không bị dừng giữa chừng khi các trang vẫn đang xong dần.
 const PATIENCE_MS = 10 * 60 * 1000;
+// Mạng chập chờn (Wi-Fi trường, một lần hỏi bị ngắt hay Cloudflare trả trang lỗi): hỏi lại, chỉ báo lỗi mạng khi
+// đã hỏng liền 30 giây – "Đọc kỹ" vài phút là vài trăm lần hỏi, một lần hỏng không làm mất lượt chuyển.
+const NETWORK_RETRY_MS = 30 * 1000;
 
 // label: chữ của dòng trạng thái theo trang ("Đang chuyển"); hint: thêm sau số trang; waiting: lúc còn chờ lượt.
 async function runTask(tool, options, label, hint = "", waiting = "Đang chờ đến lượt…") {
@@ -96,7 +99,8 @@ async function runTask(tool, options, label, hint = "", waiting = "Đang chờ �
   try {
     return await pollTask(task_id, label, hint, waiting);
   } catch (err) {
-    if (err.code === "timeout") navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);  // trang thôi chờ: máy chủ cũng thôi
+    // trang thôi chờ: máy chủ cũng thôi
+    if (err.code === "timeout" || err.code === "network") navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);
     throw err;
   } finally {
     currentTask = null;
@@ -107,15 +111,19 @@ async function pollTask(task_id, label, hint, waiting) {
   let deadline = Date.now() + PATIENCE_MS;
   let seen = "";
   let logged = false;
+  let failingSince = 0;
   while (true) {
     if (Date.now() > deadline) throw Object.assign(new Error("timeout"), { code: "timeout" });
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, failingSince ? 2000 : 700));
     let res;
     try {
       res = await fetch(`/v1/tasks/${task_id}`).then((r) => r.json());
     } catch {
-      throw Object.assign(new Error("network"), { code: "network" });
+      failingSince ||= Date.now();
+      if (Date.now() - failingSince > NETWORK_RETRY_MS) throw Object.assign(new Error("network"), { code: "network" });
+      continue;
     }
+    failingSince = 0;
     const data = res.data;
     if (!data) throw new Error(res.error || "Không lấy được trạng thái");
     const { current, total } = data.progress;
