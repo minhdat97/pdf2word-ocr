@@ -209,6 +209,12 @@ class RefusalTest(unittest.TestCase):
         ln.glyphs.append(Glyph("|", bar.x1 - 1, bar.y - 4, bar.x1, bar.y + 4, bar.y + 1.5, S, font="Cambria Math"))
         self.assertPicture(ln.glyphs, [bar])
 
+    def test_set_symbols_and_factorial(self):
+        ln = Line().put("𝑥").put("∈", gap=1).put("ℝ", gap=1).put("∖").put("{").put("1").put("}")
+        self.assertEqual(latex(build(ln.glyphs, [], [])), [r"x\in\mathbb{R}\setminus\{1\}"])
+        self.assertEqual(latex(build(Line().put("𝑛").put("!").glyphs, [], [])), ["n!"])
+        self.assertIsNone(build(Line().put("𝑛").put("!", gap=3).glyphs, [], []))  # "!" set apart: not a factorial
+
     def test_text_a_docx_cannot_hold(self):
         ln = Line().put("\uffff", font="Times New Roman").put("𝑥", gap=2.3).put("=", gap=2).put("1")
         self.assertPicture(ln.glyphs)

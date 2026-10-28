@@ -44,15 +44,19 @@ OPERATORS = {
     "←": r"\leftarrow", "↔": r"\leftrightarrow", "⇒": r"\Rightarrow", "⇐": r"\Leftarrow",
     "⇔": r"\Leftrightarrow", "⟹": r"\Longrightarrow", "∈": r"\in", "∉": r"\notin", "⊂": r"\subset",
     "⊃": r"\supset", "∪": r"\cup", "∩": r"\cap", "⊥": r"\perp", "∥": r"\parallel", "∗": r"\ast",
+    "∖": r"\setminus", "⋮": r"\vdots", "⊆": r"\subseteq", "⊇": r"\supseteq",
 }
-# ("!" and "?" are left out: in math fonts they are more often a glyph code read as text than punctuation)
+# ("?" is left out, and "!" is read only as a factorial right after a letter, digit or ")": a glyph code
+# read as text is more often "!" than punctuation is)
 PUNCT = {",": ",", ".": ".", ";": ";", ":": ":", "/": "/"}
 OPENERS = {"(": "(", "[": "[", "{": r"\{"}
 CLOSERS = {")": ")", "]": "]", "}": r"\}"}
 # ∆ (U+2206) is kept as it is: Word sets it upright, \Delta (U+0394) italic. Upright Greek letters (Ω of
 # ohms, μ of micro) are \mathrm (_atom).
 SYMBOLS = {
-    "∆": "∆", "∞": r"\infty", "∂": r"\partial", "∇": r"\nabla", "∠": r"\angle", "°": "°", "∘": r"\circ", "′": "'", "″": "''", "%": r"\%",
+    "∆": "∆", "∞": r"\infty", "∂": r"\partial", "∇": r"\nabla", "∅": r"\emptyset", "∀": r"\forall",
+    "∃": r"\exists", "ℕ": r"\mathbb{N}", "ℤ": r"\mathbb{Z}", "ℚ": r"\mathbb{Q}", "ℝ": r"\mathbb{R}",
+    "ℂ": r"\mathbb{C}", "!": "!", "∠": r"\angle", "°": "°", "∘": r"\circ", "′": "'", "″": "''", "%": r"\%",
     "∎": "∎", "■": "∎", "|": "|", "‖": r"\|", "ℏ": r"\hbar", "ℓ": r"\ell", "…": r"\ldots", "∴": r"\therefore",
 }
 # Greek letters by their character (ε is \varepsilon, ϵ \epsilon, φ \varphi, ϕ \phi); capitals Word
@@ -615,6 +619,12 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
         raise Unsure("unbalanced brackets")  # one row of a system or a piecewise function: "\{x-y=0"
     if any(not g.math_font for g in body):
         raise Unsure("text font inside the formula")
+    for g in body:
+        if g.c == "!" and not any(
+            p.x1 - 0.1 * size <= g.x0 <= p.x1 + 0.1 * size and abs(p.oy - g.oy) <= ON_BASE * size
+            and (p.c in ")]" or _is_math_alnum(p.c) or p.c.isalnum()) for p in body if p is not g
+        ):
+            raise Unsure("'!' not a factorial")
     colors = {g.color for g in body}
     if len(colors) > 1:
         raise Unsure("several colours")

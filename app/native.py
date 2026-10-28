@@ -22,6 +22,7 @@ is kept rather than re-recognised.
 """
 
 import re
+import zlib
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import cache
@@ -82,7 +83,7 @@ def _math_alnum(c: str) -> bool:
 
 
 CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
-HEX = re.compile(r"<([0-9A-Fa-f\s]*)>")  # cannot run past a "<": linear on any line
+CMAP_TOKEN = re.compile(r"<[0-9A-Fa-f\s]*>|\[|\]")  # a hex string cannot run past a "<": linear
 CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is not read (its formulas stay pictures)
 FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
 FORMULA_GLYPHS_MAX = 300  # glyphs and strokes of one formula read as an equation (Word's largest here: 73)
@@ -105,7 +106,8 @@ def _font_key(name: str) -> str:
 def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | None:
     """Text a one-byte math font may give for codes its ToUnicode map leaves out: the raw code, or
     the code read through a standard encoding (an exporter can write an empty map: R/T of
-    "pV = R/T" then reads "!\"", and ")" may stand for any glyph). None: a map too large to read."""
+    "pV = R/T" then reads "!\"", and ")" may stand for any glyph). None: a map too large, packed
+    otherwise than by Flate, or not read as written (refused once per file)."""
     tu_kind, tu = doc.xref_get_key(xref, "ToUnicode")
     enc_kind, enc = doc.xref_get_key(xref, "Encoding")
     first, last = (doc.xref_get_key(xref, k) for k in ("FirstChar", "LastChar"))
@@ -113,33 +115,53 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
         lo, hi = max(int(first[1]), 0), min(int(last[1]), 255)
     except ValueError:
         lo, hi = 0, 255
+    if lo > hi:
+        lo, hi = 0, 255
     cache = doc.__dict__.setdefault("_p2w_maps", {})  # per file, by map: fonts often share one
     key = (tu if tu_kind == "xref" else None, lo, hi, enc_kind, enc if enc_kind == "name" else "")
     if key in cache:
         return cache[key]
+    cache[key] = None  # a map that cannot be read is refused once per file
     mapped: set[int] = set()
     if tu_kind == "xref":
         ref = int(tu.split()[0])
         raw = doc.xref_stream_raw(ref)
         if raw is None or len(raw) > CMAP_MAX:
             return None
-        data = doc.xref_stream(ref)
-        if data is None or len(data) > 4 * CMAP_MAX:
+        filt = doc.xref_get_key(ref, "Filter")[1].strip("[] ")
+        if filt in ("null", ""):
+            data = raw
+        elif filt == "/FlateDecode" and doc.xref_get_key(ref, "DecodeParms")[0] == "null":
+            try:  # inflated within bounds: a few bytes can stand for megabytes
+                data = zlib.decompressobj().decompress(raw, 4 * CMAP_MAX + 1)
+            except zlib.error:
+                return None
+        else:
+            return None
+        if len(data) > 4 * CMAP_MAX:
             return None
         cmap, pos = data.decode("latin-1"), 0
         while m := CMAP_BEGIN.search(cmap, pos):  # one pass: an unclosed block ends the map
             stop = cmap.find("end" + m.group(1), m.end())
             if stop < 0:
                 break
-            for line in cmap[m.end():stop].splitlines():
-                codes = [c.replace(" ", "") for c in HEX.findall(line)]  # "<21><d835 dc5d>"
-                try:
-                    if m.group(1) == "bfchar" and len(codes) >= 2:
-                        mapped.add(int(codes[0], 16))
-                    elif m.group(1) == "bfrange" and len(codes) >= 2:
-                        mapped.update(range(max(int(codes[0], 16), 0), min(int(codes[1], 16), 255) + 1))
-                except ValueError:
-                    continue
+            tokens = CMAP_TOKEN.findall(cmap, m.end(), stop)
+            n = 0
+            try:
+                while n < len(tokens):  # bfchar: <src> <dst>; bfrange: <lo> <hi> <dst> or <lo> <hi> [ <dst> ... ]
+                    if m.group(1) == "bfchar":
+                        mapped.add(int(tokens[n][1:-1].replace(" ", ""), 16))
+                        n += 2
+                    else:
+                        first_code, last_code = (int(t[1:-1].replace(" ", ""), 16) for t in tokens[n:n + 2])
+                        mapped.update(range(max(first_code, 0), min(last_code, 255) + 1))
+                        n += 2
+                        if tokens[n] == "[":
+                            n = tokens.index("]", n) + 1
+                        else:
+                            n += 1
+            except (ValueError, IndexError):
+                return None  # a map not read as written: its glyphs are not trusted
             pos = stop
     elif enc_kind == "name" and enc in STANDARD_ENCODINGS:
         cache[key] = frozenset()  # a standard encoding names every glyph
@@ -410,7 +432,19 @@ def _fraction_parts(bar: pymupdf.Rect, marks: list[tuple]) -> list[int]:
                 return []
             under.append(node)
     over, under = [k for k in over if k is not None], [k for k in under if k is not None]
-    return over + under if over and under else []
+    if not (over and under):
+        return []
+    # a part on the baseline of text beside the bar belongs to that text line (a lone glyph of the line above
+    # an overline "\overline{abc}"): a fraction's parts sit off the baseline of the line around them
+    parts = set(over + under)
+    for rect, size, c, node in marks:
+        if node in parts:
+            oy = c["origin"][1]
+            for r2, _s2, c2, n2 in marks:
+                if n2 is None and abs(c2["origin"][1] - oy) <= 0.1 * size and (r2.x1 < bar.x0 - 1 or r2.x0 > bar.x1 + 1) \
+                        and max(r2.x0 - rect.x1, rect.x0 - r2.x1) <= 1.5 * size:
+                    return []
+    return over + under
 
 
 def _split_lines(members: list[int], nodes: list[list], fractions: list[tuple[int, list[int]]]) -> list[list[int]]:
@@ -745,7 +779,7 @@ class _Extractor:
         if span.get("formula") is not None:
             f = span["formula"]
             if f["pieces"]:
-                return self._equation_runs(f, main)
+                return self._equation_runs(f, main, baseline)
             box, image = self._formula_picture(f)
             f["box"] = box
             run = Run(
@@ -1224,7 +1258,7 @@ class _Extractor:
             paired[ch] = {id(c): r for c, r in zip(mine, drawn)} if len(drawn) == len(mine) else None
         return paired[ch] and paired[ch].get(id(char))
 
-    def _equation_runs(self, f: dict, main: float) -> list[Run]:
+    def _equation_runs(self, f: dict, main: float, baseline: float) -> list[Run]:
         """Runs of a formula rebuilt as an equation: the equation and any label set before or
         after it ("b)", a trailing dot in the text font)."""
         runs = []
@@ -1240,6 +1274,8 @@ class _Extractor:
                 run = Run(text=piece.text, size=_half(piece.size), bold=piece.bold, italic=piece.italic,
                           color=piece.color, font=piece.font)
             runs.append(run)
+        # kept for _settle_equations, which may still turn it into its picture (as _runs would have)
+        f["piece_runs"], f["line_main"], f["line_baseline"] = runs, main, baseline
         return runs
 
     def _close_formulas(self, found: list[dict], marks: list[tuple]) -> list[dict]:
@@ -2160,11 +2196,14 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
                 r.display = True
             elif f.get("frac_only") and r.size <= nativemath.SCRIPT * font_pt:
                 r.size = _half(font_pt)
-            else:
+            else:  # the picture, as _runs makes it: it shows the label and trailing text too
                 box, image = ex._formula_picture(f)
                 r.math = r.math_text = None
-                r.image, r.image_w, r.image_h, r.image_depth = image, box.width, box.height, box.y1 - f["baseline"]
+                r.size = _half(f["line_main"])
+                r.image, r.image_w, r.image_h, r.image_depth = image, box.width, box.height, box.y1 - f["line_baseline"]
                 f["box"] = box
+                others = {id(x) for x in f["piece_runs"] if x is not r}
+                runs[:] = [x for x in runs if id(x) not in others]
 
 
 def native_page(

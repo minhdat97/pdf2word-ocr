@@ -227,16 +227,25 @@ def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
 
 
 def _keep_inline(p, size: float) -> None:
-    """Word sets an equation that is alone in its paragraph as a display equation: centred, with
-    full-size fractions. A space after it keeps it in the line, as the PDF has it."""
-    el = p._p
-    if el.find(qn("m:oMath")) is None or el.find(qn("w:fldSimple")) is not None:
-        return
-    for r in el.iterchildren(qn("w:r")):
-        t = r.find(qn("w:t"))
-        if (t is not None and t.text) or r.find(qn("w:tab")) is not None or r.find(qn("w:drawing")) is not None:
-            return
-    p.add_run(" ").font.size = Pt(size)
+    """Word sets an equation that fills a paragraph, or a line of it between line breaks, as a display
+    equation: centred, with full-size fractions. A space after it keeps it in the line, as the PDF has it."""
+    segment: list = []
+    for child in [*p._p, None]:
+        breaks = child is not None and child.tag == qn("w:r") and (
+            child.find(qn("w:br")) is not None or child.find(qn("w:cr")) is not None)
+        if child is not None and not breaks:
+            segment.append(child)
+            continue
+        maths = [el for el in segment if el.tag == qn("m:oMath")]
+        filled = any(
+            (el.tag == qn("w:r") and ((el.find(qn("w:t")) is not None and el.find(qn("w:t")).text)
+                                      or el.find(qn("w:tab")) is not None or el.find(qn("w:drawing")) is not None))
+            or el.tag == qn("w:fldSimple") for el in segment)
+        if maths and not filled:
+            space = p.add_run(" ")
+            space.font.size = Pt(size)
+            maths[-1].addnext(space._r)
+        segment = []
 
 
 def _fill_paragraph(
