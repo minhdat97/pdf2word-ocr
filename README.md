@@ -39,6 +39,18 @@ chạy tự thấy mô hình mới chép vào, không cần restart; mô hình h
 tắt tới lần restart sau, trang vẫn chuyển bằng chữ Tesseract. Không có mô hình (hoặc
 `P2W_VIETOCR=0`) thì công cụ chạy như trước, chỉ Tesseract.
 
+VietOCR nhẹ hơn cho máy chủ nhỏ (mặc định vẫn như trên, bật từng cách bằng biến môi trường):
+- `P2W_VIETOCR_WORDS=unsure`: chỉ đọc lại từ Tesseract chưa chắc (độ tin dưới 92) và từ có chữ
+  â ă ê ô không dấu thanh hay dấu huyền (Tesseract chắc mà vẫn hay sót dấu ở đó: "chuyên" thay
+  "chuyển", "thăng" thay "thẳng"), khoảng 30 % số từ. Trên 30 trang scan thử, số từ đúng không kém
+  đọc lại mọi từ (từ chắc khác gần như không bao giờ được VietOCR sửa đúng).
+- Bản int8: `scripts/quantize_vietocr.py models/vietocr models/vietocr-int8 <file scan>.pdf ...`
+  (cần thêm gói `onnx`, ~6 GB RAM) đổi các lớp tích chập của bộ mã hoá sang int8, hiệu chỉnh trên
+  chữ của các trang scan đưa vào; chép thư mục lên máy chủ, dùng bằng
+  `P2W_VIETOCR_DIR=models/vietocr-int8`. Trên CPU ARM của Mac (một luồng, không KleidiAI) VietOCR
+  nhanh khoảng 2,3 lần, 2 % số từ đọc khác, số từ đúng như cũ; tốc độ trên máy chủ phụ thuộc lệnh
+  int8 của CPU, cần đo trên máy chủ.
+
 **Đọc công thức** (nên có cho đề Toán/Lí scan): mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX
 ~120 MB, chạy bằng onnxruntime) đọc vùng công thức của trang OCR thành LaTeX. Kết quả tin được
 thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới ("6,42.10⁻²¹ J."),
@@ -53,6 +65,7 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
 `P2W_MAX_PENDING` (20), `P2W_RATE_UPLOADS` (40), `P2W_RATE_TASKS` (120), `TESSERACT_CMD`,
 `P2W_VIETOCR` (`0` để tắt), `P2W_VIETOCR_DIR` (`models/vietocr`), `P2W_VIETOCR_MAX_PAGES` (30),
+`P2W_VIETOCR_WORDS` (`all` mặc định, `unsure`),
 `P2W_MFR` (`0` để tắt đọc công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (10),
 `P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
@@ -230,6 +243,8 @@ tắt.
      ("chuyển" → "ố chuyên", "8m" → "8 m về" khi khung "8m" chồng lên "về"), thì giữ chữ Tesseract;
      không có từ nào ở phía đó thì đó là nét trong khung Tesseract bỏ sót ("B." → "B. v"), vẫn lấy;
      tách chữ dính ("B.343m/s." → "B. 343 m/s.") cũng lấy.
+     Với `P2W_VIETOCR_WORDS=unsure` chỉ từ Tesseract tin <92 hay có â ă ê ô không dấu/dấu huyền
+     được đọc lại (`vietocr.unsure`); từ khác giữ chữ Tesseract.
      Sửa lỗi theo cấu trúc đề (`app/ocr_fix.py`), chỉ chỗ cấu trúc tự quyết được, không chọn giữa
      hai từ có thật ("chuyên"/"chuyển"):
      - nhãn phương án dính chữ "A.0K." → "A. 0K.", ".." → ".";

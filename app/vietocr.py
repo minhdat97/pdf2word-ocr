@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from .ocr_fix import _TONES, _toneless
-from .settings import VIETOCR_DIR, VIETOCR_ENABLED, VIETOCR_THREADS
+from .settings import VIETOCR_DIR, VIETOCR_ENABLED, VIETOCR_THREADS, VIETOCR_WORDS
 
 log = logging.getLogger("pdf2word.vietocr")
 
@@ -362,6 +362,47 @@ def choose(tess: str, conf: float, vocr: str, prob: float, sides: tuple[bool, bo
     return _case_of(tess, vocr) if conf >= CASE_CONF else vocr
 
 
+# --- which words to re-read ------------------------------------------------------
+
+# Where Tesseract is sure of a word (TESS_SURE), choose() takes only VietOCR's tone marks. On 30 scanned pages those
+# were right almost only on a letter with a hat or breve (â ă ê ô) that Tesseract read with no tone mark or a grave
+# accent – "chuyên"/"chuyền" for "chuyển", "thăng" for "thẳng", "môi" for "mỗi", "khôi" for "khối": 98 of the 100
+# words corrected there (4 changed wrongly); the other sure words, 70 % of all words, gave 2 corrections and 5 wrong
+# changes.
+_HAT = {"\u0302", "\u0306"}  # combining circumflex (â ê ô), breve (ă)
+_GRAVE = "\u0300"
+
+
+def _bare_hat(text: str) -> bool:
+    """A letter â ă ê ô (any case) with no tone mark or a grave accent ("ê", "ầ"; not "ế", "ậ")."""
+    for ch in text:
+        d = unicodedata.normalize("NFD", ch)
+        if len(d) > 1 and d[1] in _HAT and (len(d) == 2 or d[2:] == _GRAVE):
+            return True
+    return False
+
+
+def unsure(wd) -> bool:
+    """Whether VietOCR's reading may improve Tesseract's word: Tesseract was not sure of it, or it has a letter
+    whose tone mark Tesseract often misses (_bare_hat). About 30 % of the words of a scanned page."""
+    return wd.conf < TESS_SURE or _bare_hat(wd.text)
+
+
+# Words re-read by the conversion running in this thread ("all" / "unsure"; None: VIETOCR_WORDS).
+_words: ContextVar[str | None] = ContextVar("vietocr_words", default=None)
+
+
+@contextmanager
+def words_mode(mode: str | None) -> Iterator[None]:
+    """VietOCR re-reads every word ("all") or only unsure() ones ("unsure") in the conversion running in this
+    thread while the block runs; None keeps the setting (P2W_VIETOCR_WORDS)."""
+    token = _words.set(mode)
+    try:
+        yield
+    finally:
+        _words.reset(token)
+
+
 def word_crops(lines: list, gray: np.ndarray) -> list[np.ndarray]:
     """One crop per word: the word's columns, the line's rows, padded by a quarter of the line height."""
     h, w = gray.shape[:2]
@@ -389,10 +430,12 @@ def word_sides(lines: list) -> list[tuple[bool, bool]]:
 
 def refine_words(lines: list, gray: np.ndarray, reader: VietOCR) -> int:
     """Re-read Tesseract's words (app.ocr Line/Word, before fix_lines) with VietOCR and keep
-    the better reading of each. Returns how many words changed."""
+    the better reading of each; with words_mode("unsure") (or P2W_VIETOCR_WORDS=unsure) only unsure() words
+    are read. Returns how many words changed."""
     words = [wd for ln in lines for wd in ln.words]
     crops = word_crops(lines, gray)
-    todo = [i for i, c in enumerate(crops) if c.shape[0] >= 2 and c.shape[1] >= 2]
+    every = (_words.get() or VIETOCR_WORDS) != "unsure"
+    todo = [i for i, c in enumerate(crops) if c.shape[0] >= 2 and c.shape[1] >= 2 and (every or unsure(words[i]))]
     if not todo:
         return 0
     reads = reader.read([crops[i] for i in todo])

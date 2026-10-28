@@ -130,6 +130,53 @@ class RefineTest(unittest.TestCase):
         # line rows 30..80 padded by a quarter of 50 px; word columns padded the same
         self.assertEqual(reader.shapes, [(74, 102), (74, 124)])
 
+    def test_only_unsure_words_are_read(self):
+        gray = np.full((200, 600), 255, np.uint8)
+        ln = Line(block=1, par=1, baseline=60.0, em_px=40.0)
+        ln.words = [
+            Word(10, 40, 90, 70, 96.0, "chuyên", 0, 40.0),  # sure, but ê without a tone mark: read
+            Word(100, 40, 190, 70, 96.0, "học", 0, 40.0),  # sure, no hat letter: kept as it is
+            Word(200, 40, 290, 70, 60.0, "xyz", 0, 40.0),  # unsure: read
+        ]
+        for mode in ("unsure", None):
+            for w, t in zip(ln.words, ("chuyên", "học", "xyz")):
+                w.text = t
+            reader = FakeReader([("chuyển", 0.9), ("xyw", 0.9)])
+            patch = mock.patch.object(vietocr, "VIETOCR_WORDS", "unsure" if mode is None else "all")
+            with patch, vietocr.words_mode(mode):
+                self.assertEqual(vietocr.refine_words([ln], gray, reader), 2)
+            self.assertEqual([w.text for w in ln.words], ["chuyển", "học", "xyw"])
+            self.assertEqual(len(reader.shapes), 2)
+        reader = FakeReader([("chuyển", 0.9), ("học", 0.9), ("xyw", 0.9)])
+        with vietocr.words_mode("all"):
+            vietocr.refine_words([ln], gray, reader)
+        self.assertEqual(len(reader.shapes), 3)
+
+
+class SelectTest(unittest.TestCase):
+    def test_hat_letters_without_tone_or_with_grave(self):
+        for text in ("chuyên", "chuyền", "thăng", "Môi", "ĐÔ", "bầy", "HỒ", "ằ"):
+            self.assertTrue(vietocr._bare_hat(text), text)
+        for text in ("chuyển", "thẳng", "mỗi", "khối", "ệ", "học", "mở", "thử", "2026", "A.", ""):
+            self.assertFalse(vietocr._bare_hat(text), text)
+
+    def test_unsure(self):
+        def wd(text, conf):
+            return Word(0, 0, 10, 10, conf, text, 0, 10.0)
+
+        self.assertTrue(vietocr.unsure(wd("học", vietocr.TESS_SURE - 1)))
+        self.assertFalse(vietocr.unsure(wd("học", vietocr.TESS_SURE)))
+        self.assertTrue(vietocr.unsure(wd("tiên", 97)))
+        self.assertFalse(vietocr.unsure(wd("6,02.10", 96)))
+
+    def test_mode_of_one_conversion(self):
+        self.assertIsNone(vietocr._words.get())
+        with vietocr.words_mode("unsure"):
+            self.assertEqual(vietocr._words.get(), "unsure")
+            with vietocr.words_mode(None):
+                self.assertIsNone(vietocr._words.get())
+        self.assertIsNone(vietocr._words.get())
+
 
 class LoaderTest(unittest.TestCase):
     def setUp(self):

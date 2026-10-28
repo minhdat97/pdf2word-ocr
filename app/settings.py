@@ -46,6 +46,9 @@ VIETOCR_ENABLED = os.environ.get("P2W_VIETOCR", "1") != "0"
 VIETOCR_THREADS = int(os.environ.get("P2W_VIETOCR_THREADS", MODEL_THREADS))
 # A file with more scanned pages than this keeps Tesseract's words (VietOCR about doubles the OCR time).
 VIETOCR_MAX_PAGES = int(os.environ.get("P2W_VIETOCR_MAX_PAGES", 30))
+# Words VietOCR re-reads: "all", or "unsure" – only those whose reading it could improve (vietocr.unsure: Tesseract
+# below its sure confidence, or a letter â ă ê ô with no tone mark or a grave accent), about 30 % of the words.
+VIETOCR_WORDS = os.environ.get("P2W_VIETOCR_WORDS", "all").strip().lower() or "all"
 
 # Formula model (app/mathocr.py, pix2text-mfr-1.5) reads formula regions of OCR pages.
 # On when its files are in MFR_DIR unless P2W_MFR=0; onnxruntime threads per conversion.
