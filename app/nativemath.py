@@ -438,7 +438,7 @@ def build(glyphs: list[Glyph], bars: list[Bar], uprights: list[tuple[float, floa
     """
     try:
         return _build(glyphs, bars, uprights, others)
-    except (Unsure, ValueError, KeyError):
+    except Exception:  # noqa: BLE001 – a layout this module trips over keeps its picture, the file still converts
         return None
 
 
@@ -446,7 +446,7 @@ def why(glyphs, bars, uprights, others: int = 0) -> str:
     """The reason build() keeps the picture ("" when it does not): for tests and tuning."""
     try:
         _build(glyphs, bars, uprights, others)
-    except (Unsure, ValueError, KeyError) as e:
+    except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"
     return ""
 
