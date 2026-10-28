@@ -376,7 +376,7 @@ CONTENT = {
     "m": "(?:mPr )?(?:mr )+",
     "mPr": "(?:baseJc )?(?:plcHide )?(?:rSpRule )?(?:cGpRule )?(?:rSp )?(?:cSp )?(?:cGp )?(?:mcs )?(?:ctrlPr )?",
     "mcs": "(?:mc )+", "mc": "(?:mcPr )?", "mcPr": "(?:count )?(?:mcJc )?", "mr": "(?:e )+",
-    "argPr": "(?:scrLvl )?", "ctrlPr": "(?:w:rPr )?",
+    "argPr": "(?:argSz )?", "ctrlPr": "(?:w:rPr )?",
     "w:rPr": "(?:w:rFonts )?(?:w:b )?(?:w:i )?(?:w:color )?(?:w:sz )?(?:w:szCs )?",
 }
 for _arg in ("num", "den", "deg", "e", "sub", "sup", "fName", "lim"):
@@ -386,7 +386,7 @@ VALUES = {
     "type": {"bar", "skw", "lin", "noBar"}, "limLoc": {"undOvr", "subSup"}, "pos": {"top", "bot"},
     "sty": {"p", "b", "i", "bi"}, "mcJc": {"left", "center", "right", "inside", "outside"},
     "scr": {"roman", "script", "fraktur", "double-struck", "sans-serif", "monospace"},
-    "scrLvl": {"-2", "-1", "0", "1", "2"}, "degHide": ONOFF, "subHide": ONOFF, "supHide": ONOFF,
+    "argSz": {"-2", "-1", "0", "1", "2"}, "degHide": ONOFF, "subHide": ONOFF, "supHide": ONOFF,
     "plcHide": ONOFF, "nor": ONOFF,
 }
 CHAR_VALUES = {"chr", "begChr", "sepChr", "endChr"}  # ST_Char: at most one character

@@ -85,6 +85,9 @@ CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
 HEX = re.compile(r"<([0-9A-Fa-f\s]*)>")  # cannot run past a "<": linear on any line
 CMAP_MAX = 64 * 1024  # bytes: a math font's map is a few KB; a larger one is not read (its formulas stay pictures)
 FONT_LIST_MAX = 16000  # characters of a page's font dictionary (~800 fonts; Word's pages list ~20)
+FORMULA_GLYPHS_MAX = 300  # glyphs and strokes of one formula read as an equation (Word's largest here: 73)
+FORMULA_MARKS_MAX = 32  # combining marks of one formula
+PAGE_INK_MAX = 1.2e6  # pt² of page rendered once to measure brackets (A4 is 0.5e6); larger: pictures
 MATH_FONTS_MAX = 16  # simple Unicode math fonts on a page that are checked; more: pictures
 STANDARD_ENCODINGS = {"/WinAnsiEncoding", "/MacRomanEncoding", "/StandardEncoding"}
 NO_CID_TEXT = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES & ~pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE
@@ -93,7 +96,9 @@ NO_CID_TEXT = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES & ~pymupdf.
 def _font_key(name: str) -> str:
     """A font name as both the font list and the text spans give it ("BCDOEE+CambriaMath",
     "Cambria Math Regular", "STIXTwoMath-Regular" / "STIX Two Math Regular")."""
-    key = re.sub(r"[^a-z0-9]", "", name.split("+", 1)[-1].lower())
+    name = re.sub(r"#([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), name.split("+", 1)[-1])
+    name = re.sub(r"-Identity-[HV]$", "", name)  # a CFF CID font's Type0 name carries its encoding
+    key = re.sub(r"[^a-z0-9]", "", name.lower())
     return re.sub(r"(regular|roman|book|psmt|mt|ps)+$", "", key) or key
 
 
@@ -149,9 +154,15 @@ def _simple_font_unmapped(doc: pymupdf.Document, xref: int) -> frozenset[str] | 
     return cache[key]
 
 
-def _font_list_size(doc: pymupdf.Document, page: pymupdf.Page) -> int | None:
-    """Characters of the page's font dictionary (inherited resources too), without listing its
-    fonts: a file can name thousands. None: not found."""
+FONT_REF = re.compile(r"/[^\s/<>\[\]()]+\s+(\d+)\s+0\s+R")
+
+
+def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, str, list[str]]] | None:
+    """(xref, Subtype, names) of the fonts the page's own resources name (inherited ones too):
+    BaseFont, and a Type0 font's descendant's name, which the text spans carry. Read from the
+    /Font dictionary itself, bounded (FONT_LIST_MAX), not by listing fonts: a file can name
+    thousands, in forms too. Forms' own fonts are not in it: their formulas stay pictures.
+    None: no resources or a dictionary too large."""
     ref = page.xref
     for _ in range(8):
         kind, val = doc.xref_get_key(ref, "Resources")
@@ -163,10 +174,27 @@ def _font_list_size(doc: pymupdf.Document, page: pymupdf.Page) -> int | None:
         ref = int(val.split()[0])
     else:
         return None
-    font_kind, font = doc.xref_get_key(int(val.split()[0]), "Font") if kind == "xref" else doc.xref_get_key(ref, "Resources/Font")
-    if font_kind == "xref":
-        return len(doc.xref_object(int(font.split()[0])))
-    return len(font) if font_kind == "dict" else 0
+    fkind, fval = doc.xref_get_key(int(val.split()[0]), "Font") if kind == "xref" else doc.xref_get_key(ref, "Resources/Font")
+    if fkind == "xref":
+        fval = doc.xref_object(int(fval.split()[0]), compressed=True)
+    elif fkind != "dict":
+        return []
+    if len(fval) > FONT_LIST_MAX:
+        return None
+    cache = doc.__dict__.setdefault("_p2w_font_lists", {})  # pages share their font dictionaries
+    if fval not in cache:
+        out = []
+        for m in FONT_REF.finditer(fval):
+            x = int(m.group(1))
+            sub = doc.xref_get_key(x, "Subtype")[1].lstrip("/")
+            names = [doc.xref_get_key(x, "BaseFont")[1].lstrip("/")]
+            if sub == "Type0":
+                desc = re.search(r"(\d+)\s+0\s+R", doc.xref_get_key(x, "DescendantFonts")[1])
+                if desc:
+                    names.append(doc.xref_get_key(int(desc.group(1)), "BaseFont")[1].lstrip("/"))
+            out.append((x, sub, names))
+        cache[fval] = out
+    return cache[fval]
 
 
 def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | None:
@@ -176,21 +204,20 @@ def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | N
     for ℎ; read without that, it is U+FFFD), a font list or map too large to read, a broken font."""
     doc = page.parent
     try:
-        size = _font_list_size(doc, page)
-        if size is None or size > FONT_LIST_MAX:
+        fonts = _page_fonts(doc, page)
+        if fonts is None:
             return None
-        fonts = page.get_fonts(full=False)  # a formula's font must be one of these (not a form's own)
-        names = frozenset(_font_key(f[3]) for f in fonts)
-        unmapped: set[str] = set()
-        simple = [f for f in fonts if f[2] != "Type0" and UNICODE_MATH_FONT.search(f[3])]
+        names = frozenset(_font_key(n) for _x, _sub, ns in fonts for n in ns)
+        simple = [x for x, sub, ns in fonts if sub != "Type0" and any(UNICODE_MATH_FONT.search(n) for n in ns)]
         if len(simple) > MATH_FONTS_MAX:
             return None
-        for xref, *_ in simple:
+        unmapped: set[str] = set()
+        for xref in simple:
             chars = _simple_font_unmapped(doc, xref)
             if chars is None:
                 return None
             unmapped |= chars
-        if any(f[2] == "Type0" for f in fonts):  # whatever its name: the span's own font name may differ
+        if any(sub == "Type0" for _x, sub, _ns in fonts):  # whatever its name: the span's own name may differ
             for b in page.get_text("dict", flags=NO_CID_TEXT)["blocks"]:
                 for ln in b.get("lines", ()):
                     for s in ln["spans"]:
@@ -438,11 +465,14 @@ def _split_lines(members: list[int], nodes: list[list], fractions: list[tuple[in
             line = inside.pop()
             # a script of the next line under the denominator is that line's: the group stays whole
             oy = nodes[k][4]["origin"][1] if nodes[k][4] is not None else None
-            if oy is not None and oy > ys[line] and nearest(oy) != line:
-                return [members]
+            if oy is not None and nearest(oy) != line:
+                return [members]  # its own baseline is nearer the other line: which one it belongs to is unclear
             line_of[k] = line
         elif nodes[k][4] is not None:
-            line_of[k] = nearest(nodes[k][4]["origin"][1])
+            oy = nodes[k][4]["origin"][1]
+            line_of[k] = nearest(oy)
+            if oy - ys[line_of[k]] > 0.45 * top:
+                return [members]  # no script drops that far under its base: a raised script of the line below
         else:
             line_of[k] = nearest((r.y0 + r.y1) / 2 + 0.25 * top)
     out: list[list[int]] = [[] for _ in ys]
@@ -660,8 +690,9 @@ class _Extractor:
         self._ink_refs: tuple[float | None, float | None] | None = None
         self._bold_cache: dict[tuple, bool] = {}
         self._math_fonts: tuple | None | bool = False  # _math_fonts(page), worked out when needed
-        self._tiny: list[pymupdf.Rect] = []  # glyphs under 4 pt: left out of formulas, but drawn
-        self._marks: list[tuple[str, pymupdf.Rect]] | None = None  # combining marks as drawn (get_texttrace)
+        self._tiny: list | np.ndarray = []  # glyphs under 4 pt: left out of formulas, but drawn
+        self._marks: list[tuple[str, tuple]] | None = None  # combining marks as drawn (get_texttrace)
+        self._page_ink: np.ndarray | None | bool = None  # the page in grey at 150 dpi, for brackets (_ink_height)
 
     # --- spans and rows ---------------------------------------------------
 
@@ -1072,14 +1103,21 @@ class _Extractor:
 
     def _equation(self, f: dict, span_of: dict[int, dict], fraction_bars: set[int]) -> list | None:
         """The formula as a Word equation (nativemath pieces), or None to keep its picture."""
+        marks = sum(c["c"] in nativemath.COMBINING for c in f["chars"])
+        if len(f["chars"]) + len(f["drawings"]) > FORMULA_GLYPHS_MAX or marks > FORMULA_MARKS_MAX:
+            return None
         if self._math_fonts is False:
             self._math_fonts = _math_fonts(self.page)
         if self._math_fonts is None:
             return None
         unmapped, font_names = self._math_fonts
         ink = pymupdf.Rect(f["rect"].x0 - 1, f["rect"].y0 - 1, f["rect"].x1 + 1, f["rect"].y1 + 1)
-        if any(not (r & ink).is_empty for r in self._tiny):
-            return None  # glyphs too small to be read are part of it: its picture shows them
+        if len(self._tiny):
+            if not isinstance(self._tiny, np.ndarray):
+                self._tiny = np.asarray([tuple(r) for r in self._tiny])
+            t = self._tiny
+            if np.any((t[:, 0] < ink.x1) & (t[:, 2] > ink.x0) & (t[:, 1] < ink.y1) & (t[:, 3] > ink.y0)):
+                return None  # glyphs too small to be read are part of it: its picture shows them
         glyphs = []
         for c in f["chars"]:
             s = span_of.get(id(c))
@@ -1105,17 +1143,6 @@ class _Extractor:
                 bold=_bold(s), italic=_italic(s), color=_color(s, honour_alpha=not self.invisible_layer),
                 math_font=unicode_math, drawn=stretched,
             ))
-        # a bracket drawn taller than everything the formula holds encloses rows outside it (a matrix, a
-        # system): the text layer gives a stretched bracket the box of a plain one, so its ink is measured
-        content = [g for g in glyphs if g.c not in "()[]{}"]
-        if content and len(content) < len(glyphs):
-            top = min([g.oy - 0.78 * g.size for g in content] + [self.drawings[i]["rect"].y0 for i in f["drawings"]])
-            bottom = max([g.oy + 0.22 * g.size for g in content] + [self.drawings[i]["rect"].y1 for i in f["drawings"]])
-            for g in glyphs:
-                if g.c in "()[]{}":
-                    ink = self._ink_height(g)
-                    if ink is None or ink > bottom - top + 0.5 * g.size:
-                        return None
         bars, uprights, others = [], [], 0
         for i in f["drawings"]:
             r = pymupdf.Rect(self.drawings[i]["rect"])
@@ -1125,22 +1152,50 @@ class _Extractor:
                 uprights.append((r.x0, r.y0, r.x1, r.y1))
             else:
                 others += 1
-        return nativemath.build(glyphs, bars, uprights, others)
+        pieces = nativemath.build(glyphs, bars, uprights, others)
+        # a bracket drawn taller than everything the formula holds encloses rows outside it (a matrix, a
+        # system): the text layer gives a stretched bracket the box of a plain one, so its ink is measured
+        content = [g for g in glyphs if g.c not in "()[]{}"]
+        if pieces and content and len(content) < len(glyphs):
+            top = min([g.oy - 0.78 * g.size for g in content] + [self.drawings[i]["rect"].y0 for i in f["drawings"]])
+            bottom = max([g.oy + 0.22 * g.size for g in content] + [self.drawings[i]["rect"].y1 for i in f["drawings"]])
+            for g in glyphs:
+                if g.c in "()[]{}":
+                    height = self._ink_height(g)
+                    if height is None or height > bottom - top + 0.5 * g.size:
+                        return None
+        return pieces
 
     def _ink_height(self, g) -> float | None:
-        """Height of a bracket's ink: the dark stroke through its middle, at 150 dpi, within its column."""
+        """Height of a bracket's ink: the stroke through its middle, within its column, on the page
+        rendered once at 150 dpi; dark is relative to the glyph's colour (a light green bracket too).
+        None: not measured (rotated or very large page, a bracket in a very light colour)."""
         s = 150 / 72
-        clip = pymupdf.Rect(g.x0 - 0.3, g.oy - 3.5 * g.size, g.x1 + 0.3, g.oy + 2.5 * g.size) & self.page.rect
-        if clip.is_empty or clip.width < 1:
+        if self._page_ink is None:
+            page = self.page
+            if page.rotation or abs(page.rect) > PAGE_INK_MAX:
+                self._page_ink = False
+            else:
+                try:
+                    pix = page.get_pixmap(dpi=150, alpha=False)  # RGB: a grey render of an image page is slow
+                    rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)[:, :, :3]
+                    self._page_ink = (rgb @ np.array([0.299, 0.587, 0.114])).astype(np.uint8)
+                except Exception:  # noqa: BLE001
+                    self._page_ink = False
+        if self._page_ink is False:
             return None
-        try:
-            pix = self.page.get_pixmap(dpi=150, clip=clip, colorspace=pymupdf.csGRAY, alpha=False)
-        except Exception:  # noqa: BLE001
+        color = int(g.color or "000000", 16)
+        lum = 0.299 * (color >> 16) + 0.587 * (color >> 8 & 255) + 0.114 * (color & 255)
+        if lum > 215:
             return None
-        img = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w)
-        count, labels = cv2.connectedComponents((img < 150).astype(np.uint8), connectivity=8)
-        mid = int((g.oy - 0.25 * g.size - clip.y0) * s)  # the maths axis: a bracket's middle
-        hits = set(np.unique(labels[max(mid - 2, 0):mid + 3, :])) - {0}
+        img = self._page_ink
+        x0, x1 = max(int((g.x0 - 0.3) * s), 0), min(int((g.x1 + 0.3) * s) + 1, img.shape[1])
+        y0, y1 = max(int((g.oy - 3.5 * g.size) * s), 0), min(int((g.oy + 2.5 * g.size) * s) + 1, img.shape[0])
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return None
+        count, labels = cv2.connectedComponents((img[y0:y1, x0:x1] < (lum + 255) / 2).astype(np.uint8), connectivity=8)
+        mid = int((g.oy - 0.25 * g.size) * s) - y0  # the maths axis: a bracket's middle
+        hits = set(np.unique(labels[max(mid - 2, 0):max(mid + 3, 0), :])) - {0}
         if not hits:
             return None
         rows = np.flatnonzero(np.isin(labels, list(hits)).any(axis=1))
@@ -1149,23 +1204,25 @@ class _Extractor:
     def _drawn_mark(self, char: dict, ink: pymupdf.Rect, f: dict) -> tuple | None:
         """Where a combining mark of the formula is drawn (get_texttrace: the text layer reports it
         at the end of the glyph before it, a hat over "ABC" too). The formula's marks of one kind are
-        matched to the drawn ones in order across; None when they do not pair up."""
+        matched to the drawn ones in order across, once per kind; None when they do not pair up."""
         if self._marks is None:
             self._marks = []
             try:
                 for span in self.page.get_texttrace():
                     for code, _glyph, _origin, bbox in span["chars"]:
                         if code > 0 and chr(code) in nativemath.COMBINING:
-                            self._marks.append((chr(code), pymupdf.Rect(bbox)))
+                            self._marks.append((chr(code), tuple(bbox)))
             except Exception:  # noqa: BLE001
                 return None
         ch = char["c"]
-        drawn = sorted((r for c, r in self._marks if c == ch and ink.contains(pymupdf.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2))),
-                       key=lambda r: r.x0)
-        mine = sorted((c for c in f["chars"] if c["c"] == ch), key=lambda c: c["bbox"][0])
-        if len(drawn) != len(mine):
-            return None
-        return tuple(drawn[next(n for n, c in enumerate(mine) if c is char)])
+        paired = f.setdefault("_marks", {})
+        if ch not in paired:
+            drawn = sorted((r for c, r in self._marks if c == ch
+                            and ink.x0 <= (r[0] + r[2]) / 2 <= ink.x1 and ink.y0 <= (r[1] + r[3]) / 2 <= ink.y1),
+                           key=lambda r: r[0])
+            mine = sorted((c for c in f["chars"] if c["c"] == ch), key=lambda c: c["bbox"][0])
+            paired[ch] = {id(c): r for c, r in zip(mine, drawn)} if len(drawn) == len(mine) else None
+        return paired[ch] and paired[ch].get(id(char))
 
     def _equation_runs(self, f: dict, main: float) -> list[Run]:
         """Runs of a formula rebuilt as an equation: the equation and any label set before or
@@ -1176,6 +1233,7 @@ class _Extractor:
                 run = Run(text=OBJ, size=_half(piece.size or main), color=piece.color, font=piece.font, math=piece.text,
                           math_text=piece.text)
                 f["run"] = run
+                f["display"], f["frac_only"] = piece.display, piece.frac_only  # settled with its paragraph
                 # the box Word's equation fills: glyph ink (about 0.7 em over the baseline, 0.2 under) and bars
                 f["box"] = f["ink"]
             else:
@@ -2075,6 +2133,40 @@ def _clear_paint(img: np.ndarray, clip: pymupdf.Rect, dpi: int, paints) -> None:
     img[_paint_mask(img, clip, dpi, paints)] = 255
 
 
+def _settle_equations(ex: _Extractor, flow: list) -> None:
+    """Equations whose fractions are as large as their line are display equations in Word, which
+    stand alone in their paragraph: alone there, the run says so (Run.display); beside text they
+    keep their picture. Fractions alone beside text are an inline equation at their line's size
+    (Word sets inline fraction parts at about 0.72 of the line)."""
+    pending = {id(f["run"]): f for f in ex.formulas
+               if f["run"] is not None and f["run"].math and (f.get("display") or f.get("frac_only"))}
+    if not pending:
+        return
+    holders: list[tuple[list[Run], float]] = []
+    for e in flow:
+        if isinstance(e, Paragraph):
+            holders.append((e.runs, e.font_pt))
+        elif isinstance(e, Columns):
+            holders += [(p.runs, p.font_pt) for col in e.cells for p in col]
+        elif isinstance(e, Table):
+            holders += [(c.runs, e.font_pt) for row in e.cells for c in row]
+    for runs, font_pt in holders:
+        for r in runs:
+            f = pending.get(id(r))
+            if f is None:
+                continue
+            alone = all(not (x.math or x.image or x.field or x.text == TAB or x.text.strip()) for x in runs if x is not r)
+            if alone:
+                r.display = True
+            elif f.get("frac_only") and r.size <= nativemath.SCRIPT * font_pt:
+                r.size = _half(font_pt)
+            else:
+                box, image = ex._formula_picture(f)
+                r.math = r.math_text = None
+                r.image, r.image_w, r.image_h, r.image_depth = image, box.width, box.height, box.y1 - f["baseline"]
+                f["box"] = box
+
+
 def native_page(
     page: pymupdf.Page, ocr_languages: list[str] | None = None, strip: bool = False
 ) -> PageLayout:
@@ -2195,6 +2287,8 @@ def native_page(
     for p in top_paras:
         p.align, indent = alignment(p.line_spans, left, right)
         p.first_line_indent_pt = indent if abs(indent) > 3 else 0.0
+
+    _settle_equations(ex, flow)
 
     # Line heights from the measured pitch; boxes become line-box extents so
     # spacing reproduces the original baselines.

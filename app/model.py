@@ -30,6 +30,7 @@ class Run:
     math: str | None = None
     math_text: str | None = None
     formula: bool = False  # read by the formula model (OCR): keeps its own weight in a bold paragraph
+    display: bool = False  # a Word display equation (native: fractions as large as the line, alone in its paragraph)
 
 
 TAB = "\t"

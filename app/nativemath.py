@@ -114,11 +114,17 @@ class _Frac:
     y: float  # the bar: on the line's maths axis, a quarter em over the baseline
     latex: str = ""
 
-    def write(self, line_size: float | None) -> None:
-        """\\frac where Word shrinks the parts (an inline fraction: about 0.72 of the line), \\dfrac
-        where they are as large as the line (a display fraction) or there is no line to compare with."""
-        full = line_size is None or self.size >= SCRIPT * line_size
-        self.latex = rf"\{'dfrac' if full else 'frac'}{{{self.num}}}{{{self.den}}}"
+    def write(self, line_size: float | None, depth: int, info: dict) -> None:
+        """Word sets an inline fraction's parts at about 0.72 of the line, a display equation's
+        (a paragraph of its own) as large as the line. A line-sized fraction makes the equation a
+        display one (info["display"]); inside another fraction it is not read."""
+        if line_size is None:
+            info["frac_only"] = True
+        elif self.size >= SCRIPT * line_size:
+            if depth:
+                raise Unsure("display fraction inside a fraction")
+            info["display"] = True
+        self.latex = rf"\frac{{{self.num}}}{{{self.den}}}"
 
 
 @dataclass(eq=False)
@@ -137,11 +143,13 @@ class Piece:
 
     kind: str  # "text" | "math"
     text: str
-    size: float  # math: its line's size (an equation of fractions only: their parts' size, written \dfrac)
+    size: float  # math: its line's size (fractions alone: their parts' size)
     bold: bool = False
     italic: bool = False
     color: str | None = None
     font: str | None = None
+    display: bool = False  # math: a fraction with parts as large as its line (Word's display equation)
+    frac_only: bool = False  # math: fractions alone, their line's size unknown here
 
 
 def _math_alnum(c: str) -> tuple[str, str]:
@@ -226,9 +234,12 @@ def _escape_text(s: str) -> str:
     return "".join(out)
 
 
-def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: float | None = None) -> str:
+def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: float | None = None,
+            info: dict | None = None) -> str:
     """LaTeX of glyphs set on one line, with fractions (bars) and scripts. outer_size: size of the
-    line this one sits in (a numerator's line), for a line of fractions only."""
+    line this one sits in (a numerator's line), for a line of fractions only. info collects
+    "display" (a line-sized fraction) and "frac_only" (fractions alone) for the top level."""
+    info = {} if info is None else info
     if depth > 8:
         raise Unsure("nesting")
     # Fractions: a bar with no longer bar over or under it holds everything centred in its span.
@@ -249,8 +260,18 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
         if not num or not den or len(num) + len(den) != len(members):
             raise Unsure("bar without numerator or denominator")
         part_size = max(g.size for g in members)
-        num_latex = _layout(num, [o for o in inner if o.y < b.y], depth + 1, part_size)
-        den_latex = _layout(den, [o for o in inner if o.y > b.y], depth + 1, part_size)
+        # Word's fraction: both parts centred on the bar, the bar as long as the wider part (a rule
+        # between two lines of formulas or table rows is not one)
+        widths = []
+        for part in (num, den):
+            px0, px1 = min(g.x0 for g in part), max(g.x1 for g in part)
+            if abs((px0 + px1) / 2 - (b.x0 + b.x1) / 2) > 0.25 * part_size:
+                raise Unsure("fraction part off the bar's centre")
+            widths.append(px1 - px0)
+        if b.x1 - b.x0 > max(widths) + 0.6 * part_size:
+            raise Unsure("bar longer than its fraction")
+        num_latex = _layout(num, [o for o in inner if o.y < b.y], depth + 1, part_size, info)
+        den_latex = _layout(den, [o for o in inner if o.y > b.y], depth + 1, part_size, info)
         tokens.append(_Frac(min(b.x0, *(g.x0 for g in members)), max(b.x1, *(g.x1 for g in members)),
                             num_latex, den_latex, part_size, b.y))
         used.update(id(g) for g in members)
@@ -259,12 +280,12 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
     rest = [g for g in glyphs if id(g) not in used]
     if not rest:
         for t in tokens:
-            t.write(outer_size)
+            t.write(outer_size, depth, info)
         return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens))
     size = max(g.size for g in rest)
     base_y = median(g.oy for g in rest if g.size >= 0.9 * size)
     for t in tokens:
-        t.write(size)
+        t.write(size, depth, info)
         # a fraction in an exponent ("2^{-t/T}") sits high: scripts holding fractions are not read
         if abs(base_y - t.y - AXIS * size) > ON_BASE * size:
             raise Unsure("fraction off the maths axis")
@@ -330,7 +351,7 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
                 raise Unsure("scripts between a number and a symbol")
     script_latex: dict[int, dict[str, str]] = {}
     for tid, roles in attached.items():
-        script_latex[tid] = {role: _layout(gs, [], depth + 1, size) for role, gs in roles.items()}
+        script_latex[tid] = {role: _layout(gs, [], depth + 1, size, info) for role, gs in roles.items()}
     script_right = {tid: max(g.x1 for gs in roles.values() for g in gs) for tid, roles in attached.items()}
     return _emit(tokens, script_latex, script_right, size)
 
@@ -471,7 +492,9 @@ def _attach_accents(glyphs: list[Glyph]) -> list[Glyph]:
         if any(m.drawn for m in ms):
             x0, x1 = min(m.x0 for m in ms), max(m.x1 for m in ms)
             width = max(g.x1 - g.x0, 1.0)
-            if abs((x0 + x1) / 2 - g.cx) > 0.25 * width or x1 - x0 > 1.8 * width:
+            # Word stretches an accent only as wide as its base: one much wider than the letter covers
+            # its neighbours too ("\\widehat{xOy}" centred on O)
+            if abs((x0 + x1) / 2 - g.cx) > 0.25 * width or x1 - x0 > max(1.1 * width, 0.45 * g.size):
                 raise Unsure("accent over more than one letter")
         g.accents.append(kinds.pop())
     return rest
@@ -580,7 +603,8 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     if tail and min(g.x0 for g in tail) < max(g.x1 for g in body) - 0.5:
         raise Unsure("trailing text overlaps the formula")
     # the label's own scripts would be left in the equation ("(a+b)" in red, its ² in black)
-    if lead and min(g.x0 for g in body) < line[k].x0 - 0.5 or tail and max(g.x1 for g in body) > line[m - 1].x1 + 0.5:
+    if lead and any(g.x1 <= line[k].x0 + 0.5 and not any(b.x0 - 1 <= g.cx <= b.x1 + 1 for b in bars)
+                    for g in body if g not in line):
         raise Unsure("scripts of the label")
     depth = 0
     for g in sorted(body, key=lambda g: g.x0):
@@ -594,17 +618,19 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     colors = {g.color for g in body}
     if len(colors) > 1:
         raise Unsure("several colours")
-    latex = _layout(body, bars)
+    info: dict = {}
+    latex = _layout(body, bars, info=info)
     color = colors.pop()
     # raises ValueError for anything the writer cannot take (docx_builder._add_math passes the same)
     latex_to_omml(latex, size_pt=size, text_font="Cambria Math", color=color)
-    # the equation's size is that of its line; with only fractions on it (a lone "1/110"), the
-    # line's size is unknown here (Word sets inline fractions about 0.7 of it): size 0, the caller's
+    # the equation's size is that of its line; fractions alone: their parts' size (the caller decides
+    # between a display equation and an inline one at its line's size, Piece.frac_only)
     on_line = [g for g in line[k:m] if g in body]
-    # fractions only (\dfrac): their parts' size; else the line's
-    pieces = [Piece("math", latex, max(g.size for g in (on_line or body)), color=color, font="Cambria Math")]
+    pieces = [Piece("math", latex, max(g.size for g in (on_line or body)), color=color, font="Cambria Math",
+                    display=bool(info.get("display")), frac_only=not on_line and bool(info.get("frac_only")))]
+    body_x0, body_x1 = min(g.x0 for g in body), max(g.x1 for g in body)
     if lead:
-        pieces[:0] = _text_pieces(lead, size, after=" " if gap(lead[-1], line[k]) else "")
+        pieces[:0] = _text_pieces(lead, size, after=" " if lead[-1].x1 + SPACE * size <= body_x0 else "")
     if tail:
-        pieces += _text_pieces(tail, size, before=" " if gap(line[m - 1], tail[0]) else "")
+        pieces += _text_pieces(tail, size, before=" " if body_x1 + SPACE * size <= tail[0].x0 else "")
     return pieces

@@ -5,7 +5,7 @@ It covers the school maths/physics subset below and raises ValueError for anythi
 else, so a caller can keep the OCR text instead of writing a broken equation.
 
 Supported: letters, digits, unicode symbols, Greek commands, operators and relations,
-\\frac \\dfrac \\tfrac \\cfrac \\binom, \\sqrt[n], ^ _ and primes, \\left \\middle \\right,
+\\frac \\dfrac \\tfrac \\cfrac (all written as Word's fraction) \\binom, \\sqrt[n], ^ _ and primes, \\left \\middle \\right,
 paired bare brackets ( ) [ ] \\{ \\} | as growing delimiters, font commands (\\mathrm,
 \\mathbf, \\mathbb...), \\text and friends, accents, \\overline \\underline, function names
 (\\sin, \\log, \\lim, \\operatorname), \\sum \\int \\prod with limits, \\overset \\underset,
@@ -884,9 +884,10 @@ class _Writer:
         return pr
 
     def arg(self, parent, tag, nodes, display=False):
+        # display (\\dfrac): OOXML has no argument property for a full-size fraction (m:argPr holds
+        # only m:argSz, a size step); it is written as a plain fraction, which Word sets full size
+        # in a display equation
         el = etree.SubElement(parent, _m(tag))
-        if display:
-            etree.SubElement(etree.SubElement(el, _m("argPr")), _m("scrLvl")).set(_m("val"), "0")
         self.nodes(el, nodes or [])
         return el
 

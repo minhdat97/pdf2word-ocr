@@ -76,10 +76,10 @@ class LayoutTest(unittest.TestCase):
         bar = ln.frac("1", "2")
         ln.put("𝑚", gap=2)
         self.assertEqual(latex(build(ln.glyphs, [bar], [])), [r"=\frac{1}{2}m"])
-        # only a fraction: \dfrac at its parts' size, so Word draws them as large as the PDF does
+        # only a fraction: at its parts' size, its line's size unknown here (native.py settles it)
         ln = Line()
         bar = ln.frac("1", "110", size=7)
-        self.assertEqual([(p.text, p.size) for p in build(ln.glyphs, [bar], [])], [(r"\dfrac{1}{110}", 7)])
+        self.assertEqual([(p.text, p.size, p.frac_only) for p in build(ln.glyphs, [bar], [])], [(r"\frac{1}{110}", 7, True)])
 
     def test_fractions_nested_and_side_by_side(self):
         ln = Line().put("𝑥").put("=", gap=2)
@@ -87,19 +87,22 @@ class LayoutTest(unittest.TestCase):
         ln.x += 1
         bars.append(ln.frac("𝑣", "𝑢"))
         self.assertEqual(latex(build(ln.glyphs, bars, [])), [r"x=\frac{1}{2}\frac{v}{u}"])
-        # a fraction in a numerator: the shorter bar inside the longer one; alone, the outer one is a display
-        # fraction (\dfrac, parts at full size), the inner one shrinks inside it
+        # a fraction in a numerator: the shorter bar inside the longer one, every part centred on its bar
         ln = Line()
-        outer = Bar(50, 70, BASE - 2.5)
-        inner = Bar(52, 57, BASE - 9.5)
-        for c, x, oy, sz in (("1", 52, BASE - 12.5, 5), ("2", 52, BASE - 4.5, 5), ("𝑚", 58, BASE - 7.5, 7), ("𝑀", 58, BASE + 7, 7)):
+        outer = Bar(50, 62, BASE - 2.5)
+        inner = Bar(51, 56, BASE - 9.5)
+        for c, x, oy, sz in (("1", 51, BASE - 12.5, 5), ("2", 51, BASE - 4.5, 5), ("𝑚", 56, BASE - 7.5, 7), ("𝑀", 53.5, BASE + 7, 7)):
             ln.glyphs.append(Glyph(c, x, oy - 0.78 * sz, x + 5, oy + 0.22 * sz, oy, sz, font="Cambria Math"))
         pieces = build(ln.glyphs, [outer, inner], [])
-        self.assertEqual([(p.text, p.size) for p in pieces], [(r"\dfrac{\frac{1}{2}m}{M}", 7)])
-        # a display fraction on a line: parts as large as the line
+        self.assertEqual([(p.text, p.size, p.frac_only) for p in pieces], [(r"\frac{\frac{1}{2}m}{M}", 7, True)])
+        # parts as large as the line: Word's display equation (native.py keeps it alone in its paragraph)
         ln = Line().put("𝑣").put("=", gap=2)
         bar = ln.frac("𝑠", "𝑡", size=S)
-        self.assertEqual(latex(build(ln.glyphs, [bar], [])), [r"v=\dfrac{s}{t}"])
+        self.assertEqual([(p.text, p.display) for p in build(ln.glyphs, [bar], [])], [(r"v=\frac{s}{t}", True)])
+        # a rule under a line of formulas is not a fraction bar: its parts are not centred on it, or it is too long
+        ln = Line().put("𝑥").put("=").put("2")
+        ln.glyphs += Line(base=BASE + 14).put("𝑦").put("=").put("3").glyphs
+        self.assertIsNone(build(ln.glyphs, [Bar(50, 110, BASE + 4)], []))
 
     def test_vector_arrows_primes_and_greek(self):
         ln = Line().put("𝑚").sub("1").put("𝑣").sub("1")
