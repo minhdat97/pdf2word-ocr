@@ -282,6 +282,21 @@ def main():
             run_task(token, "pdf-to-word", {"ocr_type": "ocr"})["error_fe"] == "password",
         )
     )
+    # The page closed while its conversion runs (POST .../cancel, sent by the page): it stops at its next page.
+    token = upload((SAMPLES / "vi-scan.pdf").read_bytes())
+    task_id = uuid.uuid4().hex
+    call("POST", "/v1/tasks", {"tool": "pdf-to-word", "task_id": task_id, "input_tokens": [token],
+                               "options": {"ocr_type": "ocr"}})
+    cancelled = call("POST", f"/v1/tasks/{task_id}/cancel")[0] == 200
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        data = json.loads(call("GET", f"/v1/tasks/{task_id}")[1])["data"]
+        if data["status"] in ("done", "failed"):
+            break
+        time.sleep(0.3)
+    checks.append(("cancel -> task stopped, error_fe=cancelled",
+                   cancelled and data["status"] == "failed" and data["result"]["error_fe"] == "cancelled"))
+    checks.append(("cancel unknown task -> 404", call("POST", f"/v1/tasks/{uuid.uuid4().hex}/cancel")[0] == 404))
     for label, passed in checks:
         failures += not passed
         print(f"{'OK ' if passed else 'BAD'} {label}")

@@ -16,9 +16,17 @@ const ERRORS = {
   too_many_tasks: "File này đang được xử lý hoặc đã chuyển nhiều lần. Hãy chọn lại file.",
   busy: "Máy chủ đang bận. Hãy thử lại sau ít phút.",
   server_full: "Máy chủ đang bận. Hãy thử lại sau ít phút.",
+  careful_busy: "Đang có nhiều người đọc kỹ. Hãy thử lại sau ít phút hoặc bỏ chọn Đọc kỹ.",
+  abandoned: "Trang tạm dừng quá lâu nên lượt chuyển đã bị huỷ. Hãy chuyển lại.",
+  cancelled: "Lượt chuyển đã bị huỷ. Hãy chuyển lại.",
 };
 const fmt = (n, d = 1) => n.toLocaleString("vi-VN", { maximumFractionDigits: d });
-const duration = (s) => (s < 100 ? `${fmt(s)} giây` : `${Math.floor(s / 60)} phút ${Math.round(s % 60)} giây`);
+// Dưới 100 giây ghi giây (một chữ số lẻ), từ đó ghi phút: làm tròn một lần rồi mới chia (không ra "1 phút 60 giây").
+function duration(s) {
+  if (Math.round(s * 10) < 1000) return `${fmt(s)} giây`;
+  const t = Math.round(s);
+  return `${Math.floor(t / 60)} phút` + (t % 60 ? ` ${t % 60} giây` : "");
+}
 let state = {};
 
 // ?debug hiện nhật ký các request (khi cần dò lỗi).
@@ -70,6 +78,12 @@ function putFile(url, file, onProgress) {
 
 const newTaskId = () => crypto.randomUUID().replaceAll("-", "");
 
+// Việc đang chờ/chạy của trang: đóng hay tải lại trang thì báo máy chủ bỏ (lượt "Đọc kỹ" không chạy cho ai cả).
+let currentTask = null;
+window.addEventListener("pagehide", (e) => {
+  if (currentTask && !e.persisted) navigator.sendBeacon(`/v1/tasks/${currentTask}/cancel`);
+});
+
 // Bỏ cuộc khi 10 phút không có tin mới: thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, file
 // scan dài hay "Đọc kỹ" (trang dày 1–2 phút trên máy chủ) không bị dừng giữa chừng khi các trang vẫn đang xong dần.
 const PATIENCE_MS = 10 * 60 * 1000;
@@ -78,6 +92,18 @@ const PATIENCE_MS = 10 * 60 * 1000;
 async function runTask(tool, options, label, hint = "", waiting = "Đang chờ đến lượt…") {
   const task_id = newTaskId();
   await api("POST", "/v1/tasks", { tool, task_id, input_tokens: [state.token], options });
+  currentTask = task_id;
+  try {
+    return await pollTask(task_id, label, hint, waiting);
+  } catch (err) {
+    if (err.code === "timeout") navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);  // trang thôi chờ: máy chủ cũng thôi
+    throw err;
+  } finally {
+    currentTask = null;
+  }
+}
+
+async function pollTask(task_id, label, hint, waiting) {
   let deadline = Date.now() + PATIENCE_MS;
   let seen = "";
   let logged = false;
@@ -213,7 +239,8 @@ async function handleFile(file) {
   }
 }
 
-async function convert(e) {
+// again: "chuyển lại, đọc kỹ" – file Word vừa chuyển vẫn tải được trong lúc chờ, và cả khi lần đọc kỹ không xong.
+async function convert(e, again = false) {
   if (e) e.preventDefault();
   const mode = new FormData($("options")).get("mode");
   const ocrType = mode === "ocr" ? ($("full").checked ? "ocr-full" : "ocr") : "";
@@ -225,7 +252,7 @@ async function convert(e) {
     careful,
   };
   $("options").hidden = true;
-  $("done").hidden = true;
+  if (!again) $("done").hidden = true;
   $("error").hidden = true;
   $("busy").hidden = false;
   const hint = careful ? " – mỗi trang scan khoảng 1–2 phút" : "";
@@ -258,7 +285,11 @@ async function convert(e) {
       const again = Object.assign(document.createElement("button"), {
         type: "button", className: "linkbtn", textContent: "chuyển lại, đọc kỹ",
       });
-      again.onclick = () => { $("careful").checked = true; convert(); };
+      again.onclick = () => {
+        again.disabled = true;
+        $("careful").checked = true;
+        convert(null, true);
+      };
       const li = document.createElement("li");
       li.append(`${info.formula_pictures} công thức (phân số, căn) giữ dạng ảnh – `, again);
       items.push(li);
@@ -292,7 +323,11 @@ async function convert(e) {
     $("busy").hidden = true;
     $("done").hidden = false;
   } catch (err) {
-    $("options").hidden = false;
+    if (again) {
+      for (const b of document.querySelectorAll("#notes .linkbtn")) b.disabled = false;
+    } else {
+      $("options").hidden = false;
+    }
     showError(err);
   }
 }
