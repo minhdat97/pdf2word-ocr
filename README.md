@@ -172,7 +172,8 @@ hay `P2W_FORMULAS=model|off`: lệnh xoá file khi file không đặt gì khác,
 Kết quả `analyse-document` có thêm `careful`: `{"available": true, "max_scan_pages": 5}` (máy chủ
 "Đọc kỹ" được không, tối đa mấy trang scan). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc
 công thức trang scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn đọc kỹ mà file quá dài),
-`vietocr_skipped`, `formula_pictures` (vùng công thức trang scan giữ thành ảnh).
+`vietocr_skipped`, `formula_pictures` (vùng công thức trang scan giữ thành ảnh), `equations` /
+`native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành ảnh).
 
 Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
 trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, nên file scan dài
@@ -241,15 +242,33 @@ tắt.
     sát viền phải còn bên trái trống >30% (dòng đầy ô không cho biết gì nên để trái). Lề trong ô
     lấy theo khoảng viền → chữ của ô canh trái (0,5–5,4pt; mặc định 5,4pt của Word làm cột hẹp bẻ
     "Đúng" thành "Đún/g"). Nét kẻ của bảng không bị coi là gạch chân chữ.
+  - Equation của Word (font Cambria Math, cả STIX/Latin Modern Math: chữ có Unicode thật) được
+    **dựng lại thành Equation** sửa được trong Word (`app/nativemath.py`) từ vị trí glyph: chữ toán
+    nghiêng 𝑚 → m, 𝒃 → chữ đậm nghiêng; chỉ số trên/dưới theo cỡ chữ nhỏ hơn và độ lệch baseline
+    (chỉ số của số thập phân lấy cả số: "4,1²"); gạch phân số (cả phân số lồng nhau); mũi tên vectơ
+    (ký tự ghép U+20D7 ở mép phải chữ, 1–2 mảnh); "⁰C" sau dấu ngoặc hay cách xa số trước là chỉ số
+    trên không có cơ số; chữ đứng (đơn vị "kg", "J/kgK") giữ đứng; chữ thường trong Equation ("Hiệu
+    suất", "Năng lượng nhận được") thành chữ thường của Equation (font Cambria Math như bản gốc);
+    vạch "|x|" (chữ hay nét vẽ); khoảng trắng gõ tay (≥0,16em, không tính sau dấu câu hay cạnh phân số
+    vì Word tự giãn); ∆ giữ nguyên ký tự (đứng). Gạch đầu dòng "- " cách công thức, nhãn khác màu ("b)"
+    xanh đậm nghiêng) và dấu câu cuối font chữ thường thành chữ ngoài Equation. Màu chữ của Equation
+    giữ nguyên. Equation đứng một mình trong đoạn có thêm một dấu cách sau nó (không thì Word coi là
+    Equation hiển thị riêng: căn giữa, phân số to). Đọc không chắc thì giữ ảnh như dưới đây: nét vẽ
+    khác gạch phân số và vạch đứng (căn, ngoặc nhọn, gạch chân, nền tô), glyph cỡ to lệch baseline
+    (hai dòng), nhiều màu, ký tự lạ ("!", mảnh ngoặc lớn ⎛, chữ script), font chữ thường lẫn giữa,
+    LaTeX `omml.py` không nhận, và glyph mà font toán không có bảng mã chữ (ToUnicode rỗng hay thiếu
+    mã: PDF chỉ còn mã "!\"#$", có thể trông như "(" hợp lệ – cả trang có font Type0 không bảng mã
+    thì mọi công thức trang đó giữ ảnh).
   - Công thức không có chữ dùng được – MathType/Equation mà Word xuất ra PDF đánh số glyph
-    "!", "\"", "#"…, chữ toán Unicode (𝑥) – được cắt thành **ảnh nội dòng** 300 DPI đúng chỗ trong
+    "!", "\"", "#"…, công thức MathType (Times + Symbol) và công thức trên không đọc chắc – được cắt
+    thành **ảnh nội dòng** 300 DPI đúng chỗ trong
     câu, hạ theo baseline (alt "Công thức (ảnh)"). Vùng công thức là nhóm glyph công thức cùng
     glyph Symbol/Cambria Math kề bên (cùng dòng: cách ≤0,35em; chồng nhau như cận tích phân: chỉ
     glyph nhỏ hơn nằm giữa glyph lớn) và nét vẽ dính vào (gạch phân số, căn, mũi tên, vạch trị
     tuyệt đối "|x|"). Gạch phân số giữ tử và mẫu đặt gọn trên/dưới nó thành một khối, kể cả chữ
     thường trong phương trình Word ("Năng lượng nhận được", "1/110" Cambria Math); gạch chân thì
     cắt qua hộp chữ nên không bị coi là gạch phân số. Hai dòng công thức xếp sát nhau vẫn là hai
-    ảnh. Khối chồng lên nhau gộp làm một, chữ nằm gần trọn trong khối thuộc về khối (không viết lại
+    ảnh (hay hai Equation), kể cả khi chỉ số của dòng trên chạm glyph dòng dưới. Khối chồng lên nhau gộp làm một, chữ nằm gần trọn trong khối thuộc về khối (không viết lại
     lần nữa cạnh ảnh). Ảnh chỉ có nét của chính công thức trên nền trong suốt: watermark, nền ô,
     chữ xoay chéo phía sau và mép dòng bên cạnh đều không lọt vào. Dấu câu ngay sau công thức
     (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%", "(1) 6273." là chữ. Dòng
@@ -439,6 +458,9 @@ Kết quả hiện tại (M4 Pro):
   bản nghiêng 2° và bản xoay 90° cho kết quả tương đương.
 - Bản scan của file đề thi (200 dpi, có watermark): khớp 94,3% ký tự / 88,7% từ, giữ hình cờ lê
   kèm nhãn, Word render đúng 2 trang.
+- Bộ Bai_1–6 (Word 2019, Equation Cambria Math): 40/40 công thức thành Equation, 0 sai so với bản
+  chuẩn gõ tay (thêm 2 Equation đúng, 2 công thức font không bảng mã giữ ảnh ở một đề mẫu khác);
+  Word render khớp bản gốc, mở trang khớp 24/24; tốc độ như cũ (~11 giây cả 6 file trên Mac).
 - Đề Vật lí 10 gõ MathType, Word xuất PDF 6 trang: ~1,2 giây, ~145 ảnh công thức; khớp 98,7% từ
   với file Word gốc (công thức tính là một từ); Word render đúng 6 trang; trang đọc đề đọc đủ 28/28
   đáp án.
@@ -513,9 +535,10 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   trang cũng mất; dòng chỉ có ở trang đầu thì vẫn là nội dung.
 - Bảng scan: màu nền ô lệch vài đơn vị so với bản gốc (ảnh chụp điện thoại lệch nhiều hơn); ô tô
   màu chỉ đậm hơn giấy dưới 10/255 (hay dưới độ chênh sáng của ảnh chụp) thì thành ô trắng.
-- Công thức thành ảnh: xem và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không
-  đọc được nội dung (chưa dựng lại thành Equation). Công thức có chữ thật (PDF từ LaTeX, chỉ
-  dùng font Symbol) vẫn là chữ.
+- Công thức thành ảnh (MathType, Equation có căn/ma trận/ngoặc lớn, font toán thiếu bảng mã): xem
+  và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không đọc được nội dung. Công thức
+  có chữ thật (PDF từ LaTeX, chỉ dùng font Symbol) vẫn là chữ; công thức Cambria Math không có chữ
+  toán nghiêng hay gạch phân số ("4,5 × 10³ J", "80,0 ∘C") vẫn là chữ thường font Cambria Math.
 - Đọc công thức mặc định (không mô hình): chỉ số có chữ Đ/đ (R_Đ, F_đh), chỉ số chữ y/p hay chữ x, v, s…
   đứng một mình mà chiều cao không rõ hoa/thường (nét cao 0,70–0,84 x-height của dòng), chữ trong chỉ số
   có thể là chữ số (O, t, B…) mà Tesseract đọc dòng không thấy thì giữ chữ OCR; phân số, căn, gạch trên

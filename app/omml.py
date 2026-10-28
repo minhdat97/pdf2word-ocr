@@ -853,9 +853,10 @@ def _finish(items):
 # --- OMML writer ---------------------------------------------------------------------------
 
 class _Writer:
-    def __init__(self, size_pt, text_font, tidy):
+    def __init__(self, size_pt, text_font, tidy, color=None):
         self.size = None if size_pt is None else str(round(float(size_pt) * 2))
         self.text_font = text_font
+        self.color = color
         self.tidy = tidy  # one space at most, none at the ends or before punctuation
 
     def wrpr(self, style):
@@ -868,6 +869,8 @@ class _Writer:
             etree.SubElement(rpr, _w("b"))
         if style.nor and style.sty in ("i", "bi"):
             etree.SubElement(rpr, _w("i"))
+        if self.color:
+            etree.SubElement(rpr, _w("color")).set(_w("val"), self.color)
         if self.size:
             etree.SubElement(rpr, _w("sz")).set(_w("val"), self.size)
             etree.SubElement(rpr, _w("szCs")).set(_w("val"), self.size)
@@ -1047,12 +1050,13 @@ def _trim_spaces(nodes):
 
 
 def latex_to_omml(latex: str, *, size_pt: float | None = None, text_font: str | None = None,
-                  spaces: str = "word") -> etree._Element:
+                  spaces: str = "word", color: str | None = None) -> etree._Element:
     """Convert one LaTeX formula to a Word equation: an m:oMath element.
 
     size_pt sets the font size of every run, text_font the font of \\text runs (math runs
-    use Cambria Math). spaces: "word" writes each run of spacing commands (\\, \\: ~ \\quad...)
-    as one no-break space, "none" drops them, "all" writes each as a Unicode space of its width.
+    use Cambria Math), color ("RRGGBB") the colour of every run. spaces: "word" writes each
+    run of spacing commands (\\, \\: ~ \\quad...) as one no-break space, "none" drops them,
+    "all" writes each as a Unicode space of its width.
     Raises ValueError for unsupported or malformed input.
     """
     if not isinstance(latex, str):
@@ -1066,5 +1070,7 @@ def latex_to_omml(latex: str, *, size_pt: float | None = None, text_font: str | 
     if _is_empty(nodes):
         raise ValueError("empty formula")
     root = etree.Element(_m("oMath"), nsmap={"m": M_NS, "w": W_NS})
-    _Writer(size_pt, text_font, spaces == "word").nodes(root, nodes)
+    if color is not None and not (len(color) == 6 and all(c in "0123456789abcdefABCDEF" for c in color)):
+        raise ValueError(f"color must be RRGGBB, not {color!r}")
+    _Writer(size_pt, text_font, spaces == "word", color).nodes(root, nodes)
     return root

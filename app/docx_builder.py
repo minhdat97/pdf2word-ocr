@@ -152,7 +152,8 @@ def _add_math(p, r: Run, size: float) -> None:
     """A formula as a Word equation (m:oMath in the paragraph, between its runs). LaTeX the
     converter rejects falls back to the run's picture, else to its text."""
     try:
-        p._p.append(latex_to_omml(r.math, size_pt=r.size or size, text_font=FONT))
+        # a rebuilt Word equation (native PDF) keeps its colour and writes its words in its own font
+        p._p.append(latex_to_omml(r.math, size_pt=r.size or size, text_font=r.font or FONT, color=r.color))
     except ValueError:
         if r.image:
             _add_formula(p, r)
@@ -196,6 +197,20 @@ def _write_runs(p, runs: list[Run], text: str, size: float, bold: bool) -> None:
                 _format(run, r)
                 if i < len(parts) - 1:
                     run.add_break()
+    _keep_inline(p, max((r.size or size for r in runs if r.math), default=size))
+
+
+def _keep_inline(p, size: float) -> None:
+    """Word sets an equation that is alone in its paragraph as a display equation: centred, with
+    full-size fractions. A space after it keeps it in the line, as the PDF has it."""
+    el = p._p
+    if el.find(qn("m:oMath")) is None or el.find(qn("w:fldSimple")) is not None:
+        return
+    for r in el.iterchildren(qn("w:r")):
+        t = r.find(qn("w:t"))
+        if (t is not None and t.text) or r.find(qn("w:tab")) is not None or r.find(qn("w:drawing")) is not None:
+            return
+    p.add_run(" ").font.size = Pt(size)
 
 
 def _fill_paragraph(

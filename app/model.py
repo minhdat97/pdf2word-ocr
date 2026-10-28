@@ -135,3 +135,5 @@ class PageLayout:
     legacy_spans: int = 0  # spans converted from VNI/TCVN3
     ocr_regions: int = 0  # raster regions replaced by OCR text
     formula_pictures: int = 0  # OCR: formula regions kept as pictures (fractions, roots not read)
+    equations: int = 0  # native: Word equations rebuilt from the text layer
+    native_formula_pictures: int = 0  # native: formulas kept as pictures (MathType, layouts not read)

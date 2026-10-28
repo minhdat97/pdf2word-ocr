@@ -461,4 +461,7 @@ def convert(
         "vietocr_skipped": skip_vietocr,
         # formula regions of scanned pages kept as pictures (fractions, roots: by default always, careful: unread)
         "formula_pictures": sum(p.formula_pictures for p in pages),
+        # formulas of text pages: rebuilt as Word equations / kept as pictures (MathType, layouts not read)
+        "equations": sum(p.equations for p in pages),
+        "native_formula_pictures": sum(p.native_formula_pictures for p in pages),
     }
