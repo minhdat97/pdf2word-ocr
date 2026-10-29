@@ -128,19 +128,24 @@ def _math_italic(c: str, bold: bool = False) -> str | None:
     return None
 
 
-def _mathtype_char(c: str, span: dict) -> str | None:
+def _mathtype_char(c: str, span: dict, mapped: bool | None = None) -> str | None:
     """What a glyph of a MathType object reads as for app/nativemath.py, or None if it cannot be read.
     Symbol glyphs come as private-use or Latin codes (λ is "\\uf06c" or "l"): Symbol's encoding gives the
-    character, a small Greek letter is a math italic (MathType's λ is a variable). Letters of the text font
-    are math italic where it is italic (MathType's variables), upright otherwise (units, functions)."""
+    character, a small Greek letter is a math italic (MathType's λ is a variable). A code from 0x80 to
+    0xFF is the raw code of a Symbol font without a ToUnicode map (mapped False: "×" is Symbol's 0xD7,
+    the dot ⋅) and real Unicode in one with a map (mapped True: "×" is ×); unknown (None): not read.
+    Letters of the text font are math italic where it is italic (MathType's variables), upright otherwise
+    (units, functions)."""
     font = span["font"]
     if SYMBOL_FONT.search(font):
         o = ord(c)
-        if 0xF020 <= o <= 0xF0FF or o < 0x80:  # a raw code (Symbol has no Latin letters: "l" is λ)
-            u = SYMBOL_ENCODING.get(o & 0xFF)
-        else:  # the font's map gives real Unicode ("×", "µ" for mu): taken as it is
+        if 0xF020 <= o <= 0xF0FF or o < 0x80 or (o <= 0xFF and mapped is False):
+            u = SYMBOL_ENCODING.get(o & 0xFF)  # a raw code (Symbol has no Latin letters: "l" is λ)
+        elif o > 0xFF or mapped:  # real Unicode from the font's map ("λ", "→"; "×", "µ" for mu)
             u = {"µ": "μ", "·": "⋅"}.get(c, c)
             u = u if u in SYMBOL_CHARS else None
+        else:
+            u = None
         if u is None:
             return None
         if "α" <= u <= "ω" or u in "ϑϕϖ":
@@ -294,7 +299,36 @@ def _read_form_frames(page: pymupdf.Page) -> list[dict]:
             r = pymupdf.Rect(min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts),
                              max(y for _, y in pts)) * page.transformation_matrix
             if r.is_valid and not r.is_empty and all(map(math.isfinite, r)):
-                out.append({"name": args[-1], "ctm": ctm, "rect": r})
+                out.append({"name": args[-1], "ctm": ctm, "rect": r, "xref": xref})
+    return out
+
+
+def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool]:
+    """Whether each Symbol font the forms use has a ToUnicode map, by _font_key (Word's SymbolMT has one;
+    a font without one gives its raw codes, read as Latin-1 above 0x7F). Read within the font budget."""
+    out: dict[str, bool] = {}
+    try:
+        todo = sorted(forms)
+        kind_of = {x: 0 for x in todo}  # the forms and the forms they draw, one level down
+        for x in list(todo):
+            kind, xobjects = _read_key(doc, x, "Resources/XObject")
+            if kind == "dict":
+                for ref in FONT_REF.findall(xobjects):
+                    if int(ref) not in kind_of and _read_key(doc, int(ref), "Subtype")[1] == "/Form":
+                        kind_of[int(ref)] = 1
+                        todo.append(int(ref))
+        for x in todo:
+            kind, fonts = _read_key(doc, x, "Resources/Font")
+            if kind != "dict":
+                continue
+            for ref in FONT_REF.findall(fonts):
+                fx = int(ref)
+                name = _read_key(doc, fx, "BaseFont")[1].lstrip("/")
+                if SYMBOL_FONT.search(name):
+                    key = _font_key(name)
+                    out[key] = out.get(key, False) or _read_key(doc, fx, "ToUnicode")[0] != "null"
+    except Exception:  # noqa: BLE001 – past the budget or damaged: those fonts' codes above 0x7F are not read
+        pass
     return out
 
 
@@ -1560,6 +1594,7 @@ class _Extractor:
         if got is None:
             return []
         self._forms_doc, self._forms_xref, contents = got
+        self._symbol_maps = _form_symbol_maps(self.page.parent, {fr["xref"] for fr in frames})
         owners: dict[tuple, set[int]] = {}
         spaces: dict[tuple, int] = {}
         blanks: list[tuple] = []  # (space, the form drawing it or None)
@@ -1711,7 +1746,7 @@ class _Extractor:
             sp = span_of.get(id(c))
             if sp is None or sp["size"] < 4:
                 return None
-            ch = _mathtype_char(c["c"], sp)
+            ch = _mathtype_char(c["c"], sp, self._symbol_maps.get(_font_key(sp["font"])))
             if ch is None:
                 return None
             if not SYMBOL_FONT.search(sp["font"]):

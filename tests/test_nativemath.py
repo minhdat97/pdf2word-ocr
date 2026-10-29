@@ -598,8 +598,12 @@ class MathTypeTest(unittest.TestCase):
         self.assertEqual(read("\uf02d", symbol), "−")
         self.assertEqual(read("\uf0b4", symbol), "×")
         self.assertIsNone(read("\uf0e6", symbol))  # a bracket piece
-        self.assertEqual(read("×", symbol), "×")  # real Unicode from the font's map, not Symbol's code 0xD7
-        self.assertEqual(read("µ", symbol), "𝜇")
+        # above 0x7F: real Unicode from a font with a ToUnicode map, the raw code from one without
+        self.assertEqual(read("×", symbol, True), "×")
+        self.assertEqual(read("µ", symbol, True), "𝜇")
+        self.assertEqual(read("×", symbol, False), "⋅")  # Symbol's code 0xD7: the dot
+        self.assertEqual(read("´", symbol, False), "×")  # Symbol's code 0xB4
+        self.assertIsNone(read("×", symbol))  # the font's map is not known
         self.assertEqual(read("\uf066", symbol), "𝜙")  # Symbol draws its "phi" stroked
         self.assertEqual(read("\uf06a", symbol), "𝜑")
         self.assertEqual(read("f", times_i), "𝑓")
