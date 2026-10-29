@@ -318,10 +318,12 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
                 if isinstance(el, Paragraph):
                     texts.setdefault(k, []).append((i, _zone_text(el)))
     # Lines that only look alike once numbers are masked are not repeated unless their numbers are the same on
-    # every page or count the pages ("A. v = 2 m/s …" at the foot of one page, "A. v = 1 m/s …" of the next);
-    # a question or an answer row ("Câu 12.", "A. …") is never a header or footer
+    # every page or count the pages ("A. v = 2 m/s …" at the foot of one page, "A. v = 1 m/s …" of the next) –
+    # on text pages: OCR may read one digit of a header differently on one page; a question or an answer row
+    # ("Câu 12.", "A. …") is never a header or footer
     for k in [k for k in on if k in texts]:
-        if ITEM_LABEL.match(texts[k][0][1].lstrip()) or not _same_numbers(texts[k], len(pages)):
+        native = all(pages[i].source == "native" for i, _ in texts[k])
+        if ITEM_LABEL.match(texts[k][0][1].lstrip()) or (native and not _same_numbers(texts[k], len(pages))):
             del on[k]
     sides = {k: s for k, pages_on in on.items() if (s := _side(pages_on, len(pages)))}
     if any(s in ("odd", "even") for s in sides.values()):
