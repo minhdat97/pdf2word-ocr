@@ -110,6 +110,13 @@ CONTENT_STREAMS_MAX = 64  # streams in a page's /Contents read for form frames
 DO_MAX = 20000  # "Do" operators of a page looked at for form frames
 FRAMES_MAX = 300  # Word EMF forms on a page; a page with more is read as before (VL1108: up to 11)
 OPERANDS_MAX = 16  # operands kept before an operator (cm takes 6)
+FORM_CONTENT_MAX = 64 * 1024  # bytes of one EMF form's content (its own and the forms it draws); MathType's: < 2 KB
+FORMS_WORK_MAX = 1_000_000  # bytes of form content the page copy draws, all frames together
+COPY_OBJECTS_MAX = 1000  # objects a page copy (_form_contents) may take with it; Word's pages: 80–140 (VL1108)
+COPY_OBJECTS_BUDGET = 20_000  # objects copied for form pages per file
+FORM_IMAGES_MAX = 16  # images the forms draw (any image makes its form a picture, not a formula)
+OBJ_REF = re.compile(r"(?<![\w/])(\d+)\s+0\s+R\b")
+META_REF = re.compile(r"/(Meta\d+)\s+(\d+)\s+0\s+R")
 
 
 def _math_italic(c: str, bold: bool = False) -> str | None:
@@ -227,12 +234,16 @@ def _page_content(page: pymupdf.Page) -> bytes | None:
     inflated with a bound, so a compression bomb costs nothing; other filters are not read (None)."""
     doc = page.parent
     xrefs = page.get_contents()
-    if not xrefs or len(xrefs) > CONTENT_STREAMS_MAX:
+    if not xrefs or len(xrefs) > CONTENT_STREAMS_MAX or len(set(xrefs)) < len(xrefs):
         return None
     parts, total = [], 0
     for x in xrefs:
         kind, filt = doc.xref_get_key(x, "Filter")
+        length = _stream_length(doc, x)
+        if length is None or length > CONTENT_MAX:
+            return None
         raw = doc.xref_stream_raw(x) or b""
+        total += len(raw) // 4  # the raw bytes read count too (a short Flate stream padded inside its /Length)
         if kind == "null":
             data = raw[: CONTENT_MAX - total + 1]
         elif filt.strip("[] ") == "/FlateDecode" and doc.xref_get_key(x, "DecodeParms")[0] == "null":
@@ -252,10 +263,11 @@ def _read_form_frames(page: pymupdf.Page) -> list[dict]:
     if page.rotation:
         return []
     doc = page.parent
+    text = _resources(doc, page.xref, "XObject")  # the page's own dictionary: get_xobjects() walks every form tree
     forms = {}
-    for xref, name, invoker, _bbox in page.get_xobjects():
-        if invoker == 0 and xref > 0 and WORD_EMF_FORM.fullmatch(name) and doc.xref_get_key(xref, "Subtype")[1] == "/Form":
-            forms[name] = xref
+    for name, ref in META_REF.findall(text or "")[: 2 * FRAMES_MAX]:
+        if doc.xref_get_key(int(ref), "Subtype")[1] == "/Form":
+            forms[name] = int(ref)
     if not forms:
         return []
     data = _page_content(page)
@@ -263,8 +275,16 @@ def _read_form_frames(page: pymupdf.Page) -> list[dict]:
         return []
     geometry: dict[int, tuple | None] = {}  # xref -> (bbox, matrix), read once
     ctm, stack, out, dos = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), [], [], 0
+    marked: list[bool] = []  # marked content open at this point: True for optional content (/OC: may be hidden)
     for op, args in _content_ops(data):
-        if op == "q":
+        if op == "BDC":
+            marked.append(bool(args) and args[0] == "OC")
+        elif op == "BMC":
+            marked.append(False)
+        elif op == "EMC":
+            if marked:
+                marked.pop()
+        elif op == "q":
             stack.append(ctm)
         elif op == "Q":
             ctm = stack.pop() if stack else ctm
@@ -274,17 +294,20 @@ def _read_form_frames(page: pymupdf.Page) -> list[dict]:
             dos += 1
             if dos > DO_MAX or len(out) > FRAMES_MAX:
                 return []  # a page that draws that many forms is not a page of MathType objects
-            if not args or args[-1] not in forms:
-                continue
+            if not args or args[-1] not in forms or any(marked):
+                continue  # (a form in optional content may be hidden: the page shows nothing of it)
             xref = forms[args[-1]]
             if xref not in geometry:
-                try:
-                    bbox = [float(v) for v in doc.xref_get_key(xref, "BBox")[1].strip("[] ").split()]
-                    kind, value = doc.xref_get_key(xref, "Matrix")
-                    matrix = tuple(float(v) for v in value.strip("[] ").split()) if kind == "array" else (1, 0, 0, 1, 0, 0)
-                    geometry[xref] = (bbox, matrix) if len(bbox) == 4 and len(matrix) == 6 else None
-                except ValueError:
-                    geometry[xref] = None
+                geometry[xref] = None
+                bbox_text = doc.xref_get_key(xref, "BBox")[1]
+                kind, value = doc.xref_get_key(xref, "Matrix")
+                if len(bbox_text) <= 200 and len(value) <= 200:
+                    try:
+                        bbox = [float(v) for v in bbox_text.strip("[] ").split()]
+                        matrix = tuple(float(v) for v in value.strip("[] ").split()) if kind == "array" else (1, 0, 0, 1, 0, 0)
+                        geometry[xref] = (bbox, matrix) if len(bbox) == 4 and len(matrix) == 6 else None
+                    except ValueError:
+                        pass
             if geometry[xref] is None:
                 continue
             bbox, matrix = geometry[xref]
@@ -332,6 +355,93 @@ def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool]
     return out
 
 
+def _stream_length(doc: pymupdf.Document, xref: int) -> int | None:
+    """A stream's /Length, given in place or as a reference to a number."""
+    kind, val = doc.xref_get_key(xref, "Length")
+    if kind == "xref":
+        val, kind = doc.xref_object(int(val.split()[0]), compressed=True).strip(), "int"
+    return int(val) if kind == "int" and val.isdigit() else None
+
+
+def _stream_size(doc: pymupdf.Document, xref: int, cap: int) -> int | None:
+    """Decoded size of a content stream, inflated within cap; None past it or for a filter other than Flate."""
+    kind, filt = doc.xref_get_key(xref, "Filter")
+    length = _stream_length(doc, xref)
+    if length is None or length > cap:
+        return None
+    raw = doc.xref_stream_raw(xref) or b""
+    if kind == "null":
+        return len(raw) if len(raw) <= cap else None
+    if filt.strip("[] ") != "/FlateDecode" or doc.xref_get_key(xref, "DecodeParms")[0] != "null":
+        return None
+    try:
+        size = len(zlib.decompressobj().decompress(raw, cap + 1))
+    except zlib.error:
+        return None
+    return size if size <= cap else None
+
+
+def _forms_small(doc: pymupdf.Document, frames: list[dict]) -> bool:
+    """The forms the page copy would draw hold little: each at most FORM_CONTENT_MAX of content with the
+    forms it draws (one level down), all frames together FORMS_WORK_MAX (a form may be drawn many times)."""
+    sizes: dict[int, int | None] = {}
+    total = 0
+    for fr in frames:
+        x = fr["xref"]
+        if x not in sizes:
+            size = _stream_size(doc, x, FORM_CONTENT_MAX)
+            text = _resources(doc, x, "XObject") if size is not None else None
+            if text is None:
+                size = None  # (resources too large to read, or none found)
+            for ref in OBJ_REF.findall(text or "")[:32]:
+                if size is None:
+                    break
+                if doc.xref_get_key(int(ref), "Subtype")[1] == "/Form":
+                    sub = _stream_size(doc, int(ref), FORM_CONTENT_MAX)
+                    size = None if sub is None or size + sub > FORM_CONTENT_MAX else size + sub
+            sizes[x] = size
+        if sizes[x] is None:
+            return False
+        total += sizes[x]
+        if total > FORMS_WORK_MAX:
+            return False
+    return True
+
+
+def _copy_small(page: pymupdf.Page) -> bool:
+    """What insert_pdf would copy with the page – everything its resources and contents reach – is a page's
+    worth (COPY_OBJECTS_MAX objects, COPY_OBJECTS_BUDGET per file); counted without copying."""
+    doc = page.parent
+    kind, val = doc.xref_get_key(page.xref, "Resources")
+    if kind == "xref":
+        todo = [int(val.split()[0])]
+    elif kind == "dict":
+        todo = [int(r) for r in OBJ_REF.findall(val)]
+    else:
+        return False
+    todo += page.get_contents()
+    spent = doc.__dict__.get("_p2w_copy_objects", 0)
+    limit = min(COPY_OBJECTS_MAX, COPY_OBJECTS_BUDGET - spent)
+    children = doc.__dict__.setdefault("_p2w_obj_refs", {})  # xref -> the objects it names (None: too large), per file
+    seen: set[int] = set()
+    while todo:
+        x = todo.pop()
+        if x in seen or x <= 0:
+            continue
+        seen.add(x)
+        if len(seen) > limit:
+            doc.__dict__["_p2w_copy_objects"] = spent + len(seen)
+            return False
+        if x not in children:
+            text = doc.xref_object(x, compressed=True)
+            children[x] = None if len(text) > 200_000 else [int(r) for r in OBJ_REF.findall(text)]
+        if children[x] is None:
+            return False  # an object that large is not one of a Word page's
+        todo += children[x]
+    doc.__dict__["_p2w_copy_objects"] = spent + len(seen)
+    return True
+
+
 def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Document, int, list] | None:
     """What each form draws, read from a copy of the page that draws only the forms: per frame, the
     origins and characters of its glyphs and the boxes of its strokes. Before each form the copy paints a
@@ -340,6 +450,8 @@ def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Docu
     draws a form's picture later, _form_picture), the xref of its content stream and the lists; None if
     the page cannot be copied."""
     try:
+        if not _forms_small(page.parent, frames) or not _copy_small(page):
+            return None
         doc = pymupdf.open()
         doc.insert_pdf(page.parent, from_page=page.number, to_page=page.number, annots=False, links=False)
         copy = doc[0]
@@ -383,7 +495,10 @@ def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Docu
             k = owner(seqno)
             if k is not None:
                 out[k]["strokes"].append(r)
-        for info in copy.get_image_info():
+        images = copy.get_image_info()
+        if len(images) > FORM_IMAGES_MAX:
+            return None  # forms full of images are pictures, not formulas
+        for info in images:
             r = pymupdf.Rect(info["bbox"])
             for k, fr in enumerate(frames):
                 if not (fr["rect"] & r).is_empty:
@@ -1126,6 +1241,7 @@ class _Extractor:
         ]
         self.formulas: list[dict] = []  # {"rect", "size", "run"}: formulas kept as pictures
         self.formula_chars: set[int] = set()  # id() of the glyphs drawn by those pictures
+        self._forms_doc: pymupdf.Document | None = None  # the page drawing only its MathType forms (_form_contents)
         self.formula_drawings: set[int] = set()  # bars, radicals, arrows drawn as part of a formula
         self.legacy_spans = 0
         self.invisible_layer = False
@@ -1401,7 +1517,10 @@ class _Extractor:
         nodes: list[list] = []  # [rect, kind, size, drawing index, char]; kind 2 formula, 1 joins, 0 drawing
         marks: list[tuple] = []  # every visible upright glyph: (rect, size, char, node index or None)
         span_of: dict[int, dict] = {}  # id(char) -> its span
-        objects = self._mathtype_objects(blocks)  # whole formulas, read apart from the grouping below
+        try:
+            objects = self._mathtype_objects(blocks)  # whole formulas, read apart from the grouping below
+        except Exception:  # noqa: BLE001 – a page this trips over keeps its formulas as before
+            objects = []
         taken = {id(c) for o in objects for c in o["chars"]}
         taken_drawings = {i for o in objects for i in o["drawings"]}
         for b in blocks:
@@ -1557,7 +1676,10 @@ class _Extractor:
             # the main line's baseline: where the largest glyphs sit (not MathType's brackets, set larger)
             top = max([z for c, z in zip(f["chars"], sizes) if not (f.get("mt") and c["c"] in "()[]{}")] or sizes)
             baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if top - 0.5 < size <= top)
-            pieces = self._equation_mt(f, span_of) if f.get("mt") else None
+            try:
+                pieces = self._equation_mt(f, span_of) if f.get("mt") else None
+            except Exception:  # noqa: BLE001 – unreadable: its picture
+                pieces = None
             if f.get("mt") and pieces is None and not f["strong"]:
                 continue  # variables in italics, nothing the text does not show as well: left to the text
             self.formula_drawings |= f["drawings"]
@@ -1664,16 +1786,22 @@ class _Extractor:
         # inside the object's frame): they go with the formula, not into the text after it
         taken = {id(o["form"]): o for o in out}
         lines = {}  # the object's baseline and size: the page's spaces on that line only
+        cells: dict[tuple[int, int], list[dict]] = {}  # (x // 50, baseline // 50) -> objects reaching there
         for o in out:
             sizes = [o["spans"][id(c)]["size"] for c in o["chars"]]
             top = max(sizes)
             lines[id(o)] = (median(c["origin"][1] for c, z in zip(o["chars"], sizes) if z > top - 0.5), top)
+            r, y = o["form"]["rect"], lines[id(o)][0]
+            for cx in range(int(r.x0 // 50), int(r.x1 // 50) + 1):
+                for cy in range(int((y - top) // 50), int((y + top) // 50) + 1):
+                    cells.setdefault((cx, cy), []).append(o)
         for ch, k in blanks:
             o = taken.get(id(frames[k])) if k is not None else None
             if o is None:
-                x = (ch["bbox"][0] + ch["bbox"][2]) / 2
-                o = next((o for o in out if o["form"]["rect"].x0 <= x <= o["form"]["rect"].x1
-                          and abs(ch["origin"][1] - lines[id(o)][0]) <= 0.3 * lines[id(o)][1]), None)
+                x, y = (ch["bbox"][0] + ch["bbox"][2]) / 2, ch["origin"][1]
+                o = next((o for o in cells.get((int(x // 50), int(y // 50)), ())
+                          if o["form"]["rect"].x0 <= x <= o["form"]["rect"].x1
+                          and abs(y - lines[id(o)][0]) <= 0.3 * lines[id(o)][1]), None)
             if o is not None:
                 o["blanks"].append(ch)
         return out
@@ -2096,7 +2224,10 @@ class _Extractor:
         width moves Word's line breaks); up and down, only the ink – glyph boxes
         reach the font's whole ascent and descent and would make the line taller."""
         if f.get("form") is not None:
-            return self._form_picture(f)
+            try:
+                return self._form_picture(f)
+            except Exception:  # noqa: BLE001 – drawn from the page instead
+                pass
         rect = f["rect"]
         clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & self.page.rect
         full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
@@ -3073,6 +3204,9 @@ def native_page(
     placed = [f["run"] for f in ex.formulas if f["run"] is not None]
     layout.equations = sum(1 for r in placed if r.math)
     layout.native_formula_pictures = len(placed) - layout.equations
+    if ex._forms_doc is not None:  # the page copy of MathType forms: its pictures are drawn
+        ex._forms_doc.close()
+        ex._forms_doc = None
     return layout
 
 
