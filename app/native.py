@@ -24,6 +24,7 @@ is kept rather than re-recognised.
 - In OCR mode, large raster images that hold text are OCR'd instead.
 """
 
+import bisect
 import math
 import re
 import unicodedata
@@ -94,7 +95,8 @@ SYMBOL_ENCODING = {
     **{c: chr(c) for c in b"!#%&()+,./0123456789:;<=>?[]_{|}"},
     0x22: "∀", 0x24: "∃", 0x27: "∋", 0x2A: "∗", 0x2D: "−", 0x40: "≅", 0x5C: "∴", 0x5E: "⊥", 0x7E: "∼",
     **dict(zip(range(0x41, 0x5B), "ΑΒΧΔΕΦΓΗΙϑΚΛΜΝΟΠΘΡΣΤΥςΩΞΨΖ")),
-    **dict(zip(range(0x61, 0x7B), "αβχδεφγηιϕκλμνοπθρστυϖωξψζ")),
+    # Symbol draws its "phi" (0x66) stroked, "phi1" (0x6A) looped: ϕ and φ as Unicode shows them
+    **dict(zip(range(0x61, 0x7B), "αβχδεϕγηιφκλμνοπθρστυϖωξψζ")),
     0xA1: "ϒ", 0xA2: "′", 0xA3: "≤", 0xA5: "∞", 0xAB: "↔", 0xAC: "←", 0xAD: "↑", 0xAE: "→", 0xAF: "↓", 0xB0: "°",
     0xB1: "±", 0xB2: "″", 0xB3: "≥", 0xB4: "×", 0xB5: "∝", 0xB6: "∂", 0xB8: "÷", 0xB9: "≠", 0xBA: "≡", 0xBB: "≈",
     0xBC: "…", 0xC6: "∅", 0xC7: "∩", 0xC8: "∪", 0xC9: "⊃", 0xCA: "⊇", 0xCB: "⊄", 0xCC: "⊂", 0xCD: "⊆", 0xCE: "∈",
@@ -102,7 +104,12 @@ SYMBOL_ENCODING = {
     0xDC: "⇐", 0xDD: "⇑", 0xDE: "⇒", 0xDF: "⇓", 0xE5: "∑", 0xF2: "∫",
 }
 SYMBOL_CHARS = set(SYMBOL_ENCODING.values())
-CONTENT_MAX = 4_000_000  # bytes of a page's content stream read for form frames; a larger one is not read
+CONTENT_MAX = 4_000_000  # bytes of a page's content streams read for form frames; a larger one is not read
+CONTENT_BUDGET = 16_000_000  # bytes of content streams read for form frames per file
+CONTENT_STREAMS_MAX = 64  # streams in a page's /Contents read for form frames
+DO_MAX = 20000  # "Do" operators of a page looked at for form frames
+FRAMES_MAX = 300  # Word EMF forms on a page; a page with more is read as before (VL1108: up to 11)
+OPERANDS_MAX = 16  # operands kept before an operator (cm takes 6)
 
 
 def _math_italic(c: str, bold: bool = False) -> str | None:
@@ -129,8 +136,11 @@ def _mathtype_char(c: str, span: dict) -> str | None:
     font = span["font"]
     if SYMBOL_FONT.search(font):
         o = ord(c)
-        code = o - 0xF000 if 0xF020 <= o <= 0xF0FF else o if o < 0x100 else None
-        u = SYMBOL_ENCODING.get(code) if code is not None else c if c in SYMBOL_CHARS else None
+        if 0xF020 <= o <= 0xF0FF or o < 0x80:  # a raw code (Symbol has no Latin letters: "l" is λ)
+            u = SYMBOL_ENCODING.get(o & 0xFF)
+        else:  # the font's map gives real Unicode ("×", "µ" for mu): taken as it is
+            u = {"µ": "μ", "·": "⋅"}.get(c, c)
+            u = u if u in SYMBOL_CHARS else None
         if u is None:
             return None
         if "α" <= u <= "ω" or u in "ϑϕϖ":
@@ -154,6 +164,8 @@ def _content_ops(data: bytes):
     operands: list = []
     i, n = 0, len(data)
     while i < n:
+        if len(operands) > OPERANDS_MAX:
+            del operands[0]
         if data[i] == 0x28:  # a literal string: balanced parentheses, backslash escapes
             depth, i = 1, i + 1
             while i < n and depth:
@@ -190,24 +202,62 @@ def _matrix_mul(a: tuple, b: tuple) -> tuple:
             a[2] * b[1] + a[3] * b[3], a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5])
 
 
-def _form_frames(page: pymupdf.Page) -> list[pymupdf.Rect]:
-    """Where the page's content stream draws a form XObject (its /BBox through its /Matrix and the
-    current transformation), in page coordinates. Word for Windows writes each MathType/Equation object
-    as a form of its own ("/Meta18 Do"). Only the page's own stream is read (not forms drawn by forms),
-    up to CONTENT_MAX bytes; none for a rotated page."""
+WORD_EMF_FORM = re.compile(r"Meta\d+")  # the forms Word for Windows draws its EMF pictures (MathType objects) with
+
+
+def _form_frames(page: pymupdf.Page) -> list[dict]:
+    """The forms Word for Windows draws its EMF pictures with ("/Meta18 Do": a MathType or Equation
+    object is one), as the page's content stream draws them: {"name", "ctm" (the transformation at the
+    Do), "rect" (the form's /BBox through its /Matrix and that, in page coordinates)}. Only upright,
+    unflipped placements; only the page's own stream (not forms drawn by forms), up to CONTENT_MAX bytes;
+    none for a rotated page."""
+    try:
+        return _read_form_frames(page)
+    except Exception:  # noqa: BLE001 – a damaged page keeps its text as it is
+        return []
+
+
+def _page_content(page: pymupdf.Page) -> bytes | None:
+    """The page's content streams, read within CONTENT_MAX (and CONTENT_BUDGET per file): Flate streams are
+    inflated with a bound, so a compression bomb costs nothing; other filters are not read (None)."""
+    doc = page.parent
+    xrefs = page.get_contents()
+    if not xrefs or len(xrefs) > CONTENT_STREAMS_MAX:
+        return None
+    parts, total = [], 0
+    for x in xrefs:
+        kind, filt = doc.xref_get_key(x, "Filter")
+        raw = doc.xref_stream_raw(x) or b""
+        if kind == "null":
+            data = raw[: CONTENT_MAX - total + 1]
+        elif filt.strip("[] ") == "/FlateDecode" and doc.xref_get_key(x, "DecodeParms")[0] == "null":
+            data = zlib.decompressobj().decompress(raw, CONTENT_MAX - total + 1)
+        else:
+            return None
+        total += len(data)
+        if total > CONTENT_MAX:
+            return None
+        parts.append(data)
+    spent = doc.__dict__.get("_p2w_content_bytes", 0) + total
+    doc.__dict__["_p2w_content_bytes"] = spent
+    return b"\n".join(parts) if spent <= CONTENT_BUDGET else None
+
+
+def _read_form_frames(page: pymupdf.Page) -> list[dict]:
     if page.rotation:
         return []
     doc = page.parent
     forms = {}
-    for xref, name, _inv, _bbox in page.get_xobjects():
-        if doc.xref_get_key(xref, "Subtype")[1] == "/Form":
+    for xref, name, invoker, _bbox in page.get_xobjects():
+        if invoker == 0 and xref > 0 and WORD_EMF_FORM.fullmatch(name) and doc.xref_get_key(xref, "Subtype")[1] == "/Form":
             forms[name] = xref
     if not forms:
         return []
-    data = page.read_contents()
-    if len(data) > CONTENT_MAX:
+    data = _page_content(page)
+    if data is None:
         return []
-    ctm, stack, out = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), [], []
+    geometry: dict[int, tuple | None] = {}  # xref -> (bbox, matrix), read once
+    ctm, stack, out, dos = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), [], [], 0
     for op, args in _content_ops(data):
         if op == "q":
             stack.append(ctm)
@@ -215,24 +265,98 @@ def _form_frames(page: pymupdf.Page) -> list[pymupdf.Rect]:
             ctm = stack.pop() if stack else ctm
         elif op == "cm" and len(args) >= 6 and all(isinstance(v, float) for v in args[-6:]):
             ctm = _matrix_mul(tuple(args[-6:]), ctm)
-        elif op == "Do" and args and args[-1] in forms and len(out) < FORMS_MAX:
-            xref = forms[args[-1]]
-            try:
-                bbox = [float(v) for v in doc.xref_get_key(xref, "BBox")[1].strip("[] ").split()]
-                kind, value = doc.xref_get_key(xref, "Matrix")
-                matrix = tuple(float(v) for v in value.strip("[] ").split()) if kind == "array" else (1, 0, 0, 1, 0, 0)
-            except ValueError:
+        elif op == "Do":
+            dos += 1
+            if dos > DO_MAX or len(out) > FRAMES_MAX:
+                return []  # a page that draws that many forms is not a page of MathType objects
+            if not args or args[-1] not in forms:
                 continue
-            if len(bbox) != 4 or len(matrix) != 6:
+            xref = forms[args[-1]]
+            if xref not in geometry:
+                try:
+                    bbox = [float(v) for v in doc.xref_get_key(xref, "BBox")[1].strip("[] ").split()]
+                    kind, value = doc.xref_get_key(xref, "Matrix")
+                    matrix = tuple(float(v) for v in value.strip("[] ").split()) if kind == "array" else (1, 0, 0, 1, 0, 0)
+                    geometry[xref] = (bbox, matrix) if len(bbox) == 4 and len(matrix) == 6 else None
+                except ValueError:
+                    geometry[xref] = None
+            if geometry[xref] is None:
+                continue
+            bbox, matrix = geometry[xref]
+            if not all(map(math.isfinite, (*bbox, *matrix, *ctm))):
                 continue
             full = _matrix_mul(matrix, ctm)
+            # upright and unflipped, as Word places an inline object (a mirrored text reads backwards)
+            if not (full[0] > 0 and full[3] > 0 and abs(full[1]) <= 0.01 * full[0] and abs(full[2]) <= 0.01 * full[3]):
+                continue
             pts = [(x * full[0] + y * full[2] + full[4], x * full[1] + y * full[3] + full[5])
                    for x in (bbox[0], bbox[2]) for y in (bbox[1], bbox[3])]
             r = pymupdf.Rect(min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts),
                              max(y for _, y in pts)) * page.transformation_matrix
             if r.is_valid and not r.is_empty and all(map(math.isfinite, r)):
-                out.append(r)
+                out.append({"name": args[-1], "ctm": ctm, "rect": r})
     return out
+
+
+def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Document, int, list] | None:
+    """What each form draws, read from a copy of the page that draws only the forms: per frame, the
+    origins and characters of its glyphs and the boxes of its strokes. Before each form the copy paints a
+    tiny mark whose colour is the form's number, so the trace order tells whose glyph is whose (a
+    position cannot: a fraction's frame reaches over the lines above and below). Returns the copy (it
+    draws a form's picture later, _form_picture), the xref of its content stream and the lists; None if
+    the page cannot be copied."""
+    try:
+        doc = pymupdf.open()
+        doc.insert_pdf(page.parent, from_page=page.number, to_page=page.number, annots=False, links=False)
+        copy = doc[0]
+        xrefs = copy.get_contents()
+        if not xrefs:
+            return None
+        parts = []
+        for k, fr in enumerate(frames):
+            x0, y0 = fr["rect"].tl * ~page.transformation_matrix  # the mark: on the page, at the frame
+            parts.append(f"q {(k & 255) / 255:.6f} {(k >> 8 & 255) / 255:.6f} 1 rg {x0:.3f} {y0:.3f} 0.01 0.01 re f Q\n")
+            parts.append("q {} cm /{} Do Q\n".format(" ".join(f"{v:.6f}" for v in fr["ctm"]), fr["name"]))
+        doc.update_stream(xrefs[0], "".join(parts).encode())
+        for x in xrefs[1:]:
+            doc.update_stream(x, b"")
+        copy = doc[0]
+        marks = []  # (seqno, frame number)
+        strokes = []  # (seqno, rect)
+        for d in copy.get_drawings():
+            fill, r = d.get("fill"), pymupdf.Rect(d["rect"])
+            if d.get("type") == "f" and fill and abs(fill[2] - 1) < 1e-3 and r.width < 0.02 and r.height < 0.02:
+                marks.append((d["seqno"], round(fill[0] * 255) + 256 * round(fill[1] * 255)))
+            else:
+                strokes.append((d["seqno"], r))
+        marks.sort()
+        seqnos = [m[0] for m in marks]
+
+        def owner(seqno: int) -> int | None:
+            i = bisect.bisect_right(seqnos, seqno) - 1
+            return marks[i][1] if i >= 0 and marks[i][1] < len(frames) else None
+
+        out = [{"glyphs": set(), "spaces": set(), "strokes": [], "images": 0} for _ in frames]
+        for span in copy.get_texttrace():
+            k = owner(span["seqno"])
+            if k is None:
+                continue
+            for code, _gid, origin, _bbox in span["chars"]:
+                key = (round(origin[0], 2), round(origin[1], 2))
+                # (spaces apart: the page's lines may drop some, _join_interleaved)
+                out[k]["glyphs" if code > 32 and chr(code).strip() else "spaces"].add(key)
+        for seqno, r in strokes:
+            k = owner(seqno)
+            if k is not None:
+                out[k]["strokes"].append(r)
+        for info in copy.get_image_info():
+            r = pymupdf.Rect(info["bbox"])
+            for k, fr in enumerate(frames):
+                if not (fr["rect"] & r).is_empty:
+                    out[k]["images"] += 1
+        return doc, xrefs[0], out
+    except Exception:  # noqa: BLE001 – a page that cannot be copied keeps its formulas as they were
+        return None
 
 
 CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
@@ -1389,7 +1513,8 @@ class _Extractor:
                 rect |= c["bbox"]
             for i in o["drawings"]:
                 rect |= self.drawings[i]["rect"]
-            found.append({"rect": rect, "chars": o["chars"], "drawings": o["drawings"], "mt": True, "blanks": o["blanks"]})
+            found.append({"rect": rect, "chars": o["chars"], "drawings": o["drawings"], "mt": True, "blanks": o["blanks"],
+                          "form": o["form"], "strong": o["strong"]})
             size_of.update((id(c), span_of[id(c)]["size"]) for c in o["chars"])
         fraction_bars = {nodes[bar][3] for bar, _parts in fractions}
         out = []
@@ -1398,6 +1523,9 @@ class _Extractor:
             # the main line's baseline: where the largest glyphs sit (not MathType's brackets, set larger)
             top = max([z for c, z in zip(f["chars"], sizes) if not (f.get("mt") and c["c"] in "()[]{}")] or sizes)
             baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if top - 0.5 < size <= top)
+            pieces = self._equation_mt(f, span_of) if f.get("mt") else None
+            if f.get("mt") and pieces is None and not f["strong"]:
+                continue  # variables in italics, nothing the text does not show as well: left to the text
             self.formula_drawings |= f["drawings"]
             self.used_drawings |= f["drawings"]
             self.formula_chars.update(id(c) for c in f["chars"] + f.get("blanks", []))
@@ -1410,82 +1538,148 @@ class _Extractor:
             parts += [(pymupdf.Rect(self.drawings[i]["rect"]), 1.0, 1.0) for i in f["drawings"]]
             out.append({
                 "rect": f["rect"], "size": median(sizes), "baseline": baseline, "parts": parts, "run": None, "ink": ink,
-                "pieces": self._equation_mt(f, span_of) if f.get("mt") else self._equation(f, span_of, fraction_bars),
-                "mt": bool(f.get("mt")),
+                "pieces": pieces if f.get("mt") else self._equation(f, span_of, fraction_bars),
+                "mt": bool(f.get("mt")), "form": f.get("form"),
             })
         return sorted(out, key=lambda f: (f["rect"].y0, f["rect"].x0))
 
     def _mathtype_objects(self, blocks: list[dict]) -> list[dict]:
-        """MathType objects that Word for Windows exports as text: each drawn by a form XObject of its
-        own (_form_frames), so the glyphs inside its frame are the formula, whole. A frame counts when
-        it holds text glyphs, of spans that lie wholly inside it, and no more than a formula does (a few
-        lines high, strokes and glyphs within FORMULA_GLYPHS_MAX, no image): a figure's picture with
-        labels does not. Frames that overlap are one object. {"chars", "drawings", "blanks"} each: blanks
-        are the spaces drawn inside it, which go with the formula (not into the text after it)."""
+        """MathType objects that Word for Windows exports as text: each drawn by a form of its own (Word's
+        "/MetaN", the object's EMF picture: _form_frames), whose glyphs and strokes are known exactly
+        (_form_contents), so the formula is taken whole and nothing of the lines around it. A form counts
+        when everything it draws is found on the page, on horizontal lines, opaque, with no image, at most a
+        few lines high, inside one cell of a ruled table, within FORMULA_GLYPHS_MAX, and it shows maths: a
+        Symbol or MT Extra glyph, a fraction bar or a script ("strong"), or else only italic letters in
+        short runs (variables, not an italic sentence) and no Vietnamese word. Word draws its other EMF
+        pictures the same way (an Excel range, a diagram): those stay as they were.
+        {"form", "chars", "blanks" (its spaces, which go with it), "drawings", "strong"} each."""
         frames = _form_frames(self.page)
         if not frames:
             return []
-        merged: list[pymupdf.Rect] = []
-        for r in sorted(frames, key=lambda r: (r.y0, r.x0)):
-            for k, m in enumerate(merged):
-                if not (m & r).is_empty:
-                    merged[k] = m | r
-                    break
-            else:
-                merged.append(pymupdf.Rect(r))
-        objs = [{"frame": r, "chars": [], "drawings": set(), "blanks": [], "bad": False} for r in merged]
-
-        def home(bbox) -> int | None:
-            x, y = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-            for k, o in enumerate(objs):
-                r = o["frame"]
-                if r.x0 <= x <= r.x1 and r.y0 <= y <= r.y1:
-                    return k
-            return None
-
+        got = _form_contents(self.page, frames)
+        if got is None:
+            return []
+        self._forms_doc, self._forms_xref, contents = got
+        owners: dict[tuple, set[int]] = {}
+        spaces: dict[tuple, int] = {}
+        blanks: list[tuple] = []  # (space, the form drawing it or None)
+        for k, c in enumerate(contents):
+            for key in c["glyphs"]:
+                owners.setdefault(key, set()).add(k)
+            spaces.update((key, k) for key in c["spaces"])
+        objs = [{"form": fr, "chars": [], "blanks": [], "drawings": set(), "found": set(), "spans": {},
+                 "bad": bool(c["images"])} for fr, c in zip(frames, contents)]
         for b in blocks:
             if b["type"] != 0:
                 continue
             for ln in b["lines"]:
                 dx, dy = ln["dir"]
-                if abs(dy) > 0.02 or dx < 0:  # rotated text (a watermark across the page) is not the formula's
-                    continue
+                upright = abs(dy) <= 0.02 and dx > 0
                 for sp in ln["spans"]:
-                    visible = [c for c in sp["chars"] if c["c"].strip()]
-                    homes = {home(c["bbox"]) for c in visible}
-                    if len(homes) > 1:  # a span across a frame's edge: the frame overlaps text of the line
-                        for k in homes - {None}:
-                            objs[k]["bad"] = True
-                        continue
-                    k = homes.pop() if homes else None
-                    if k is not None:
-                        objs[k]["chars"].extend(visible)
-                    for c in sp["chars"]:
-                        if not c["c"].strip() and home(c["bbox"]) is not None and k in (None, home(c["bbox"])):
-                            objs[home(c["bbox"])]["blanks"].append(c)
+                    for ch in sp["chars"]:
+                        key = (round(ch["origin"][0], 2), round(ch["origin"][1], 2))
+                        if not ch["c"].strip():
+                            if upright:
+                                blanks.append((ch, spaces.get(key)))
+                            continue
+                        ks = owners.get(key)
+                        if not ks:
+                            continue
+                        if len(ks) > 1 or not upright or sp.get("alpha", 255) < 255:
+                            for k in ks:  # two forms' glyph, rotated or translucent text: a stamp, a watermark
+                                objs[k]["bad"] = True
+                            continue
+                        k = next(iter(ks))
+                        objs[k]["found"].add(key)
+                        objs[k]["spans"][id(ch)] = sp
+                        objs[k]["chars"].append(ch)
+        by_rect: dict[tuple, list[int]] = {}
         for i, d in enumerate(self.drawings):
-            r = pymupdf.Rect(d["rect"])
-            k = home(r)
-            if k is not None and pymupdf.Rect(objs[k]["frame"].x0 - 1, objs[k]["frame"].y0 - 1,
-                                              objs[k]["frame"].x1 + 1, objs[k]["frame"].y1 + 1).contains(r):
-                objs[k]["drawings"].add(i)
-        for info in self.page.get_image_info():
-            r = pymupdf.Rect(info["bbox"])
-            for o in objs:
-                f = o["frame"]
-                if pymupdf.Rect(f.x0 - 1, f.y0 - 1, f.x1 + 1, f.y1 + 1).contains(r):
-                    o["bad"] = True  # an image in it: a figure
+            by_rect.setdefault(tuple(round(v, 2) for v in d["rect"]), []).append(i)
+        for o, c in zip(objs, contents):
+            if o["found"] != c["glyphs"]:
+                o["bad"] = True  # a glyph of the form the page's text does not hold (clipped, invisible)
+            for r in c["strokes"]:
+                ids = by_rect.get(tuple(round(v, 2) for v in r))
+                if not ids:
+                    o["bad"] = True
+                    continue
+                o["drawings"].add(ids.pop(0))
         out = []
         for o in objs:
             if o["bad"] or not o["chars"]:
                 continue
-            size = median(sp_size for sp_size in (c["bbox"][3] - c["bbox"][1] for c in o["chars"]))
+            frame = o["form"]["rect"]
+            heights = [c["bbox"][3] - c["bbox"][1] for c in o["chars"]]
             if (len(o["chars"]) + len(o["drawings"]) > FORMULA_GLYPHS_MAX or len(o["drawings"]) > FORMULA_MARKS_MAX
-                    or o["frame"].height > 6 * size):
+                    or frame.height > 6 * median(heights)):
                 continue
+            # a ruled table drawn as one picture (an Excel range): its grid crosses the frame
+            if any(not (frame & t).is_empty and (any(frame.x0 + 1 < x < frame.x1 - 1 for x in xs)
+                                                  or any(frame.y0 + 1 < y < frame.y1 - 1 for y in ys))
+                   for t, xs, ys in self.table_lines):
+                continue
+            strong = self._maths_shown(o)
+            if strong is None:
+                continue
+            o["strong"] = strong
             o["chars"].sort(key=lambda c: c["bbox"][0])
             out.append(o)
+        # spaces the form draws, and the page's own spaces under its frame (Word sets the space after an object
+        # inside the object's frame): they go with the formula, not into the text after it
+        taken = {id(o["form"]): o for o in out}
+        lines = {}  # the object's baseline and size: the page's spaces on that line only
+        for o in out:
+            sizes = [o["spans"][id(c)]["size"] for c in o["chars"]]
+            top = max(sizes)
+            lines[id(o)] = (median(c["origin"][1] for c, z in zip(o["chars"], sizes) if z > top - 0.5), top)
+        for ch, k in blanks:
+            o = taken.get(id(frames[k])) if k is not None else None
+            if o is None:
+                x = (ch["bbox"][0] + ch["bbox"][2]) / 2
+                o = next((o for o in out if o["form"]["rect"].x0 <= x <= o["form"]["rect"].x1
+                          and abs(ch["origin"][1] - lines[id(o)][0]) <= 0.3 * lines[id(o)][1]), None)
+            if o is not None:
+                o["blanks"].append(ch)
         return out
+
+    def _maths_shown(self, o: dict) -> bool | None:
+        """How surely a form's content is maths: True for a Symbol / MT Extra glyph, a fraction bar (a
+        horizontal stroke with glyphs over and under it) or a script (a smaller glyph off the baseline);
+        False for italic letters in runs of at most three (variables) and no Vietnamese word; None
+        otherwise (a line of ordinary text, a name, a date)."""
+        spans = o["spans"]
+        sizes = [spans[id(c)]["size"] for c in o["chars"]]
+        if any(SYMBOL_FONT.search(spans[id(c)]["font"]) or MATH_FONT.search(spans[id(c)]["font"]) for c in o["chars"]):
+            return True
+        for i in o["drawings"]:
+            r = self.drawings[i]["rect"]
+            if r.height <= 1.5 and r.width >= 2:
+                xs = [c for c in o["chars"] if r.x0 - 1 <= (c["bbox"][0] + c["bbox"][2]) / 2 <= r.x1 + 1]
+                if any(c["bbox"][3] <= r.y0 + 1 for c in xs) and any(c["bbox"][1] >= r.y1 - 1 for c in xs):
+                    return True
+        top = max(sizes)
+        base = median(c["origin"][1] for c, z in zip(o["chars"], sizes) if z > top - 0.5)
+        if any(z < nativemath.SCRIPT * top and abs(c["origin"][1] - base) > 0.1 * top for c, z in zip(o["chars"], sizes)):
+            return True
+        italic, run, words, word = False, 0, [], ""
+        prev = None
+        for c in o["chars"]:  # left to right
+            sp = spans[id(c)]
+            near = prev is not None and c["bbox"][0] - prev["bbox"][2] <= 0.3 * sp["size"]
+            letter = c["c"].isalpha()
+            word = word + c["c"] if letter and near and word else c["c"] if letter else ""
+            if word:
+                words.append(word)
+            if letter and c["c"].isascii() and _italic(sp):
+                italic = True
+                run = run + 1 if near and prev is not None and prev["c"].isalpha() else 1
+                if run > 3:
+                    return None
+            prev = c
+        if not italic or any(len(w) >= 2 and not w.isascii() for w in words):
+            return None
+        return False
 
     def _equation_mt(self, f: dict, span_of: dict[int, dict]) -> list | None:
         """A MathType object (_mathtype_objects) as a Word equation (nativemath pieces), or None to keep
@@ -1509,6 +1703,14 @@ class _Extractor:
                 italic=_italic(sp), color=_color(sp, honour_alpha=not self.invisible_layer),
             ))
         size = max(g.size for g in glyphs if g.c not in "()[]{}") if any(g.c not in "()[]{}" for g in glyphs) else 0
+        # an answer label typed into the object ("B. x = 4") stays text before the equation (nativemath splits it)
+        order = sorted(range(len(glyphs)), key=lambda i: glyphs[i].x0)[:3]
+        text = [f["chars"][i]["c"] for i in order]
+        first = [glyphs[i] for i in order]
+        if (len(first) == 3 and text[0] in "ABCDabcd" and text[1] in ".)" and not first[0].italic
+                and first[2].x0 - first[1].x1 >= 0.2 * size and abs(first[1].oy - first[0].oy) <= 0.1 * size):
+            for g, ch in zip(first[:2], text):
+                g.c, g.math_font = ch, False
         bars, uprights, others = [], [], 0
         for i in f["drawings"]:
             r = pymupdf.Rect(self.drawings[i]["rect"])
@@ -1811,6 +2013,26 @@ class _Extractor:
             })
         return sorted(out, key=lambda s: s["bbox"][0])
 
+    def _form_picture(self, f: dict) -> tuple[pymupdf.Rect, bytes]:
+        """A MathType object's picture: its form drawn alone on a clear ground (strokes and all, none of
+        the page behind it), across its glyph boxes as _formula_picture, up and down to its ink."""
+        fr = f["form"]
+        self._forms_doc.update_stream(
+            self._forms_xref, "q {} cm /{} Do Q\n".format(" ".join(f"{v:.6f}" for v in fr["ctm"]), fr["name"]).encode())
+        page = self._forms_doc[0]
+        rect = f["rect"]
+        clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & page.rect
+        s = FORMULA_DPI / 72
+        pix = page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=True, annots=False)
+        if not pix.h or not pix.w:
+            ok, buf = cv2.imencode(".png", np.zeros((1, 1, 4), np.uint8))
+            return pymupdf.Rect(rect), buf.tobytes()
+        rgba = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)
+        rows = np.flatnonzero(rgba[:, :, 3].max(axis=1) > 0)
+        top, bottom = (max(rows[0] - int(s), 0), min(rows[-1] + 1 + int(s), pix.h)) if rows.size else (0, pix.h)
+        ok, buf = cv2.imencode(".png", cv2.cvtColor(np.ascontiguousarray(rgba[top:bottom]), cv2.COLOR_RGBA2BGRA))
+        return pymupdf.Rect(clip.x0, clip.y0 + top / s, clip.x1, clip.y0 + bottom / s), buf.tobytes()
+
     def _formula_picture(self, f: dict) -> tuple[pymupdf.Rect, bytes]:
         """The formula's picture and the box it shows. It holds the formula's own
         glyphs and strokes on a clear ground: no watermark or shading from behind
@@ -1819,6 +2041,8 @@ class _Extractor:
         (their advances carry the spacing to the text around it, and any extra
         width moves Word's line breaks); up and down, only the ink – glyph boxes
         reach the font's whole ascent and descent and would make the line taller."""
+        if f.get("form") is not None:
+            return self._form_picture(f)
         rect = f["rect"]
         clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & self.page.rect
         full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))

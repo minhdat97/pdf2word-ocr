@@ -432,9 +432,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def mathtype_page(formula, rect=(80, 42, 120, 72), size=(40, 30), rotate=0):
+def word_form_names(doc, page):
+    """Name the page's forms as Word for Windows names its EMF pictures ("/Meta18 Do")."""
+    kind, ref = doc.xref_get_key(page.xref, "Resources")
+    holder = int(ref.split()[0]) if kind == "xref" else page.xref  # PyMuPDF writes the resources apart
+    key = "XObject" if kind == "xref" else "Resources/XObject"
+    val = doc.xref_get_key(holder, key)[1]
+    names = [name for _xref, name, invoker, _bbox in page.get_xobjects() if invoker == 0]
+    for n, name in enumerate(names):
+        val = val.replace(f"/{name} ", f"/Meta{18 + n} ")
+        for cx in page.get_contents():
+            doc.update_stream(cx, doc.xref_stream(cx).replace(f"/{name} Do".encode(), f"/Meta{18 + n} Do".encode()))
+    doc.xref_set_key(holder, key, val)
+
+
+def mathtype_page(formula, rect=(80, 42, 120, 72), size=(40, 30), rotate=0, word_names=True, body=None):
     """A page with "Cau 1: A. <formula> la dung." where the formula is drawn by a form XObject of its own, as
-    Word for Windows exports a MathType object (its EMF picture): formula(page) draws it on a page of `size`."""
+    Word for Windows exports a MathType object (its EMF picture "/Meta18"): formula(page) draws it on a page
+    of `size`; body(page) may add more of the page's own text."""
     src = pymupdf.open()
     formula(src.new_page(width=size[0], height=size[1]))
     doc = pymupdf.open()
@@ -442,9 +457,14 @@ def mathtype_page(formula, rect=(80, 42, 120, 72), size=(40, 30), rotate=0):
     page.insert_text((20, 60), "Cau 1: A.", fontsize=12, fontname="Times-Roman")
     page.show_pdf_page(pymupdf.Rect(rect), src, 0)
     page.insert_text((rect[2] + 5, 60), "la dung.", fontsize=12, fontname="Times-Roman")
+    if body:
+        body(page)
     if rotate:
         page.set_rotation(rotate)
-    doc = pymupdf.open("pdf", doc.tobytes())
+    doc = pymupdf.open("pdf", doc.tobytes())  # the form's resources are written on saving
+    if word_names:
+        word_form_names(doc, doc[0])
+        doc = pymupdf.open("pdf", doc.tobytes())
     return doc, doc[0]
 
 
@@ -504,26 +524,91 @@ class MathTypeTest(unittest.TestCase):
         _doc, page = mathtype_page(f_over, rotate=90)
         self.assertEqual(native._form_frames(page), [])
 
+    def test_only_word_forms(self):
+        _doc, page = mathtype_page(f_over, word_names=False)  # another producer's form ("/fzFrm0")
+        self.assertEqual(native._form_frames(page), [])
+        _layout, runs = page_runs(page)
+        self.assertFalse(any(r.math for r in runs))
+
+    def test_ordinary_text_in_a_form_stays_text(self):
+        def name(p):
+            p.insert_text((2, 18), "Nguyen Van An", fontsize=12, fontname="Times-Roman")
+        _doc, page = mathtype_page(name, rect=(80, 42, 180, 72), size=(100, 30))
+        _layout, runs = page_runs(page)
+        self.assertFalse(any(r.math or r.image for r in runs))
+        self.assertIn("Nguyen Van An", "".join(r.text for r in runs))
+
+        def sentence(p):
+            p.insert_text((2, 18), "Chuc cac em lam bai tot", fontsize=12, fontname="Times-Italic")
+        _doc, page = mathtype_page(sentence, rect=(80, 42, 240, 72), size=(160, 30))
+        _layout, runs = page_runs(page)
+        self.assertFalse(any(r.math or r.image for r in runs))
+
+    def test_neighbouring_text_is_not_taken(self):
+        """A fraction's frame reaches over the line below: that line's own "Cau 2." stays its text."""
+        def below(p):
+            p.insert_text((84, 70), "Cau 2.", fontsize=12, fontname="Times-Bold")
+        _doc, page = mathtype_page(f_over, rect=(80, 42, 120, 78), size=(40, 36), body=below)
+        _layout, runs = page_runs(page)
+        self.assertEqual([r.math for r in runs if r.math], [r"f=\frac{v}{\lambda}"])
+        self.assertIn("Cau 2.", "".join(r.text for r in runs))
+
+    def test_answer_label_in_the_object(self):
+        def label(p):
+            p.insert_text((2, 18), "B.", fontsize=12, fontname="Times-Bold")
+            p.insert_text((16, 18), "x", fontsize=12, fontname="Times-Italic")
+            p.insert_text((23, 18), "=", fontsize=12, fontname="Symbol")
+            p.insert_text((31, 18), "4", fontsize=12, fontname="Times-Roman")
+        _doc, page = mathtype_page(label, rect=(80, 42, 120, 72))
+        _layout, runs = page_runs(page)
+        self.assertEqual([r.math for r in runs if r.math], ["x=4"])
+        self.assertIn("B.", "".join(r.text for r in runs if not r.math))
+
+    def test_flipped_form_has_no_frame(self):
+        _doc, page = mathtype_page(f_over)
+        doc = page.parent
+        for cx in page.get_contents():
+            doc.update_stream(cx, doc.xref_stream(cx).replace(b"/Meta18 Do", b"1 0 0 -1 0 0 cm /Meta18 Do"))
+        self.assertEqual(native._form_frames(doc[0]), [])
+
+    def test_damaged_pages(self):
+        # a form given as a dictionary in place (no stream): no frame, no failure
+        _doc, page = mathtype_page(f_over)
+        doc = page.parent
+        doc.xref_set_key(page.xref, "Resources/XObject", "<</Meta18 <</Subtype/Form/BBox[0 0 1 1]>>>>")
+        self.assertEqual(native._form_frames(doc[0]), [])
+        # content that inflates past CONTENT_MAX is not read
+        _doc, page = mathtype_page(f_over)
+        doc = page.parent
+        cx = page.get_contents()[0]
+        doc.update_stream(cx, doc.xref_stream(cx) + b" " * (native.CONTENT_MAX + 10))
+        self.assertIsNone(native._page_content(doc[0]))
+        self.assertEqual(native._form_frames(doc[0]), [])
+
     def test_glyph_reading(self):
         symbol, times_i, times_b, roman = ({"font": f, "flags": fl} for f, fl in (
             ("SymbolMT", 0), ("TimesNewRomanPS-ItalicMT", 2), ("TimesNewRomanPS-BoldMT", 16), ("TimesNewRomanPSMT", 0)))
         read = native._mathtype_char
-        self.assertEqual(read("", symbol), "𝜆")  # private-use code
+        self.assertEqual(read("\uf06c", symbol), "𝜆")  # private-use code
         self.assertEqual(read("l", symbol), "𝜆")  # Latin code
         self.assertEqual(read("λ", symbol), "𝜆")  # mapped already
         self.assertEqual(read("D", symbol), "∆")
         self.assertEqual(read("W", symbol), "Ω")
-        self.assertEqual(read("", symbol), "⇒")
-        self.assertEqual(read("", symbol), "−")
-        self.assertEqual(read("", symbol), "×")
-        self.assertIsNone(read("", symbol))  # a bracket piece
+        self.assertEqual(read("\uf0de", symbol), "⇒")
+        self.assertEqual(read("\uf02d", symbol), "−")
+        self.assertEqual(read("\uf0b4", symbol), "×")
+        self.assertIsNone(read("\uf0e6", symbol))  # a bracket piece
+        self.assertEqual(read("×", symbol), "×")  # real Unicode from the font's map, not Symbol's code 0xD7
+        self.assertEqual(read("µ", symbol), "𝜇")
+        self.assertEqual(read("\uf066", symbol), "𝜙")  # Symbol draws its "phi" stroked
+        self.assertEqual(read("\uf06a", symbol), "𝜑")
         self.assertEqual(read("f", times_i), "𝑓")
         self.assertEqual(read("h", times_i), "ℎ")
         self.assertEqual(read("B", times_b), "𝐁")
         self.assertEqual(read("m", roman), "m")  # units stay upright
         self.assertEqual(read("ô", times_i), "ô")
-        self.assertIsNone(read("", {"font": "MTExtra", "flags": 0}))
-        self.assertIsNone(read("�", roman))
+        self.assertIsNone(read("\uf020", {"font": "MTExtra", "flags": 0}))
+        self.assertIsNone(read("\ufffd", roman))
 
     def test_content_stream_reading(self):
         ops = list(native._content_ops(b"q 1 0 0 1 5 6 cm (a (b) \\) c) Tj /F1 12 Tf <</MCID 3>> BDC /Fm0 Do Q BI /W 1 ID xyz EI Q"))
@@ -548,6 +633,14 @@ class MathTypeLayoutTest(unittest.TestCase):
         for g in line.glyphs:
             if g.c in "()":
                 g.oy += 0.2 * S  # lowered more than half the growth: not a bracket on the line's axis
+        self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
+
+    def test_scripts_mathtype_does_not_set(self):
+        line = Line().put("𝐴")
+        line.put("→", size=0.7 * S, dy=-0.4 * S, width=0.9 * S, gap=-0.6 * S)  # an arrow over "AB"
+        line.put("𝐵", gap=-0.3 * S)
+        self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
+        line = Line().put("𝜆=").put("2", size=0.7 * S, dy=-1.2 * S)  # a ² of the line above
         self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
 
     def test_slash_spacing(self):

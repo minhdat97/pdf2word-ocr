@@ -73,6 +73,7 @@ BRACKETS = set("()[]{}")
 # MathType sets a bracket around a taller content (a fraction, a script) at a larger size, centred on the
 # maths axis: up to this much larger than its line, its baseline lowered by up to half the difference
 BRACKET_GROWTH = 1.6
+MATHTYPE_SUP = 0.9  # em: MathType raises a superscript 0.35–0.6 em; one higher is not a script of this line
 COMMAND_END = re.compile(r"\\[A-Za-z]+$")
 
 
@@ -327,6 +328,8 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
                 raise Unsure("glyph off the baseline")  # a second line, a raised symbol
             tokens.append(g)
         elif dy < -0.1 * size:
+            if mathtype and dy < -MATHTYPE_SUP * size:
+                raise Unsure("glyph far over the baseline")
             scripts.append((g, "sup"))
         elif dy > 0.45 * size:
             raise Unsure("glyph far under the baseline")  # a limit under "min" (subscripts drop 0.20-0.25 em)
@@ -348,6 +351,10 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
             raise Unsure("script under or over a symbol")
         left = [t for t in tokens if t.x0 < g.cx - 0.05 * size]
         owner = left[-1] if left else None
+        if mathtype and owner is not None:
+            after = [t for t in tokens if t.x0 >= owner.x1 - 0.05 * size and t is not owner]
+            if after and g.x0 < owner.x1 - 0.1 * size and g.x1 > after[0].x0 + 0.1 * size:
+                raise Unsure("script across two symbols")  # an arrow over "AB"
         pre = owner is None
         if owner is not None and g.x0 < owner.x1 - 0.25 * size and not any(
             gs for r, gs in attached.get(id(owner), {}).items() if r == role
