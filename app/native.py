@@ -114,6 +114,10 @@ FORM_CONTENT_MAX = 64 * 1024  # bytes of one EMF form's content (its own and the
 FORMS_WORK_MAX = 1_000_000  # bytes of form content the page copy draws, all frames together
 COPY_OBJECTS_MAX = 1000  # objects a page copy (_form_contents) may take with it; Word's pages: 80–140 (VL1108)
 COPY_OBJECTS_BUDGET = 20_000  # objects copied for form pages per file
+OBJECT_REFS_MAX = 2000  # references in one object of a Word page's resources (a font list, an XObject list: tens)
+COPY_REFS_BUDGET = 200_000  # references kept while counting page copies, per file
+OBJECT_TEXT_MAX = 64_000  # characters of one such object (Word's: a few hundred; a subset font's widths: a few KB)
+COPY_TEXT_BUDGET = 4_000_000  # characters of objects read while counting page copies, per file (MuPDF keeps them)
 FORM_IMAGES_MAX = 16  # images the forms draw (any image makes its form a picture, not a formula)
 OBJ_REF = re.compile(r"(?<![\w/])(\d+)\s+0\s+R\b")
 META_REF = re.compile(r"/(Meta\d+)\s+(\d+)\s+0\s+R")
@@ -162,6 +166,9 @@ def _mathtype_char(c: str, span: dict, mapped: bool | None = None) -> str | None
         return None  # MT Extra and other symbol fonts, unmapped glyphs
     if _italic(span) and ("α" <= c <= "ω" or c in "ϑϕϖ"):  # a Greek variable in the text font's italics
         return _math_italic(c, _bold(span))
+    n = unicodedata.normalize("NFKC", c)
+    if len(n) == 1 and n.isascii() and not n.isalnum():
+        c = n  # ";" written as the Greek question mark, a full-width sign
     if c.isascii() and c.isalpha():
         if _italic(span):
             return _math_italic(c, _bold(span))
@@ -339,28 +346,38 @@ def _gapped(boxes: list, em: float) -> bool:
     return False
 
 
+FUNCTION_NAMES = {"sin", "cos", "tan", "cot", "tg", "cotg", "log", "ln", "lg", "exp", "lim", "max", "min", "arcsin",
+                  "arccos", "arctan", "sinh", "cosh", "tanh", "det", "mod"}
+
+
 def _texty(chars: list[dict], spans: dict[int, dict]) -> bool:
     """Glyphs that read as words, not a formula: a Vietnamese word (two letters or more, one a Latin letter
     with marks, as read from a VNI/TCVN3 font too) or two words of three letters or more. Words are runs of
     letters on one baseline (a fraction's parts are not joined into one)."""
-    lines: dict[int, list[tuple[float, float, str, float]]] = {}
+    lines: dict[int, list[tuple[float, float, str, float, bool]]] = {}
     for c in chars:
         sp = spans[id(c)]
         ch = c["c"]
-        if not SYMBOL_FONT.search(sp["font"]) and (legacy_encoding(sp["font"]) or not ch.isascii()):
+        if SYMBOL_FONT.search(sp["font"]):
+            ch = " "  # Symbol's codes are signs and Greek, whatever Latin letters they read as
+        elif legacy_encoding(sp["font"]) or not ch.isascii():
             ch = decode_span(ch, sp["font"])[0][:1] or ch
-        lines.setdefault(round(c["origin"][1] / (0.3 * sp["size"])), []).append((c["bbox"][0], c["bbox"][2], ch, sp["size"]))
+        lines.setdefault(round(c["origin"][1] / (0.3 * sp["size"])), []).append(
+            (c["bbox"][0], c["bbox"][2], ch, sp["size"], _italic(sp)))
     long_words = 0
     for row in lines.values():
-        word, prev = "", None
-        for x0, x1, ch, size in sorted(row) + [(math.inf, math.inf, " ", 0.0)]:
+        word, prev, upright = "", None, True
+        for x0, x1, ch, size, italic in sorted(row) + [(math.inf, math.inf, " ", 0.0, False)]:
             if ch.isalpha() and word and prev is not None and x0 - prev <= 0.15 * size:  # (a word space: 0.25 em)
                 word += ch
+                upright = upright and not italic
             else:
                 if len(word) >= 2 and any(not w.isascii() and unicodedata.name(w, "").startswith("LATIN") for w in word):
                     return True
-                long_words += len(word) >= 3
-                word = ch if ch.isalpha() else ""
+                # words of text are upright; italic letters set together are variables ("mgh"), and function names
+                # are maths
+                long_words += len(word) >= 3 and upright and word.lower() not in FUNCTION_NAMES
+                word, upright = (ch, not italic) if ch.isalpha() else ("", True)
             prev = x1
     return long_words >= 2
 
@@ -460,6 +477,8 @@ def _copy_small(page: pymupdf.Page) -> bool:
     else:
         return False
     todo += page.get_contents()
+    if doc.__dict__.get("_p2w_copy_chars", 0) > COPY_TEXT_BUDGET:
+        return False
     spent = doc.__dict__.get("_p2w_copy_objects", 0)
     limit = min(COPY_OBJECTS_MAX, COPY_OBJECTS_BUDGET - spent)
     children = doc.__dict__.setdefault("_p2w_obj_refs", {})  # xref -> the objects it names (None: too large), per file
@@ -474,9 +493,18 @@ def _copy_small(page: pymupdf.Page) -> bool:
             return False
         if x not in children:
             text = doc.xref_object(x, compressed=True)
-            children[x] = None if len(text) > 200_000 else [int(r) for r in OBJ_REF.findall(text)]
+            chars = doc.__dict__.get("_p2w_copy_chars", 0) + len(text)
+            doc.__dict__["_p2w_copy_chars"] = chars
+            if chars > COPY_TEXT_BUDGET:
+                return False
+            refs = None if len(text) > OBJECT_TEXT_MAX else list(dict.fromkeys(int(r) for r in OBJ_REF.findall(text)))
+            if refs is not None and len(refs) > OBJECT_REFS_MAX:
+                refs = None
+            kept = doc.__dict__.get("_p2w_copy_refs", 0) + len(refs or ())
+            doc.__dict__["_p2w_copy_refs"] = kept
+            children[x] = refs if kept <= COPY_REFS_BUDGET else None
         if children[x] is None:
-            return False  # an object that large is not one of a Word page's
+            return False  # an object that large, or that many, is not one of a Word page's
         todo += children[x]
     doc.__dict__["_p2w_copy_objects"] = spent + len(seen)
     return True
@@ -489,6 +517,7 @@ def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Docu
     position cannot: a fraction's frame reaches over the lines above and below). Returns the copy (it
     draws a form's picture later, _form_picture), the xref of its content stream and the lists; None if
     the page cannot be copied."""
+    doc = None
     try:
         if not _forms_small(page.parent, frames) or not _copy_small(page):
             return None
@@ -545,6 +574,8 @@ def _form_contents(page: pymupdf.Page, frames: list[dict]) -> tuple[pymupdf.Docu
                     out[k]["images"] += 1
         return doc, xrefs[0], out
     except Exception:  # noqa: BLE001 – a page that cannot be copied keeps its formulas as they were
+        if doc is not None:
+            doc.close()
         return None
 
 
@@ -1707,7 +1738,8 @@ class _Extractor:
             for i in o["drawings"]:
                 rect |= self.drawings[i]["rect"]
             found.append({"rect": rect, "chars": o["chars"], "drawings": o["drawings"], "mt": True, "blanks": o["blanks"],
-                          "form": o["form"], "strong": o["strong"], "flat": o.get("flat", False)})
+                          "form": o["form"], "strong": o["strong"], "flat": o.get("flat", False),
+                          "unmapped": o.get("unmapped", False)})
             size_of.update((id(c), span_of[id(c)]["size"]) for c in o["chars"])
         fraction_bars = {nodes[bar][3] for bar, _parts in fractions}
         out = []
@@ -1802,6 +1834,16 @@ class _Extractor:
                     o["bad"] = True
                     continue
                 o["drawings"].add(ids.pop(0))
+        # a glyph the font's map leaves out reads as its glyph number with the page's text flags: such an object
+        # keeps its picture (the parent's text showed the same wrong letter)
+        flags = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES & ~pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE
+        for b in self.page.get_text("rawdict", flags=flags)["blocks"]:
+            for ln in b.get("lines", []):
+                for sp in ln["spans"]:
+                    for ch in sp["chars"]:
+                        if ch["c"] == "\ufffd":
+                            for k in owners.get((round(ch["origin"][0], 2), round(ch["origin"][1], 2)), ()):
+                                objs[k]["unmapped"] = True
         out = []
         for o in objs:
             if o["bad"] or not o["chars"]:
@@ -1819,6 +1861,8 @@ class _Extractor:
             strong = self._maths_shown(o)
             if strong is None:
                 continue
+            if o.get("unmapped"):
+                strong, o["flat"] = True, False  # its picture: the text would show the glyph number
             o["strong"] = strong
             o["chars"].sort(key=lambda c: c["bbox"][0])
             out.append(o)
@@ -1847,7 +1891,7 @@ class _Extractor:
         return out
 
     def _maths_shown(self, o: dict) -> bool | None:
-        """How surely a form's content is maths: True for a Symbol / MT Extra glyph, a fraction bar (a
+        """How surely a form's content is maths: True for a maths sign of Symbol, a fraction bar (a
         horizontal stroke with a numerator right over it and a denominator right under it, no longer than
         they are) or a script (a smaller glyph off the baseline); False for italic letters in runs of at
         most three (variables) and no Vietnamese word; None otherwise (a line of ordinary text, a name, a
@@ -1954,7 +1998,13 @@ class _Extractor:
         for a, b in pairwise(sorted(glyphs, key=lambda g: (g.c, g.x0))):  # a glyph drawn twice (overstruck bold)
             if a.c == b.c and abs(a.x0 - b.x0) < 0.15 * a.size and abs(a.oy - b.oy) < 0.05 * a.size:
                 return None
-        size = max(g.size for g in glyphs if g.c not in "()[]{}") if any(g.c not in "()[]{}" for g in glyphs) else 0
+        size = max((g.size for g in glyphs if g.c not in nativemath.BRACKETS), default=0)
+        line = sorted((g for g in glyphs if g.size >= 0.9 * size), key=lambda g: g.x0)
+        for a, b in pairwise(line):  # one glyph struck over another ("=" with "/" for ≠): centred on each other
+            if abs(a.oy - b.oy) < 0.1 * size and abs(a.cx - b.cx) < 0.2 * size:
+                return None
+        if f.get("unmapped"):
+            return None
         # an answer label typed into the object ("B. x = 4") stays text before the equation (nativemath splits it)
         order = sorted(range(len(glyphs)), key=lambda i: glyphs[i].x0)[:3]
         text = [f["chars"][i]["c"] for i in order]
@@ -2214,6 +2264,8 @@ class _Extractor:
                 x0, x1 = ln["bbox"][0], ln["bbox"][2]
                 if not outside or not r.y0 - 0.5 <= baseline <= r.y1 + 0.5:
                     continue
+                if f.get("mt") and abs(baseline - target) > 0.3 * f["size"]:
+                    continue  # a MathType object sits on its line's baseline: a line under it is not its own
                 if x1 < r.x0 - 3 * size or x0 > r.x1 + 3 * size:
                     continue
                 key = (abs(baseline - target), max(x0 - r.x1, r.x0 - x1, 0))
@@ -2224,6 +2276,12 @@ class _Extractor:
                 best = max((x[0] for x in lines), key=count, default=None)
                 if best is None or not count(best):
                     continue
+                if f.get("mt") and any(x[0] is best and x[3] for x in lines):
+                    # MuPDF set the object's glyphs in the line under it (lines spaced tighter than the object):
+                    # it gets a line of its own there, at its own baseline
+                    block = next(b for b in blocks if b["type"] == 0 and any(ln is best for ln in b["lines"]))
+                    best = {"spans": [], "dir": (1.0, 0.0), "wmode": 0, "bbox": tuple(r)}
+                    block["lines"].append(best)
             hosts.setdefault(id(best), []).append(f)
         return hosts
 
@@ -2709,15 +2767,14 @@ class _Extractor:
         for o in obstacles:
             if o.y0 < prev.y1 and o.y1 > prev.y0 and o.x0 >= prev.x1 - 1:
                 right = min(right, o.x0 - 2)
-        if text.startswith(OBJ):
-            # a formula opens the line: after "…sau đây:" it is shown on its own; it wrapped only if it would
-            # not have fitted (a formula alone on the line is one "word" as wide as the line)
-            if prev_text.endswith(":"):
+        if text.strip() == OBJ:
+            # a line holding only a formula: after "…sau đây:" or under another such line it is shown on its own;
+            # else it wrapped only if it would not have fitted (it is one "word" as wide as the line). A line that
+            # starts with a formula and goes on in words is judged as any other (a formula does not break: the
+            # line before may end in ":" only because it did not fit there)
+            if prev_text.endswith(":") or prev_text.strip() == OBJ:
                 return False
-            if text.strip() == OBJ:
-                if prev_text.endswith(OBJ):
-                    return False  # formulas line under line: each its own statement
-                return prev.x1 + (row.x1 - row.x0) + 0.25 * row.size >= right - 2
+            return prev.x1 + (row.x1 - row.x0) + 0.25 * row.size >= right - 2
         first_word = text.split()[0]
         char_w = (row.x1 - row.x0) / max(len(row.text), 1)
         return prev.x1 + (len(first_word) + 1) * char_w >= right - 2

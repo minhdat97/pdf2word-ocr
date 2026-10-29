@@ -27,7 +27,7 @@ from .docx_builder import build_docx
 from .errors import TaskError
 from .layout import canonical, looks_like_page_label, looks_like_page_number
 from .model import TAB, PageLayout, Paragraph, Picture, Run
-from .native import HEADER_ZONE, image_page, native_page
+from .native import HEADER_ZONE, ITEM_LABEL, image_page, native_page
 from .ocr import formula_reader, formulas_mode, ocr_page
 from .settings import MAX_DRAWINGS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
 
@@ -39,10 +39,28 @@ def _zone_text(p: Paragraph) -> str:
     by its bytes, not as the one placeholder character they share ("A. ￼ B. ￼" on every page)."""
     if not any(r.math or r.image for r in p.runs):
         return p.text
-    return "".join(
-        (r.math_text or r.math) if r.math else "\x00" + hashlib.sha1(r.image).hexdigest()[:12] if r.image else r.text
-        for r in p.runs
-    )
+
+    def picture(r: Run) -> str:
+        if r.formula:  # cut from a scan: its pixels differ on every page, its size does not
+            return f"\x00{round(r.image_w / 3)}x{round(r.image_h / 3)}"
+        return "\x00" + hashlib.sha1(r.image).hexdigest()[:12]
+
+    return "".join((r.math_text or r.math) if r.math else picture(r) if r.image else r.text for r in p.runs)
+
+
+def _same_numbers(found: list[tuple[int, str]], total: int) -> bool:
+    """The numbers of a line seen on several pages (page index, text) are the same on each, or the ones that
+    change follow the page number (with a fixed offset: a file that starts at page 5) or are the page count."""
+    runs = [(i, re.findall(r"\d+", text)) for i, text in found]
+    if len({len(r) for _, r in runs}) != 1:
+        return False
+    for pos in range(len(runs[0][1])):
+        values = [int(r[pos]) for _, r in runs]
+        if len(set(values)) == 1:
+            continue
+        if len({v - i for v, (i, _) in zip(values, runs)}) != 1 and set(values) != {total}:
+            return False
+    return True
 
 
 def _norm(text: str) -> str:
@@ -290,12 +308,21 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
 
     on: dict[tuple, list[int]] = {}
     spans: dict[tuple, list[tuple[float, float]]] = {}
+    texts: dict[tuple, list[tuple[int, str]]] = {}
     for i, page in enumerate(pages):
         for el in page.elements + page.pictures:
             if (k := key(el, page)) is not None:
                 spans.setdefault(k, []).append((el.y0, el.y1))
                 if i not in on.setdefault(k, []):
                     on[k].append(i)
+                if isinstance(el, Paragraph):
+                    texts.setdefault(k, []).append((i, _zone_text(el)))
+    # Lines that only look alike once numbers are masked are not repeated unless their numbers are the same on
+    # every page or count the pages ("A. v = 2 m/s …" at the foot of one page, "A. v = 1 m/s …" of the next);
+    # a question or an answer row ("Câu 12.", "A. …") is never a header or footer
+    for k in [k for k in on if k in texts]:
+        if ITEM_LABEL.match(texts[k][0][1].lstrip()) or not _same_numbers(texts[k], len(pages)):
+            del on[k]
     sides = {k: s for k, pages_on in on.items() if (s := _side(pages_on, len(pages)))}
     if any(s in ("odd", "even") for s in sides.values()):
         # Printed two-sided: what sits on every page of one kind and none of the

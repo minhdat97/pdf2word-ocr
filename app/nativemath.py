@@ -357,6 +357,14 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
         ):
             raise Unsure("script of a script")
     tokens.sort(key=lambda t: t.x0)
+    if mathtype and depth == 0:
+        # a gap of an em or more on the line: items set apart (four answers "A. λ = 2 m   B. λ = 4 m" typed in one
+        # object), not one expression
+        right = None
+        for t in tokens:
+            if right is not None and t.x0 - right >= 1.0 * size:
+                raise Unsure("items set apart on the line")
+            right = t.x1 if right is None else max(right, t.x1)
     attached: dict[int, dict[str, list[Glyph]]] = {}  # id(token) -> {"sup"/"sub"/"presup"/"presub": glyphs}
     for g, role in sorted(scripts, key=lambda gr: gr[0].x0):
         # a script set under or over a symbol (limits of "lim", a condition over an arrow) is not one of its scripts

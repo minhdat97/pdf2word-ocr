@@ -564,6 +564,13 @@ class MathTypeTest(unittest.TestCase):
         self.assertEqual([r.math for r in runs if r.math], ["x=4"])
         self.assertIn("B.", "".join(r.text for r in runs if not r.math))
 
+    def test_copy_budget(self):
+        _doc, page = mathtype_page(f_over)
+        self.assertTrue(native._copy_small(page))
+        _doc, page = mathtype_page(f_over)
+        page.parent.__dict__["_p2w_copy_chars"] = native.COPY_TEXT_BUDGET + 1  # the file has had its share
+        self.assertFalse(native._copy_small(page))
+
     def test_flipped_form_has_no_frame(self):
         _doc, page = mathtype_page(f_over)
         doc = page.parent
@@ -643,7 +650,20 @@ class MathTypeTextTest(unittest.TestCase):
         self.assertTrue(native._texty(*self.chars("Dien tich la")))  # two words of three letters or more
         self.assertFalse(native._texty(*self.chars("v = 2 m")))
         self.assertFalse(native._texty(*self.chars("8ô")))  # a letter alone: "8 ô" (8 cells) of VL1108
-        self.assertFalse(native._texty(*self.chars("sin x")))
+        self.assertFalse(native._texty(*self.chars("sin x + cos x")))  # function names
+        chars, spans = self.chars("W mgh mgl")
+        italic = {"font": "TimesNewRomanPS-ItalicMT", "size": 12.0, "flags": 2}
+        self.assertFalse(native._texty(chars, {k: italic for k in spans}))  # variables set together
+        chars, spans = self.chars("xÎAÇB")  # Symbol's raw codes for ∈ and ∩ read as Latin letters
+        symbol = {"font": "Symbol", "size": 12.0, "flags": 0}
+        self.assertFalse(native._texty(chars, {k: symbol for k in spans}))
+
+    def test_repeated_lines_by_their_numbers(self):
+        from app.convert import _same_numbers
+        self.assertTrue(_same_numbers([(0, "Trang 1/3"), (1, "Trang 2/3"), (2, "Trang 3/3")], 3))
+        self.assertTrue(_same_numbers([(0, "Đề 101 - trang 5"), (1, "Đề 101 - trang 6")], 2))  # starts at page 5
+        self.assertTrue(_same_numbers([(0, "Năm học 2025 - 2026"), (1, "Năm học 2025 - 2026")], 2))
+        self.assertFalse(_same_numbers([(0, "A. v = 2 m/s B. v = 4 m/s"), (1, "A. v = 1 m/s B. v = 3 m/s")], 2))
 
     def test_gapped(self):
         self.assertTrue(native._gapped([(0, 0, 5, 1), (12, 0, 17, 1)], 10))
@@ -703,6 +723,11 @@ class MathTypeLayoutTest(unittest.TestCase):
         self.assertIsNone(build(line.glyphs, [], plates, mathtype=True))  # a capacitor's plates, not |d|
         self.assertEqual(latex(build(line.glyphs, [], [(g.x0 - 3, g.y0, g.x0 - 2.5, g.y1), (g.x1 + 2.5, g.y0, g.x1 + 3, g.y1)],
                                      mathtype=True)), ["|d|"])
+
+    def test_items_set_apart(self):
+        line = Line().put("𝜆=2").put("m", font="Times New Roman", math_font=True)
+        line.put("𝜆=4", gap=2 * S)  # two answers typed in one object, two em apart
+        self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
 
     def test_slash_spacing(self):
         line = Line().put("𝑊").put("/", gap=0.3 * S).put("𝑚", gap=0.3 * S)
