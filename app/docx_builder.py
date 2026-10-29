@@ -583,32 +583,39 @@ def build_docx(
         chain = _keep_chain(page, room + BOTTOM_SLACK + 1) if room is not None else 0
         first_para = None
         placed: list[tuple[float, float, object]] = []  # (y0, y1, paragraph) of this page
+        # where each Word paragraph starts (page coordinates): Word measures a picture anchored to a paragraph
+        # from the top of its space before, not from its first line
+        origin: dict[int, float] = {}
         chained: dict[int, tuple[object, float]] = {}  # id(paragraph) in the keep chain -> the chain's first
         figures = [p for p in page.pictures if p.wrap and not p.behind_text]
         prev_p = None  # the previous element's Word paragraph, if it was one
         for j, el in enumerate(page.elements):
-            space_before = (el.y0 - top) if j == 0 and (i == 0 or new_page) else el.space_before_pt
+            at_top = j == 0 and (i == 0 or new_page)  # the page's first paragraph, at the top margin in Word
+            space_before = (el.y0 - top) if at_top else el.space_before_pt
             if isinstance(el, Paragraph):
                 gap_top = el.y0 - space_before
-                met = [f for f in figures if gap_top - 1 < f.y0 < el.y1] if prev_p is not None and space_before > 1 else []
+                met = [f for f in figures if gap_top - 1 < f.y0 < el.y1] if (prev_p is not None or at_top) and space_before > 1 else []
                 # A figure spanning the text column (less than 100pt left beside it)
                 if any(f.x1 - f.x0 > right_edge - left - 100 for f in met):
                     # Word puts the next line below it by itself, after any space
                     # before; spacing for the figure's height (here or as the
                     # line above's space after) would be added on top of it.
                     space_before = max(el.y0 - max(f.y1 for f in met), 0.0)
-                elif met:
+                elif met and prev_p is not None:
                     # Word moves a line meeting a figure's top edge down to that
                     # edge together with its space before; as the previous
                     # paragraph's space after, the gap stays where the PDF has it.
                     prev_p.paragraph_format.space_after = Pt(round(space_before, 1))
                     space_before = 0.0
                 p = _fill_paragraph(doc.add_paragraph(), el, left, right_edge, space_before, new_page)
+                # (the page's first paragraph starts at the top margin, wherever its first line goes: below a banner
+                # across the column, say)
+                origin[id(p)] = top if at_top else el.y0 - round(max(space_before, 0.0), 1)
                 prev_p = p
                 if j < chain:
                     p.paragraph_format.keep_together = el.y1 - el.y0 <= 8 * body_line
                     p.paragraph_format.keep_with_next = j < chain - 1 or None
-                    chained[id(p)] = chained[id(placed[0][2])] if chained else (p, el.y0)
+                    chained[id(p)] = chained[id(placed[0][2])] if chained else (p, origin[id(p)])
                 first_para = first_para or p
                 placed.append((el.y0, el.y1, p))
             else:
@@ -631,10 +638,10 @@ def build_docx(
             # page-relative with the page's first paragraph.
             if pic.wrap and not pic.behind_text and placed:
                 pic = _clear_of_lines(pic, page)
-                anchor, anchor_top = _anchor_for(pic, placed)
+                anchor, _top = _anchor_for(pic, placed)
                 # Word breaks a keep-with-next chain at a paragraph holding a
                 # floating picture: such pictures hang from the chain's first one.
-                anchor, anchor_top = chained.get(id(anchor), (anchor, anchor_top))
+                anchor, anchor_top = chained.get(id(anchor), (anchor, origin[id(anchor)]))
                 _float_picture(anchor, pic, next(z), anchor_top)
             else:
                 _float_picture(first_para, pic, next(z))
