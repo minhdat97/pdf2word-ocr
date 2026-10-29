@@ -69,6 +69,10 @@ GREEK_VARIANTS = {"EPSILON SYMBOL": "ϵ", "THETA SYMBOL": "ϑ", "PHI SYMBOL": "�
 MATH_STYLES = {"ITALIC": "{}", "BOLD ITALIC": r"\boldsymbol{{{}}}", "BOLD": r"\mathbf{{{}}}"}
 # punctuation a run of words in an equation (Word's "normal text") carries with it
 TEXT_PUNCT = set("(),.:;+-/'")
+BRACKETS = set("()[]{}")
+# MathType sets a bracket around a taller content (a fraction, a script) at a larger size, centred on the
+# maths axis: up to this much larger than its line, its baseline lowered by up to half the difference
+BRACKET_GROWTH = 1.6
 COMMAND_END = re.compile(r"\\[A-Za-z]+$")
 
 
@@ -240,11 +244,27 @@ def _escape_text(s: str) -> str:
     return "".join(out)
 
 
+def _line_size(glyphs: list[Glyph], mathtype: bool) -> float:
+    """The size of a line: its largest glyph, but not a MathType bracket set larger around its content."""
+    if mathtype:
+        sizes = [g.size for g in glyphs if g.c not in BRACKETS]
+        if sizes:
+            return max(sizes)
+    return max(g.size for g in glyphs)
+
+
+def _grown_bracket(g: Glyph, size: float, dy: float, mathtype: bool) -> bool:
+    """A MathType bracket set larger than its line ("(W/m²)" around a script) on the line's axis."""
+    return (mathtype and g.c in BRACKETS and size < g.size <= BRACKET_GROWTH * size
+            and abs(dy) <= ON_BASE * size + 0.5 * (g.size - size))
+
+
 def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: float | None = None,
             info: dict | None = None) -> str:
     """LaTeX of glyphs set on one line, with fractions (bars) and scripts. outer_size: size of the
     line this one sits in (a numerator's line), for a line of fractions only. info collects
-    "display" (a line-sized fraction) and "frac_only" (fractions alone) for the top level."""
+    "display" (a line-sized fraction) and "frac_only" (fractions alone) for the top level;
+    info["mathtype"] (set by the caller) reads MathType's larger brackets."""
     info = {} if info is None else info
     if depth > 8:
         raise Unsure("nesting")
@@ -290,9 +310,10 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
             raise Unsure("rule thinner than a fraction bar")
         for t in tokens:
             t.write(outer_size, depth, info)
-        return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens))
-    size = max(g.size for g in rest)
-    base_y = median(g.oy for g in rest if g.size >= 0.9 * size)
+        return _emit(sorted(tokens, key=lambda t: t.x0), {}, {}, max(t.size for t in tokens), bool(info.get("mathtype")))
+    mathtype = bool(info.get("mathtype"))
+    size = _line_size(rest, mathtype)
+    base_y = median(g.oy for g in rest if 0.9 * size <= g.size and not (mathtype and g.c in BRACKETS and g.size > size))
     for t in tokens:
         t.write(size, depth, info)
         # a fraction in an exponent ("2^{-t/T}") sits high: scripts holding fractions are not read
@@ -302,7 +323,7 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
     for g in rest:
         dy = g.oy - base_y
         if g.size >= SCRIPT * size:
-            if abs(dy) > ON_BASE * size:
+            if abs(dy) > ON_BASE * size and not _grown_bracket(g, size, dy, mathtype):
                 raise Unsure("glyph off the baseline")  # a second line, a raised symbol
             tokens.append(g)
         elif dy < -0.1 * size:
@@ -365,7 +386,7 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
     for tid, roles in attached.items():
         script_latex[tid] = {role: _layout(gs, [], depth + 1, size, info) for role, gs in roles.items()}
     script_right = {tid: max(g.x1 for gs in roles.values() for g in gs) for tid, roles in attached.items()}
-    return _emit(tokens, script_latex, script_right, size)
+    return _emit(tokens, script_latex, script_right, size, mathtype)
 
 
 def _text_runs(tokens: list, scripted: set[int]) -> list[tuple[int, int]]:
@@ -394,7 +415,7 @@ def _text_runs(tokens: list, scripted: set[int]) -> list[tuple[int, int]]:
     return runs
 
 
-def _emit(tokens: list, script_latex: dict, script_right: dict, size: float) -> str:
+def _emit(tokens: list, script_latex: dict, script_right: dict, size: float, mathtype: bool = False) -> str:
     scripted = set(script_latex)
     items: list[_Item] = []
     text_at = {i: j for i, j in _text_runs(tokens, scripted)}
@@ -471,7 +492,8 @@ def _emit(tokens: list, script_latex: dict, script_right: dict, size: float) -> 
                 and prev.kind not in ("op", "open", "bar", "punct", "frac")  # Word pads fractions itself
                 and it.kind not in ("op", "punct", "close", "bar", "frac")
                 and not it.latex.startswith("{}")
-            ) or (prev.kind == "punct" and gap >= PUNCT_SPACE * size and it.kind not in ("op", "close")):
+            ) or (prev.kind == "punct" and gap >= PUNCT_SPACE * size and it.kind not in ("op", "close")
+                  and not (mathtype and prev.latex == "/")):  # MathType sets space around "/" itself
                 out += r"\ "
             elif it.latex[:1].isalpha() and COMMAND_END.search(out):
                 out += " "  # "\Delta U": a command name must not run into the next letter
@@ -521,23 +543,26 @@ def lead_width(pieces: list[Piece]) -> float:
     return 0.0
 
 
-def build(glyphs: list[Glyph], bars: list[Bar], uprights: list[tuple[float, float, float, float]], others: int = 0) -> list[Piece] | None:
+def build(glyphs: list[Glyph], bars: list[Bar], uprights: list[tuple[float, float, float, float]], others: int = 0,
+          mathtype: bool = False, text_font: str = "Cambria Math") -> list[Piece] | None:
     """The formula as pieces (text label, equation, trailing text), or None to keep its picture.
 
     glyphs: the formula's visible glyphs; bars: thin horizontal strokes (fraction bars);
     uprights: upright strokes (x0, y0, x1, y1) such as drawn absolute-value bars; others: count
-    of any other strokes of the formula.
+    of any other strokes of the formula. mathtype: the glyphs of one MathType object (native.py
+    maps its Times/Symbol glyphs to math letters), whose brackets may be set larger than their line;
+    text_font: the font of the equation's normal text (units, words).
     """
     try:
-        return _build(glyphs, bars, uprights, others)
+        return _build(glyphs, bars, uprights, others, mathtype, text_font)
     except Exception:  # noqa: BLE001 – a layout this module trips over keeps its picture, the file still converts
         return None
 
 
-def why(glyphs, bars, uprights, others: int = 0) -> str:
+def why(glyphs, bars, uprights, others: int = 0, mathtype: bool = False, text_font: str = "Cambria Math") -> str:
     """The reason build() keeps the picture ("" when it does not): for tests and tuning."""
     try:
-        _build(glyphs, bars, uprights, others)
+        _build(glyphs, bars, uprights, others, mathtype, text_font)
     except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"
     return ""
@@ -574,14 +599,15 @@ def _text_pieces(gs: list[Glyph], size: float, before: str = "", after: str = ""
     return pieces
 
 
-def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[Piece]:
+def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int, mathtype: bool = False,
+           text_font: str = "Cambria Math") -> list[Piece]:
     if others:
         raise Unsure("strokes other than bars")
     if not any(g.math_font for g in glyphs):
         raise Unsure("no glyph of a Unicode math font")  # MathType's Times + Symbol: a picture
     fields = ("c", "x0", "y0", "x1", "y1", "oy", "size", "font", "bold", "italic", "color", "math_font", "drawn")
     glyphs = [Glyph(**{k: getattr(g, k) for k in fields}) for g in glyphs]  # accents go onto copies
-    size = max(g.size for g in glyphs)
+    size = _line_size(glyphs, mathtype)
     # drawn bars come in pairs of one height around formula glyphs (|x−1|); a lone stroke beside a formula is
     # a border or a figure's line, not a bar of it
     ups = sorted(uprights)
@@ -647,15 +673,15 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int) -> list[
     colors = {g.color for g in body}
     if len(colors) > 1:
         raise Unsure("several colours")
-    info: dict = {}
+    info: dict = {"mathtype": mathtype}
     latex = _layout(body, bars, info=info)
     color = colors.pop()
     # raises ValueError for anything the writer cannot take (docx_builder._add_math passes the same)
-    latex_to_omml(latex, size_pt=size, text_font="Cambria Math", color=color)
+    latex_to_omml(latex, size_pt=size, text_font=text_font, color=color)
     # the equation's size is that of its line; fractions alone: their parts' size (the caller decides
     # between a display equation and an inline one at its line's size, Piece.frac_only)
     on_line = [g for g in line[k:m] if g in body]
-    pieces = [Piece("math", latex, max(g.size for g in (on_line or body)), color=color, font="Cambria Math",
+    pieces = [Piece("math", latex, _line_size(on_line or body, mathtype), color=color, font=text_font,
                     display=bool(info.get("display")), frac_only=not on_line and bool(info.get("frac_only")))]
     body_x0, body_x1 = min(g.x0 for g in body), max(g.x1 for g in body)
     if lead:

@@ -10,6 +10,9 @@ is kept rather than re-recognised.
 - Ruled tables (PyMuPDF find_tables) become Word tables.
 - Word equations (Cambria Math: math letters, scripts, fraction bars) become
   Word equations again, rebuilt from the glyph positions (app/nativemath.py).
+  So do MathType objects that Word for Windows exports as text: each is drawn
+  by a form XObject of its own (its EMF picture) in Times New Roman and Symbol,
+  which gives the formula's glyphs and strokes whole (_form_frames).
   Formulas it cannot read with certainty, and those whose glyphs carry no
   usable text (MathType pictures exported by Word: subset fonts read as
   "!\"#$"), are cut out as inline pictures at their place in the line, with
@@ -21,7 +24,9 @@ is kept rather than re-recognised.
 - In OCR mode, large raster images that hold text are OCR'd instead.
 """
 
+import math
 import re
+import unicodedata
 import zlib
 from collections import Counter
 from dataclasses import dataclass, field
@@ -80,6 +85,154 @@ def _maybe_opaque(text: str) -> bool:
 
 def _math_alnum(c: str) -> bool:
     return bool(c) and 0x1D400 <= ord(c[0]) <= 0x1D7FF
+
+
+# Adobe's Symbol encoding, where MathType sets Greek letters and operators: code -> character. Bracket and
+# integral pieces and the radical's and arrows' extenders are left out (a formula built with them stays a
+# picture), as are signs no formula holds.
+SYMBOL_ENCODING = {
+    **{c: chr(c) for c in b"!#%&()+,./0123456789:;<=>?[]_{|}"},
+    0x22: "∀", 0x24: "∃", 0x27: "∋", 0x2A: "∗", 0x2D: "−", 0x40: "≅", 0x5C: "∴", 0x5E: "⊥", 0x7E: "∼",
+    **dict(zip(range(0x41, 0x5B), "ΑΒΧΔΕΦΓΗΙϑΚΛΜΝΟΠΘΡΣΤΥςΩΞΨΖ")),
+    **dict(zip(range(0x61, 0x7B), "αβχδεφγηιϕκλμνοπθρστυϖωξψζ")),
+    0xA1: "ϒ", 0xA2: "′", 0xA3: "≤", 0xA5: "∞", 0xAB: "↔", 0xAC: "←", 0xAD: "↑", 0xAE: "→", 0xAF: "↓", 0xB0: "°",
+    0xB1: "±", 0xB2: "″", 0xB3: "≥", 0xB4: "×", 0xB5: "∝", 0xB6: "∂", 0xB8: "÷", 0xB9: "≠", 0xBA: "≡", 0xBB: "≈",
+    0xBC: "…", 0xC6: "∅", 0xC7: "∩", 0xC8: "∪", 0xC9: "⊃", 0xCA: "⊇", 0xCB: "⊄", 0xCC: "⊂", 0xCD: "⊆", 0xCE: "∈",
+    0xCF: "∉", 0xD0: "∠", 0xD1: "∇", 0xD5: "∏", 0xD6: "√", 0xD7: "⋅", 0xD8: "¬", 0xD9: "∧", 0xDA: "∨", 0xDB: "⇔",
+    0xDC: "⇐", 0xDD: "⇑", 0xDE: "⇒", 0xDF: "⇓", 0xE5: "∑", 0xF2: "∫",
+}
+SYMBOL_CHARS = set(SYMBOL_ENCODING.values())
+CONTENT_MAX = 4_000_000  # bytes of a page's content stream read for form frames; a larger one is not read
+
+
+def _math_italic(c: str, bold: bool = False) -> str | None:
+    """The math italic letter of an ASCII or Greek small letter (f -> 𝑓, λ -> 𝜆), None if there is none."""
+    if c == "h" and not bold:
+        return "ℎ"
+    name = unicodedata.name(c, "")
+    style = "BOLD ITALIC" if bold else "ITALIC"
+    for prefix in ("LATIN ", "GREEK "):
+        if name.startswith(prefix):
+            name = name[len(prefix):].replace("LETTER ", "")
+            try:
+                return unicodedata.lookup(f"MATHEMATICAL {style} {name}")
+            except KeyError:
+                return None
+    return None
+
+
+def _mathtype_char(c: str, span: dict) -> str | None:
+    """What a glyph of a MathType object reads as for app/nativemath.py, or None if it cannot be read.
+    Symbol glyphs come as private-use or Latin codes (λ is "\\uf06c" or "l"): Symbol's encoding gives the
+    character, a small Greek letter is a math italic (MathType's λ is a variable). Letters of the text font
+    are math italic where it is italic (MathType's variables), upright otherwise (units, functions)."""
+    font = span["font"]
+    if SYMBOL_FONT.search(font):
+        o = ord(c)
+        code = o - 0xF000 if 0xF020 <= o <= 0xF0FF else o if o < 0x100 else None
+        u = SYMBOL_ENCODING.get(code) if code is not None else c if c in SYMBOL_CHARS else None
+        if u is None:
+            return None
+        if "α" <= u <= "ω" or u in "ϑϕϖ":
+            return _math_italic(u)
+        return "∆" if u == "Δ" else u  # nativemath sets ∆ upright, as MathType does
+    if MATH_FONT.search(font) or c == "\ufffd" or 0xE000 <= ord(c) <= 0xF8FF or not c.isprintable():
+        return None  # MT Extra and other symbol fonts, unmapped glyphs
+    if c.isascii() and c.isalpha():
+        if _italic(span):
+            return _math_italic(c, _bold(span))
+        return unicodedata.lookup(f"MATHEMATICAL BOLD {'CAPITAL' if c.isupper() else 'SMALL'} {c.upper()}") if _bold(span) else c
+    return c
+
+
+_CONTENT_TOKEN = re.compile(rb"\s+|%[^\r\n]*|<<|>>|<[0-9A-Fa-f\s]*>|[\[\]{}]|/[^\s/\[\]()<>{}%]*|[^\s/\[\]()<>{}%]+")
+
+
+def _content_ops(data: bytes):
+    """(operator, operands) of a content stream; operands are numbers and names (strings, arrays and
+    dictionaries are passed over). Stops at an inline image (its data is not tokens)."""
+    operands: list = []
+    i, n = 0, len(data)
+    while i < n:
+        if data[i] == 0x28:  # a literal string: balanced parentheses, backslash escapes
+            depth, i = 1, i + 1
+            while i < n and depth:
+                ch = data[i]
+                i += 2 if ch == 0x5C else 1
+                depth += (ch == 0x28) - (ch == 0x29)
+            operands.append(None)
+            continue
+        m = _CONTENT_TOKEN.match(data, i)
+        if not m:
+            i += 1
+            continue
+        tok, i = m.group(), m.end()
+        first = tok[:1]
+        if first.isspace() or first == b"%":
+            continue
+        if first == b"/":
+            operands.append(tok[1:].decode("latin-1"))
+        elif first in b"<>[]{}":
+            operands.append(None)
+        else:
+            try:
+                operands.append(float(tok))
+            except ValueError:
+                op = tok.decode("latin-1")
+                if op == "BI":
+                    return
+                yield op, operands
+                operands = []
+
+
+def _matrix_mul(a: tuple, b: tuple) -> tuple:
+    return (a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2],
+            a[2] * b[1] + a[3] * b[3], a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5])
+
+
+def _form_frames(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Where the page's content stream draws a form XObject (its /BBox through its /Matrix and the
+    current transformation), in page coordinates. Word for Windows writes each MathType/Equation object
+    as a form of its own ("/Meta18 Do"). Only the page's own stream is read (not forms drawn by forms),
+    up to CONTENT_MAX bytes; none for a rotated page."""
+    if page.rotation:
+        return []
+    doc = page.parent
+    forms = {}
+    for xref, name, _inv, _bbox in page.get_xobjects():
+        if doc.xref_get_key(xref, "Subtype")[1] == "/Form":
+            forms[name] = xref
+    if not forms:
+        return []
+    data = page.read_contents()
+    if len(data) > CONTENT_MAX:
+        return []
+    ctm, stack, out = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), [], []
+    for op, args in _content_ops(data):
+        if op == "q":
+            stack.append(ctm)
+        elif op == "Q":
+            ctm = stack.pop() if stack else ctm
+        elif op == "cm" and len(args) >= 6 and all(isinstance(v, float) for v in args[-6:]):
+            ctm = _matrix_mul(tuple(args[-6:]), ctm)
+        elif op == "Do" and args and args[-1] in forms and len(out) < FORMS_MAX:
+            xref = forms[args[-1]]
+            try:
+                bbox = [float(v) for v in doc.xref_get_key(xref, "BBox")[1].strip("[] ").split()]
+                kind, value = doc.xref_get_key(xref, "Matrix")
+                matrix = tuple(float(v) for v in value.strip("[] ").split()) if kind == "array" else (1, 0, 0, 1, 0, 0)
+            except ValueError:
+                continue
+            if len(bbox) != 4 or len(matrix) != 6:
+                continue
+            full = _matrix_mul(matrix, ctm)
+            pts = [(x * full[0] + y * full[2] + full[4], x * full[1] + y * full[3] + full[5])
+                   for x in (bbox[0], bbox[2]) for y in (bbox[1], bbox[3])]
+            r = pymupdf.Rect(min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts),
+                             max(y for _, y in pts)) * page.transformation_matrix
+            if r.is_valid and not r.is_empty and all(map(math.isfinite, r)):
+                out.append(r)
+    return out
 
 
 CMAP_BEGIN = re.compile(r"begin(bfchar|bfrange)")
@@ -1090,6 +1243,9 @@ class _Extractor:
         nodes: list[list] = []  # [rect, kind, size, drawing index, char]; kind 2 formula, 1 joins, 0 drawing
         marks: list[tuple] = []  # every visible upright glyph: (rect, size, char, node index or None)
         span_of: dict[int, dict] = {}  # id(char) -> its span
+        objects = self._mathtype_objects(blocks)  # whole formulas, read apart from the grouping below
+        taken = {id(c) for o in objects for c in o["chars"]}
+        taken_drawings = {i for o in objects for i in o["drawings"]}
         for b in blocks:
             if b["type"] != 0:
                 continue
@@ -1112,6 +1268,9 @@ class _Extractor:
                     for c in s["chars"]:
                         if not c["c"].strip():
                             continue
+                        if id(c) in taken:
+                            span_of[id(c)] = s
+                            continue
                         if s["size"] < 4:
                             self._tiny.append(pymupdf.Rect(c["bbox"]))
                             continue
@@ -1120,7 +1279,7 @@ class _Extractor:
                         marks.append((pymupdf.Rect(c["bbox"]), s["size"], c, len(nodes) if kind else None))
                         if kind:
                             nodes.append([pymupdf.Rect(c["bbox"]), kind, s["size"], None, c])
-        if not nodes:
+        if not nodes and not objects:
             return []
         in_table = lambda r: any(  # noqa: E731
             t.x0 - 1 <= r.x0 and r.x1 <= t.x1 + 1 and t.y0 - 1 <= r.y0 and r.y1 <= t.y1 + 1 for t in self.table_rects
@@ -1137,7 +1296,7 @@ class _Extractor:
         fractions: list[tuple[int, list[int]]] = []  # (bar node, glyph nodes over and under it)
         for i, d in enumerate(self.drawings):
             r = pymupdf.Rect(d["rect"])
-            if on_grid(r):
+            if on_grid(r) or i in taken_drawings:
                 continue
             # an upright stroke outside ruled tables: an absolute-value bar or a bracket
             upright = r.width <= 1 and 0 < r.height <= 40 and not in_table(r)
@@ -1224,16 +1383,24 @@ class _Extractor:
             })
         found = self._close_formulas(found, marks)
         size_of = {id(m[2]): m[1] for m in marks}
+        for o in objects:
+            rect = pymupdf.Rect(o["chars"][0]["bbox"])
+            for c in o["chars"][1:]:
+                rect |= c["bbox"]
+            for i in o["drawings"]:
+                rect |= self.drawings[i]["rect"]
+            found.append({"rect": rect, "chars": o["chars"], "drawings": o["drawings"], "mt": True, "blanks": o["blanks"]})
+            size_of.update((id(c), span_of[id(c)]["size"]) for c in o["chars"])
         fraction_bars = {nodes[bar][3] for bar, _parts in fractions}
         out = []
         for f in found:
             sizes = [size_of[id(c)] for c in f["chars"]]
-            # the main line's baseline: where the largest glyphs sit
-            top = max(sizes)
-            baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if size > top - 0.5)
+            # the main line's baseline: where the largest glyphs sit (not MathType's brackets, set larger)
+            top = max([z for c, z in zip(f["chars"], sizes) if not (f.get("mt") and c["c"] in "()[]{}")] or sizes)
+            baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if top - 0.5 < size <= top)
             self.formula_drawings |= f["drawings"]
             self.used_drawings |= f["drawings"]
-            self.formula_chars.update(id(c) for c in f["chars"])
+            self.formula_chars.update(id(c) for c in f["chars"] + f.get("blanks", []))
             # what the picture shows: the glyph boxes (italics lean out of them) and the strokes
             parts = [(pymupdf.Rect(c["bbox"]), 0.2 * size, 0.1 * size) for c, size in zip(f["chars"], sizes)]
             ink = pymupdf.Rect(f["rect"].x0, min(c["origin"][1] - 0.7 * size for c, size in zip(f["chars"], sizes)),
@@ -1243,9 +1410,145 @@ class _Extractor:
             parts += [(pymupdf.Rect(self.drawings[i]["rect"]), 1.0, 1.0) for i in f["drawings"]]
             out.append({
                 "rect": f["rect"], "size": median(sizes), "baseline": baseline, "parts": parts, "run": None, "ink": ink,
-                "pieces": self._equation(f, span_of, fraction_bars),
+                "pieces": self._equation_mt(f, span_of) if f.get("mt") else self._equation(f, span_of, fraction_bars),
+                "mt": bool(f.get("mt")),
             })
         return sorted(out, key=lambda f: (f["rect"].y0, f["rect"].x0))
+
+    def _mathtype_objects(self, blocks: list[dict]) -> list[dict]:
+        """MathType objects that Word for Windows exports as text: each drawn by a form XObject of its
+        own (_form_frames), so the glyphs inside its frame are the formula, whole. A frame counts when
+        it holds text glyphs, of spans that lie wholly inside it, and no more than a formula does (a few
+        lines high, strokes and glyphs within FORMULA_GLYPHS_MAX, no image): a figure's picture with
+        labels does not. Frames that overlap are one object. {"chars", "drawings", "blanks"} each: blanks
+        are the spaces drawn inside it, which go with the formula (not into the text after it)."""
+        frames = _form_frames(self.page)
+        if not frames:
+            return []
+        merged: list[pymupdf.Rect] = []
+        for r in sorted(frames, key=lambda r: (r.y0, r.x0)):
+            for k, m in enumerate(merged):
+                if not (m & r).is_empty:
+                    merged[k] = m | r
+                    break
+            else:
+                merged.append(pymupdf.Rect(r))
+        objs = [{"frame": r, "chars": [], "drawings": set(), "blanks": [], "bad": False} for r in merged]
+
+        def home(bbox) -> int | None:
+            x, y = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+            for k, o in enumerate(objs):
+                r = o["frame"]
+                if r.x0 <= x <= r.x1 and r.y0 <= y <= r.y1:
+                    return k
+            return None
+
+        for b in blocks:
+            if b["type"] != 0:
+                continue
+            for ln in b["lines"]:
+                dx, dy = ln["dir"]
+                if abs(dy) > 0.02 or dx < 0:  # rotated text (a watermark across the page) is not the formula's
+                    continue
+                for sp in ln["spans"]:
+                    visible = [c for c in sp["chars"] if c["c"].strip()]
+                    homes = {home(c["bbox"]) for c in visible}
+                    if len(homes) > 1:  # a span across a frame's edge: the frame overlaps text of the line
+                        for k in homes - {None}:
+                            objs[k]["bad"] = True
+                        continue
+                    k = homes.pop() if homes else None
+                    if k is not None:
+                        objs[k]["chars"].extend(visible)
+                    for c in sp["chars"]:
+                        if not c["c"].strip() and home(c["bbox"]) is not None and k in (None, home(c["bbox"])):
+                            objs[home(c["bbox"])]["blanks"].append(c)
+        for i, d in enumerate(self.drawings):
+            r = pymupdf.Rect(d["rect"])
+            k = home(r)
+            if k is not None and pymupdf.Rect(objs[k]["frame"].x0 - 1, objs[k]["frame"].y0 - 1,
+                                              objs[k]["frame"].x1 + 1, objs[k]["frame"].y1 + 1).contains(r):
+                objs[k]["drawings"].add(i)
+        for info in self.page.get_image_info():
+            r = pymupdf.Rect(info["bbox"])
+            for o in objs:
+                f = o["frame"]
+                if pymupdf.Rect(f.x0 - 1, f.y0 - 1, f.x1 + 1, f.y1 + 1).contains(r):
+                    o["bad"] = True  # an image in it: a figure
+        out = []
+        for o in objs:
+            if o["bad"] or not o["chars"]:
+                continue
+            size = median(sp_size for sp_size in (c["bbox"][3] - c["bbox"][1] for c in o["chars"]))
+            if (len(o["chars"]) + len(o["drawings"]) > FORMULA_GLYPHS_MAX or len(o["drawings"]) > FORMULA_MARKS_MAX
+                    or o["frame"].height > 6 * size):
+                continue
+            o["chars"].sort(key=lambda c: c["bbox"][0])
+            out.append(o)
+        return out
+
+    def _equation_mt(self, f: dict, span_of: dict[int, dict]) -> list | None:
+        """A MathType object (_mathtype_objects) as a Word equation (nativemath pieces), or None to keep
+        its picture: its Times New Roman and Symbol glyphs read as math letters (_mathtype_char), its
+        horizontal strokes as fraction bars, upright ones as absolute-value bars."""
+        if self._tiny_inside(f["rect"]):
+            return None
+        glyphs, fonts = [], Counter()
+        for c in f["chars"]:
+            sp = span_of.get(id(c))
+            if sp is None or sp["size"] < 4:
+                return None
+            ch = _mathtype_char(c["c"], sp)
+            if ch is None:
+                return None
+            if not SYMBOL_FONT.search(sp["font"]):
+                fonts[_family(sp["font"]) or ""] += 1
+            x0, y0, x1, y1 = c["bbox"]
+            glyphs.append(nativemath.Glyph(
+                ch, x0, y0, x1, y1, c["origin"][1], sp["size"], font=_family(sp["font"]) or "", bold=_bold(sp),
+                italic=_italic(sp), color=_color(sp, honour_alpha=not self.invisible_layer),
+            ))
+        size = max(g.size for g in glyphs if g.c not in "()[]{}") if any(g.c not in "()[]{}" for g in glyphs) else 0
+        bars, uprights, others = [], [], 0
+        for i in f["drawings"]:
+            r = pymupdf.Rect(self.drawings[i]["rect"])
+            if r.height <= 1.5 and r.width >= 2:  # MathType's fraction bar: a stroked line
+                bars.append(nativemath.Bar(r.x0, r.x1, (r.y0 + r.y1) / 2, nativemath.FRACTION_RULE * size))
+            elif r.width <= 1.5 and r.height > 0:
+                uprights.append((r.x0, r.y0, r.x1, r.y1))
+            else:
+                others += 1
+        font = fonts.most_common(1)[0][0] if fonts and fonts.most_common(1)[0][0] else "Times New Roman"
+        pieces = nativemath.build(glyphs, bars, uprights, others, mathtype=True, text_font=font)
+        if pieces and not self._brackets_fit(glyphs, f):
+            return None
+        return pieces
+
+    def _tiny_inside(self, rect: pymupdf.Rect) -> bool:
+        """Glyphs too small to be read lie in the formula: its picture shows them."""
+        ink = pymupdf.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
+        if not len(self._tiny):
+            return False
+        if not isinstance(self._tiny, np.ndarray):
+            self._tiny = np.asarray([tuple(r) for r in self._tiny])
+        t = self._tiny
+        return bool(np.any((t[:, 0] < ink.x1) & (t[:, 2] > ink.x0) & (t[:, 1] < ink.y1) & (t[:, 3] > ink.y0)))
+
+    def _brackets_fit(self, glyphs: list, f: dict) -> bool:
+        """No bracket is drawn taller than everything the formula holds (one that is encloses rows outside
+        it: a matrix, a system). The text layer gives a stretched bracket the box of a plain one, so its
+        ink is measured."""
+        content = [g for g in glyphs if g.c not in "()[]{}"]
+        if not content or len(content) == len(glyphs):
+            return True
+        top = min([g.oy - 0.78 * g.size for g in content] + [self.drawings[i]["rect"].y0 for i in f["drawings"]])
+        bottom = max([g.oy + 0.22 * g.size for g in content] + [self.drawings[i]["rect"].y1 for i in f["drawings"]])
+        for g in glyphs:
+            if g.c in "()[]{}":
+                height = self._ink_height(g)
+                if height is None or height > bottom - top + 0.5 * g.size:
+                    return False
+        return True
 
     def _equation(self, f: dict, span_of: dict[int, dict], fraction_bars: set[int]) -> list | None:
         """The formula as a Word equation (nativemath pieces), or None to keep its picture."""
@@ -1258,12 +1561,8 @@ class _Extractor:
             return None
         unmapped, font_names = self._math_fonts
         ink = pymupdf.Rect(f["rect"].x0 - 1, f["rect"].y0 - 1, f["rect"].x1 + 1, f["rect"].y1 + 1)
-        if len(self._tiny):
-            if not isinstance(self._tiny, np.ndarray):
-                self._tiny = np.asarray([tuple(r) for r in self._tiny])
-            t = self._tiny
-            if np.any((t[:, 0] < ink.x1) & (t[:, 2] > ink.x0) & (t[:, 1] < ink.y1) & (t[:, 3] > ink.y0)):
-                return None  # glyphs too small to be read are part of it: its picture shows them
+        if self._tiny_inside(f["rect"]):
+            return None
         glyphs = []
         for c in f["chars"]:
             s = span_of.get(id(c))
@@ -1299,17 +1598,8 @@ class _Extractor:
             else:
                 others += 1
         pieces = nativemath.build(glyphs, bars, uprights, others)
-        # a bracket drawn taller than everything the formula holds encloses rows outside it (a matrix, a
-        # system): the text layer gives a stretched bracket the box of a plain one, so its ink is measured
-        content = [g for g in glyphs if g.c not in "()[]{}"]
-        if pieces and content and len(content) < len(glyphs):
-            top = min([g.oy - 0.78 * g.size for g in content] + [self.drawings[i]["rect"].y0 for i in f["drawings"]])
-            bottom = max([g.oy + 0.22 * g.size for g in content] + [self.drawings[i]["rect"].y1 for i in f["drawings"]])
-            for g in glyphs:
-                if g.c in "()[]{}":
-                    height = self._ink_height(g)
-                    if height is None or height > bottom - top + 0.5 * g.size:
-                        return None
+        if pieces and not self._brackets_fit(glyphs, f):
+            return None
         return pieces
 
     def _ink_height(self, g) -> float | None:
@@ -1383,7 +1673,10 @@ class _Extractor:
         runs = []
         for piece in f["pieces"]:
             if piece.kind == "math":
-                run = Run(text=OBJ, size=_half(piece.size or main), color=piece.color, font=piece.font, math=piece.text,
+                size = piece.size or main
+                if f.get("mt") and abs(size - main) <= 0.1 * main:
+                    size = main  # Word scales a MathType object a little (12.27 pt glyphs on a 12 pt line)
+                run = Run(text=OBJ, size=_half(size), color=piece.color, font=piece.font, math=piece.text,
                           math_text=piece.text)
                 f["run"] = run
                 f["display"], f["frac_only"] = piece.display, piece.frac_only  # settled with its paragraph
@@ -2296,7 +2589,9 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
     """Equations whose fractions are as large as their line are display equations in Word, which
     stand alone in their paragraph: alone there, the run says so (Run.display); beside text they
     keep their picture. Fractions alone beside text are an inline equation at their line's size
-    (Word sets inline fraction parts at about 0.72 of the line)."""
+    (Word sets inline fraction parts at about 0.72 of the line). A MathType object sets its fractions
+    that large in running text: beside text it is an inline equation all the same (its fractions
+    come out smaller), since its picture could not be edited."""
     pending = {id(f["run"]): f for f in ex.formulas
                if f["run"] is not None and f["run"].math and (f.get("display") or f.get("frac_only"))}
     if not pending:
@@ -2318,6 +2613,9 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
             if alone:
                 r.display = True
                 runs[:] = [r]  # the blanks beside it are the equation's own spacing: a display paragraph holds it alone
+            elif f.get("mt"):
+                if f.get("frac_only"):
+                    r.size = _half(font_pt)
             elif f.get("frac_only") and r.size <= nativemath.SCRIPT * font_pt:
                 r.size = _half(font_pt)
             else:  # the picture, as _runs makes it: it shows the label and trailing text too

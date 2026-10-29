@@ -430,3 +430,127 @@ class UnmappedGlyphsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def mathtype_page(formula, rect=(80, 42, 120, 72), size=(40, 30), rotate=0):
+    """A page with "Cau 1: A. <formula> la dung." where the formula is drawn by a form XObject of its own, as
+    Word for Windows exports a MathType object (its EMF picture): formula(page) draws it on a page of `size`."""
+    src = pymupdf.open()
+    formula(src.new_page(width=size[0], height=size[1]))
+    doc = pymupdf.open()
+    page = doc.new_page(width=300, height=120)
+    page.insert_text((20, 60), "Cau 1: A.", fontsize=12, fontname="Times-Roman")
+    page.show_pdf_page(pymupdf.Rect(rect), src, 0)
+    page.insert_text((rect[2] + 5, 60), "la dung.", fontsize=12, fontname="Times-Roman")
+    if rotate:
+        page.set_rotation(rotate)
+    doc = pymupdf.open("pdf", doc.tobytes())
+    return doc, doc[0]
+
+
+def f_over(page, letter="l"):
+    """f = v/λ in Times Italic and Symbol (λ is Symbol's "l"), the bar a stroked line as MathType draws it."""
+    page.insert_text((2, 18), "f", fontsize=12, fontname="Times-Italic")
+    page.insert_text((8, 18), "=", fontsize=12, fontname="Symbol")
+    page.insert_text((20, 11), "v", fontsize=12, fontname="Times-Italic")
+    page.insert_text((19.5, 25), letter, fontsize=12, fontname="Symbol")
+    page.draw_line((18, 14.5), (27, 14.5), width=0.5)
+
+
+def page_runs(page):
+    layout = native.native_page(page)
+    return layout, [r for e in layout.elements for r in getattr(e, "runs", [])]
+
+
+class MathTypeTest(unittest.TestCase):
+    """MathType objects exported by Word for Windows as text (Times New Roman + Symbol in a form of their own)."""
+
+    def test_object_becomes_an_equation(self):
+        _doc, page = mathtype_page(f_over)
+        layout, runs = page_runs(page)
+        maths = [r for r in runs if r.math]
+        self.assertEqual([r.math for r in maths], [r"f=\frac{v}{\lambda}"])
+        self.assertEqual(maths[0].font, "Times")  # the equation's normal text in the object's font
+        self.assertEqual(maths[0].size, 12)
+        self.assertFalse(any(r.image for r in runs))
+        self.assertEqual((layout.equations, layout.native_formula_pictures), (1, 0))
+        text = "".join(r.text for r in runs if not r.math)
+        self.assertIn("Cau 1: A.", text)
+        self.assertIn("la dung.", text)
+        self.assertNotIn("v", text.replace("Cau", ""))  # the formula's glyphs are not left as text
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx([layout], out)
+            root = etree.fromstring(zipfile.ZipFile(out).read("word/document.xml"))
+        self.assertEqual(len(root.findall(f".//{M}oMath")), 1)
+        self.assertEqual(len(root.findall(f".//{M}f")), 1)
+
+    def test_unreadable_object_is_one_picture(self):
+        _doc, page = mathtype_page(lambda p: f_over(p, letter="\xe6"))  # a bracket piece: not read
+        layout, runs = page_runs(page)
+        self.assertFalse(any(r.math for r in runs))
+        self.assertEqual(sum(1 for r in runs if r.image), 1)  # the whole object, numerator and bar included
+        self.assertEqual((layout.equations, layout.native_formula_pictures), (0, 1))
+        self.assertNotIn("v", "".join(r.text for r in runs).replace("Cau", ""))
+
+    def test_figure_form_is_not_a_formula(self):
+        def figure(p):
+            f_over(p)
+            p.draw_rect(pymupdf.Rect(1, 1, 39, 119), color=(0, 0, 0))
+        _doc, page = mathtype_page(figure, rect=(80, 0, 120, 120), size=(40, 120))  # 10 lines high: not a formula
+        self.assertEqual(native._Extractor(page, None)._mathtype_objects(page.get_text("rawdict")["blocks"]), [])
+
+    def test_rotated_page_has_no_frames(self):
+        _doc, page = mathtype_page(f_over, rotate=90)
+        self.assertEqual(native._form_frames(page), [])
+
+    def test_glyph_reading(self):
+        symbol, times_i, times_b, roman = ({"font": f, "flags": fl} for f, fl in (
+            ("SymbolMT", 0), ("TimesNewRomanPS-ItalicMT", 2), ("TimesNewRomanPS-BoldMT", 16), ("TimesNewRomanPSMT", 0)))
+        read = native._mathtype_char
+        self.assertEqual(read("", symbol), "𝜆")  # private-use code
+        self.assertEqual(read("l", symbol), "𝜆")  # Latin code
+        self.assertEqual(read("λ", symbol), "𝜆")  # mapped already
+        self.assertEqual(read("D", symbol), "∆")
+        self.assertEqual(read("W", symbol), "Ω")
+        self.assertEqual(read("", symbol), "⇒")
+        self.assertEqual(read("", symbol), "−")
+        self.assertEqual(read("", symbol), "×")
+        self.assertIsNone(read("", symbol))  # a bracket piece
+        self.assertEqual(read("f", times_i), "𝑓")
+        self.assertEqual(read("h", times_i), "ℎ")
+        self.assertEqual(read("B", times_b), "𝐁")
+        self.assertEqual(read("m", roman), "m")  # units stay upright
+        self.assertEqual(read("ô", times_i), "ô")
+        self.assertIsNone(read("", {"font": "MTExtra", "flags": 0}))
+        self.assertIsNone(read("�", roman))
+
+    def test_content_stream_reading(self):
+        ops = list(native._content_ops(b"q 1 0 0 1 5 6 cm (a (b) \\) c) Tj /F1 12 Tf <</MCID 3>> BDC /Fm0 Do Q BI /W 1 ID xyz EI Q"))
+        self.assertEqual([op for op, _ in ops], ["q", "cm", "Tj", "Tf", "BDC", "Do", "Q"])  # stops at the inline image
+        self.assertEqual(ops[1][1], [1.0, 0.0, 0.0, 1.0, 5.0, 6.0])
+        self.assertEqual(ops[5][1][-1], "Fm0")
+
+
+class MathTypeLayoutTest(unittest.TestCase):
+    """nativemath's MathType mode: brackets set larger around their content, MathType's own spacing."""
+
+    def test_grown_brackets(self):
+        line = Line().put("𝐼=(").put("𝑊/𝑚")
+        line.sup("2")
+        line.put(")")
+        for g in line.glyphs:
+            if g.c in "()":  # MathType: 1.25 times the line, lowered 0.1 em
+                g.size, g.oy = 1.25 * S, g.oy + 0.1 * S
+        pieces = build(line.glyphs, [], [], mathtype=True, text_font="Times New Roman")
+        self.assertEqual(latex(pieces), ["I=(W/m^{2})"])
+        self.assertEqual((pieces[0].size, pieces[0].font), (S, "Times New Roman"))  # the line's size, not the brackets'
+        for g in line.glyphs:
+            if g.c in "()":
+                g.oy += 0.2 * S  # lowered more than half the growth: not a bracket on the line's axis
+        self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
+
+    def test_slash_spacing(self):
+        line = Line().put("𝑊").put("/", gap=0.3 * S).put("𝑚", gap=0.3 * S)
+        self.assertEqual(latex(build(line.glyphs, [], [], mathtype=True)), ["W/m"])
+        self.assertEqual(latex(build(line.glyphs, [], [])), [r"W/\ m"])
