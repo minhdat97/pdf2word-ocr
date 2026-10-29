@@ -1645,18 +1645,37 @@ class _Extractor:
 
     def _maths_shown(self, o: dict) -> bool | None:
         """How surely a form's content is maths: True for a Symbol / MT Extra glyph, a fraction bar (a
-        horizontal stroke with glyphs over and under it) or a script (a smaller glyph off the baseline);
-        False for italic letters in runs of at most three (variables) and no Vietnamese word; None
-        otherwise (a line of ordinary text, a name, a date)."""
+        horizontal stroke with a numerator right over it and a denominator right under it, no longer than
+        they are) or a script (a smaller glyph off the baseline); False for italic letters in runs of at
+        most three (variables) and no Vietnamese word; None otherwise (a line of ordinary text, a name, a
+        date), and for any curve or filled shape (a diagram: MathType draws its bars and radicals as
+        straight strokes, everything else as glyphs)."""
         spans = o["spans"]
         sizes = [spans[id(c)]["size"] for c in o["chars"]]
+        for i in o["drawings"]:
+            d = self.drawings[i]
+            r = d["rect"]
+            thin = r.height <= 1.5 or r.width <= 1.5
+            if any(item[0] not in ("l", "re") for item in d["items"]) or (d.get("fill") is not None and not thin):
+                return None
         if any(SYMBOL_FONT.search(spans[id(c)]["font"]) or MATH_FONT.search(spans[id(c)]["font"]) for c in o["chars"]):
             return True
         for i in o["drawings"]:
             r = self.drawings[i]["rect"]
             if r.height <= 1.5 and r.width >= 2:
-                xs = [c for c in o["chars"] if r.x0 - 1 <= (c["bbox"][0] + c["bbox"][2]) / 2 <= r.x1 + 1]
-                if any(c["bbox"][3] <= r.y0 + 1 for c in xs) and any(c["bbox"][1] >= r.y1 - 1 for c in xs):
+                xs = [(c, spans[id(c)]["size"]) for c in o["chars"] if r.x0 - 1 <= (c["bbox"][0] + c["bbox"][2]) / 2 <= r.x1 + 1]
+                if not xs:
+                    continue
+                em = max(z for _c, z in xs)
+                over = [c["bbox"] for c, z in xs if r.y0 - 1.5 * z <= c["bbox"][3] <= r.y0 + 1]
+                under = [c["bbox"] for c, z in xs if r.y1 - 1 <= c["bbox"][1] <= r.y1 + 1.5 * z]
+                if not over or not under:
+                    continue
+                for j in o["drawings"]:  # a radical's strokes over or under the bar widen that part
+                    q = self.drawings[j]["rect"]
+                    if j != i and r.x0 - 1 <= (q.x0 + q.x1) / 2 <= r.x1 + 1:
+                        (over if q.y1 <= r.y0 + 1 else under if q.y0 >= r.y1 - 1 else []).append(tuple(q))
+                if r.width <= max(max(b[2] for b in part) - min(b[0] for b in part) for part in (over, under)) + em:
                     return True
         top = max(sizes)
         base = median(c["origin"][1] for c, z in zip(o["chars"], sizes) if z > top - 0.5)
@@ -2030,7 +2049,7 @@ class _Extractor:
         rgba = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)
         rows = np.flatnonzero(rgba[:, :, 3].max(axis=1) > 0)
         top, bottom = (max(rows[0] - int(s), 0), min(rows[-1] + 1 + int(s), pix.h)) if rows.size else (0, pix.h)
-        ok, buf = cv2.imencode(".png", cv2.cvtColor(np.ascontiguousarray(rgba[top:bottom]), cv2.COLOR_RGBA2BGRA))
+        _ok, buf = cv2.imencode(".png", cv2.cvtColor(np.ascontiguousarray(rgba[top:bottom]), cv2.COLOR_RGBA2BGRA))
         return pymupdf.Rect(clip.x0, clip.y0 + top / s, clip.x1, clip.y0 + bottom / s), buf.tobytes()
 
     def _formula_picture(self, f: dict) -> tuple[pymupdf.Rect, bytes]:
