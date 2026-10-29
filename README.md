@@ -268,8 +268,24 @@ tắt.
     trong giới hạn (64 KB, giải nén Flate có chặn, 1 MB mỗi file), đối tượng font đọc một lần mỗi file.
     Word for Mac xuất chỉ số bằng glyph không có bảng mã ("x_A" đọc thành "𝑥!"), nên công thức có chỉ số
     của file Word for Mac vẫn là ảnh; file Word for Windows có bảng mã đủ.
-  - Công thức không có chữ dùng được – MathType/Equation mà Word xuất ra PDF đánh số glyph
-    "!", "\"", "#"…, công thức MathType (Times + Symbol) và công thức trên không đọc chắc – được cắt
+  - Công thức **MathType (cả Equation 3.0) mà Word for Windows xuất ra PDF bằng chữ** (Times New Roman,
+    Symbol, gạch phân số là nét vẽ) cũng được **dựng lại thành Equation**. Mỗi công thức là một form
+    XObject riêng của Word ("/Meta18 Do", ảnh EMF của nó): luồng lệnh của trang cho khung từng form, và một
+    bản sao trang chỉ vẽ các form (trước mỗi form một dấu nhỏ mang số của nó) cho biết chính xác chữ và nét
+    nào của form nào, nên công thức được lấy trọn mà không kéo chữ dòng trên/dưới vào. Glyph Symbol đọc
+    theo bảng mã Symbol (mã riêng U+F0xx, mã Latin, hay Unicode thật khi font có ToUnicode), chữ Hy Lạp
+    thường và chữ nghiêng thành chữ toán nghiêng (biến), chữ đứng giữ đứng (đơn vị, sin/cos); chữ tiếng
+    Việt TCVN3/VNI trong công thức đọc qua bảng mã cũ. Ngoặc MathType đặt cỡ lớn hơn quanh nội dung được
+    nhận; phân số đặt cạnh chữ là Equation trong dòng (Word đặt tử, mẫu nhỏ hơn); dòng chỉ có công thức
+    sau dấu ":" hay dưới dòng công thức khác là đoạn riêng. Chỉ là công thức khi form có dấu hiệu toán
+    (dấu toán Symbol, gạch phân số có tử ngay trên và mẫu ngay dưới, chỉ số; không thì chỉ chữ nghiêng
+    từng cụm ngắn có phép toán); chữ thường vẽ bằng form (câu có từ tiếng Việt, tiêu đề, bảng giá trị có
+    cột, dấu đầu dòng, hình có nét cong/hình tô, bảng Excel dán dạng ảnh) giữ như trước. Không chắc thì cả
+    công thức là **một ảnh** vẽ từ chính form (không vỡ ra từng mảnh như trước); công thức chỉ một dòng
+    không dựng được thì là chữ. Đọc luồng lệnh và sao trang đều có giới hạn (4 MB nội dung mỗi trang,
+    16 MB mỗi file; 300 form mỗi trang; mỗi form 64 KB; object sao theo 1000 mỗi trang, 20 000 mỗi file).
+  - Công thức không có chữ dùng được – MathType/Equation mà Word for Mac xuất ra PDF đánh số glyph
+    "!", "\"", "#"…, công thức MathType không phải form của Word và công thức trên không đọc chắc – được cắt
     thành **ảnh nội dòng** 300 DPI đúng chỗ trong
     câu, hạ theo baseline (alt "Công thức (ảnh)"). Vùng công thức là nhóm glyph công thức cùng
     glyph Symbol/Cambria Math kề bên (cùng dòng: cách ≤0,35em; chồng nhau như cận tích phân: chỉ
@@ -294,7 +310,9 @@ tắt.
     quanh) neo vào đoạn đầu tiên nằm ngang mép trên của nó (chung ít nhất 8pt, hoặc nửa đoạn, và
     bắt đầu không thấp hơn mép trên quá 8pt – dòng phương án dưới đồ thị không làm neo), không có
     thì đoạn ngay trên nó, và đặt theo **đoạn đó** (không theo trang): hình đi theo câu hỏi cả khi chữ
-    dời sang trang khác. Khoảng trống chứa hình giữ đủ chiều cao (khoảng khác tối đa 72pt). Ảnh nền
+    dời sang trang khác. Word đo vị trí đó từ đầu khoảng trống phía trên đoạn (không từ dòng chữ đầu), và
+    đoạn đầu trang bắt đầu ở lề trên: băng tiêu đề, khung "MỤC TIÊU" trên câu đầu trang nằm đúng chỗ, không
+    bị đẩy lên mép trang chồng nhau. Khoảng trống chứa hình giữ đủ chiều cao (khoảng khác tối đa 72pt). Ảnh nền
     và nét mảnh (không có chữ bao quanh) vẫn neo vào đoạn đầu trang, đặt theo trang. Hình lấn ≤4pt
     vào khung dòng ngay trên/dưới được dời (hay thu nhỏ ≤15%) cho vừa khe, nếu không Word bắt dòng
     đó chạy quanh hình và đẩy chữ xuống. Mấy ảnh xếp sát nhau trên một dải (dòng chữ WordArt xuất
@@ -541,7 +559,10 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
   scan (OCR) chưa có ô gộp.
 - Mọi thông tin đầu/chân trang trừ số trang đều bị bỏ (cố ý): tên trường, tên đề in lặp mỗi
-  trang cũng mất; dòng chỉ có ở trang đầu thì vẫn là nội dung.
+  trang cũng mất; dòng chỉ có ở trang đầu thì vẫn là nội dung. Dòng ở dải đầu/chân trang được so theo
+  nội dung thật của Equation và ảnh công thức (không theo ký tự giữ chỗ chung); trên trang PDF có chữ, số
+  của nó phải như nhau ở mọi trang hay đếm trang; dòng mở bằng "Câu 12.", "A." không bao giờ bị coi là
+  đầu/chân trang (hàng đáp án ở cuối trang không mất).
 - Bảng scan: màu nền ô lệch vài đơn vị so với bản gốc (ảnh chụp điện thoại lệch nhiều hơn); ô tô
   màu chỉ đậm hơn giấy dưới 10/255 (hay dưới độ chênh sáng của ảnh chụp) thì thành ô trắng.
 - Công thức thành ảnh (MathType, Equation có căn/ma trận/ngoặc lớn, font toán thiếu bảng mã): xem
