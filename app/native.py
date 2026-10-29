@@ -2227,7 +2227,7 @@ class _Extractor:
             try:
                 return self._form_picture(f)
             except Exception:  # noqa: BLE001 – drawn from the page instead
-                pass
+                f = {**f, "form": None}
         rect = f["rect"]
         clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & self.page.rect
         full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
