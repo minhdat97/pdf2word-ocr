@@ -621,6 +621,43 @@ class MathTypeTest(unittest.TestCase):
         self.assertEqual(ops[5][1][-1], "Fm0")
 
 
+class MathTypeTextTest(unittest.TestCase):
+    """What tells a formula from text drawn the same way (a Word EMF picture of a sentence, a table)."""
+
+    @staticmethod
+    def chars(text, x=10.0, size=12.0, oy=100.0, step=6.0, space=3.0):
+        out, spans = [], {}
+        span = {"font": "TimesNewRomanPSMT", "size": size, "flags": 0}
+        for ch in text:
+            if ch == " ":
+                x += space
+                continue
+            c = {"c": ch, "bbox": (x, oy - 9, x + step - 0.2, oy + 3), "origin": (x, oy)}
+            out.append(c)
+            spans[id(c)] = span
+            x += step
+        return out, spans
+
+    def test_texty(self):
+        self.assertTrue(native._texty(*self.chars("Diện tích")))  # a Vietnamese word
+        self.assertTrue(native._texty(*self.chars("Dien tich la")))  # two words of three letters or more
+        self.assertFalse(native._texty(*self.chars("v = 2 m")))
+        self.assertFalse(native._texty(*self.chars("8ô")))  # a letter alone: "8 ô" (8 cells) of VL1108
+        self.assertFalse(native._texty(*self.chars("sin x")))
+
+    def test_gapped(self):
+        self.assertTrue(native._gapped([(0, 0, 5, 1), (12, 0, 17, 1)], 10))
+        self.assertFalse(native._gapped([(0, 0, 5, 1), (7, 0, 12, 1)], 10))
+
+    def test_repeated_lines_told_by_their_equations(self):
+        from app.convert import _norm, _zone_text
+        from app.model import Paragraph, Run
+        a = Paragraph("", 0, 0, 1, 1, 12, runs=[Run("A. "), Run(native.OBJ, math=r"v=\lambda f", math_text=r"v=\lambda f")])
+        b = Paragraph("", 0, 0, 1, 1, 12, runs=[Run("A. "), Run(native.OBJ, math=r"T=\frac{1}{f}", math_text=r"T=\frac{1}{f}")])
+        self.assertNotEqual(_norm(_zone_text(a)), _norm(_zone_text(b)))
+        self.assertEqual(_zone_text(Paragraph("Trang 1/2", 0, 0, 1, 1, 12)), "Trang 1/2")
+
+
 class MathTypeLayoutTest(unittest.TestCase):
     """nativemath's MathType mode: brackets set larger around their content, MathType's own spacing."""
 
@@ -646,6 +683,26 @@ class MathTypeLayoutTest(unittest.TestCase):
         self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
         line = Line().put("𝜆=").put("2", size=0.7 * S, dy=-1.2 * S)  # a ² of the line above
         self.assertIsNone(build(line.glyphs, [], [], mathtype=True))
+
+    def test_table_rows_over_a_rule(self):
+        line = Line()
+        bar = line.frac("x 0 1", "y 1 3", size=S)  # columns: a value table with a rule under its first row
+        for g in line.glyphs:
+            g.c = {"x": "𝑥", "y": "𝑦"}.get(g.c, g.c)
+        glyphs = [g for g in line.glyphs if g.c != " "]
+        for g in glyphs:  # spread the columns a full em apart
+            col = round((g.x0 - glyphs[0].x0) / (0.5 * S))
+            g.x0, g.x1 = g.x0 + col * 0.5 * S, g.x1 + col * 0.5 * S
+        bar.x1 = max(g.x1 for g in glyphs)
+        self.assertIsNone(build(glyphs, [bar], [], mathtype=True))
+
+    def test_bars_taller_than_what_they_hold(self):
+        line = Line().put("𝑑")
+        g = line.glyphs[0]
+        plates = [(g.x0 - 3, g.oy - 3 * S, g.x0 - 2.5, g.oy + 2 * S), (g.x1 + 2.5, g.oy - 3 * S, g.x1 + 3, g.oy + 2 * S)]
+        self.assertIsNone(build(line.glyphs, [], plates, mathtype=True))  # a capacitor's plates, not |d|
+        self.assertEqual(latex(build(line.glyphs, [], [(g.x0 - 3, g.y0, g.x0 - 2.5, g.y1), (g.x1 + 2.5, g.y0, g.x1 + 3, g.y1)],
+                                     mathtype=True)), ["|d|"])
 
     def test_slash_spacing(self):
         line = Line().put("𝑊").put("/", gap=0.3 * S).put("𝑚", gap=0.3 * S)

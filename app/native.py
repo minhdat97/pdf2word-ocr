@@ -44,7 +44,7 @@ from . import nativemath
 from .layout import alignment, cell_align, looks_like_link
 from .model import LINE_BREAK, TAB, Cell, Columns, PageLayout, Paragraph, Picture, Run, Table
 from .ocr import ocr_region
-from .vnfont import decode_span
+from .vnfont import decode_span, legacy_encoding, looks_like_vni
 
 FLAG_SUPERSCRIPT, FLAG_ITALIC, FLAG_BOLD = 1, 2, 16
 FIGURE_DPI = 220
@@ -160,6 +160,8 @@ def _mathtype_char(c: str, span: dict, mapped: bool | None = None) -> str | None
         return "∆" if u == "Δ" else u  # nativemath sets ∆ upright, as MathType does
     if MATH_FONT.search(font) or c == "\ufffd" or 0xE000 <= ord(c) <= 0xF8FF or not c.isprintable():
         return None  # MT Extra and other symbol fonts, unmapped glyphs
+    if _italic(span) and ("α" <= c <= "ω" or c in "ϑϕϖ"):  # a Greek variable in the text font's italics
+        return _math_italic(c, _bold(span))
     if c.isascii() and c.isalpha():
         if _italic(span):
             return _math_italic(c, _bold(span))
@@ -326,10 +328,47 @@ def _read_form_frames(page: pymupdf.Page) -> list[dict]:
     return out
 
 
-def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool]:
+def _gapped(boxes: list, em: float) -> bool:
+    """Boxes across with a gap of half an em or more between neighbours: columns of a table, not one part
+    of a fraction."""
+    right = None
+    for b in sorted(boxes, key=lambda b: b[0]):
+        if right is not None and b[0] - right >= 0.5 * em:
+            return True
+        right = b[2] if right is None else max(right, b[2])
+    return False
+
+
+def _texty(chars: list[dict], spans: dict[int, dict]) -> bool:
+    """Glyphs that read as words, not a formula: a Vietnamese word (two letters or more, one a Latin letter
+    with marks, as read from a VNI/TCVN3 font too) or two words of three letters or more. Words are runs of
+    letters on one baseline (a fraction's parts are not joined into one)."""
+    lines: dict[int, list[tuple[float, float, str, float]]] = {}
+    for c in chars:
+        sp = spans[id(c)]
+        ch = c["c"]
+        if not SYMBOL_FONT.search(sp["font"]) and (legacy_encoding(sp["font"]) or not ch.isascii()):
+            ch = decode_span(ch, sp["font"])[0][:1] or ch
+        lines.setdefault(round(c["origin"][1] / (0.3 * sp["size"])), []).append((c["bbox"][0], c["bbox"][2], ch, sp["size"]))
+    long_words = 0
+    for row in lines.values():
+        word, prev = "", None
+        for x0, x1, ch, size in sorted(row) + [(math.inf, math.inf, " ", 0.0)]:
+            if ch.isalpha() and word and prev is not None and x0 - prev <= 0.15 * size:  # (a word space: 0.25 em)
+                word += ch
+            else:
+                if len(word) >= 2 and any(not w.isascii() and unicodedata.name(w, "").startswith("LATIN") for w in word):
+                    return True
+                long_words += len(word) >= 3
+                word = ch if ch.isalpha() else ""
+            prev = x1
+    return long_words >= 2
+
+
+def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool | None]:
     """Whether each Symbol font the forms use has a ToUnicode map, by _font_key (Word's SymbolMT has one;
     a font without one gives its raw codes, read as Latin-1 above 0x7F). Read within the font budget."""
-    out: dict[str, bool] = {}
+    out: dict[str, bool | None] = {}
     try:
         todo = sorted(forms)
         kind_of = {x: 0 for x in todo}  # the forms and the forms they draw, one level down
@@ -349,7 +388,8 @@ def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool]
                 name = _read_key(doc, fx, "BaseFont")[1].lstrip("/")
                 if SYMBOL_FONT.search(name):
                     key = _font_key(name)
-                    out[key] = out.get(key, False) or _read_key(doc, fx, "ToUnicode")[0] != "null"
+                    has = _read_key(doc, fx, "ToUnicode")[0] != "null"
+                    out[key] = has if out.get(key, has) == has else None  # both kinds under one name: unknown
     except Exception:  # noqa: BLE001 – past the budget or damaged: the fonts not read yet stay unknown
         return out
     return out
@@ -1667,21 +1707,21 @@ class _Extractor:
             for i in o["drawings"]:
                 rect |= self.drawings[i]["rect"]
             found.append({"rect": rect, "chars": o["chars"], "drawings": o["drawings"], "mt": True, "blanks": o["blanks"],
-                          "form": o["form"], "strong": o["strong"]})
+                          "form": o["form"], "strong": o["strong"], "flat": o.get("flat", False)})
             size_of.update((id(c), span_of[id(c)]["size"]) for c in o["chars"])
         fraction_bars = {nodes[bar][3] for bar, _parts in fractions}
         out = []
         for f in found:
             sizes = [size_of[id(c)] for c in f["chars"]]
             # the main line's baseline: where the largest glyphs sit (not MathType's brackets, set larger)
-            top = max([z for c, z in zip(f["chars"], sizes) if not (f.get("mt") and c["c"] in "()[]{}")] or sizes)
+            top = max([z for c, z in zip(f["chars"], sizes) if not (f.get("mt") and c["c"] in "()[]{}|‖")] or sizes)
             baseline = median(c["origin"][1] for c, size in zip(f["chars"], sizes) if top - 0.5 < size <= top)
             try:
                 pieces = self._equation_mt(f, span_of) if f.get("mt") else None
             except Exception:  # noqa: BLE001 – unreadable: its picture
                 pieces = None
-            if f.get("mt") and pieces is None and not f["strong"]:
-                continue  # variables in italics, nothing the text does not show as well: left to the text
+            if f.get("mt") and pieces is None and (not f["strong"] or f["flat"]):
+                continue  # nothing over or under a line (variables, "2 × 1 = 2" lines): left to the text
             self.formula_drawings |= f["drawings"]
             self.used_drawings |= f["drawings"]
             self.formula_chars.update(id(c) for c in f["chars"] + f.get("blanks", []))
@@ -1821,8 +1861,15 @@ class _Extractor:
             thin = r.height <= 1.5 or r.width <= 1.5
             if any(item[0] not in ("l", "re") for item in d["items"]) or (d.get("fill") is not None and not thin):
                 return None
-        if any(SYMBOL_FONT.search(spans[id(c)]["font"]) or MATH_FONT.search(spans[id(c)]["font"]) for c in o["chars"]):
-            return True
+        sym = False  # a maths sign of Symbol / MT Extra (not a bullet or a box: Word sets those in Symbol too)
+        for c in o["chars"]:
+            sp = spans[id(c)]
+            if _font_key(sp["font"]) == "symbol" or MATH_FONT.search(sp["font"]):
+                m = _mathtype_char(c["c"], sp, self._symbol_maps.get(_font_key(sp["font"])))
+                if m is not None and (m in nativemath.OPERATORS or m in nativemath.SYMBOLS or _math_alnum(m)
+                                      or "Α" <= m <= "Ω" or m == "∆"):
+                    sym = True
+        bar = False
         for i in o["drawings"]:
             r = self.drawings[i]["rect"]
             if r.height <= 1.5 and r.width >= 2:
@@ -1832,17 +1879,25 @@ class _Extractor:
                 em = max(z for _c, z in xs)
                 over = [c["bbox"] for c, z in xs if r.y0 - 1.5 * z <= c["bbox"][3] <= r.y0 + 1]
                 under = [c["bbox"] for c, z in xs if r.y1 - 1 <= c["bbox"][1] <= r.y1 + 1.5 * z]
-                if not over or not under:
-                    continue
+                if not over or not under or _gapped(over, em) or _gapped(under, em):
+                    continue  # (columns of a table under its header rule are not a fraction)
                 for j in o["drawings"]:  # a radical's strokes over or under the bar widen that part
                     q = self.drawings[j]["rect"]
                     if j != i and r.x0 - 1 <= (q.x0 + q.x1) / 2 <= r.x1 + 1:
                         (over if q.y1 <= r.y0 + 1 else under if q.y0 >= r.y1 - 1 else []).append(tuple(q))
                 if r.width <= max(max(b[2] for b in part) - min(b[0] for b in part) for part in (over, under)) + em:
-                    return True
+                    bar = True
         top = max(sizes)
         base = median(c["origin"][1] for c, z in zip(o["chars"], sizes) if z > top - 0.5)
-        if any(z < nativemath.SCRIPT * top and abs(c["origin"][1] - base) > 0.1 * top for c, z in zip(o["chars"], sizes)):
+        script = any(z < nativemath.SCRIPT * top and abs(c["origin"][1] - base) > 0.1 * top
+                     for c, z in zip(o["chars"], sizes))
+        # glyphs on lines of their own, nothing over or under them: the text reads them as well
+        o["flat"] = not (bar or script or o["drawings"])
+        if _texty(o["chars"], spans):
+            # a sentence, a heading, a table of words ("48 m²", "ĐÁP ÁN" underlined): only a Symbol sign with a
+            # fraction or a script makes it maths ("H = Năng lượng có ích / Năng lượng toàn phần")
+            return True if sym and (bar or script) else None
+        if sym or bar or script:
             return True
         italic, run, words, word = False, 0, [], ""
         prev = None
@@ -1861,6 +1916,8 @@ class _Extractor:
             prev = c
         if not italic or any(len(w) >= 2 and not w.isascii() for w in words):
             return None
+        if not any(c["c"] in nativemath.OPERATORS for c in o["chars"]):
+            return None  # italic letters and dots ("T.V.A.", "cf. Fig. 2a"): text, not a formula
         return False
 
     def _equation_mt(self, f: dict, span_of: dict[int, dict]) -> list | None:
@@ -1870,20 +1927,33 @@ class _Extractor:
         if self._tiny_inside(f["rect"]):
             return None
         glyphs, fonts = [], Counter()
+        decoded: dict[int, tuple[str, str | None]] = {}  # id(span) -> its text read from a VNI/TCVN3 font
         for c in f["chars"]:
             sp = span_of.get(id(c))
             if sp is None or sp["size"] < 4:
                 return None
-            ch = _mathtype_char(c["c"], sp, self._symbol_maps.get(_font_key(sp["font"])))
+            raw, family = c["c"], _family(sp["font"])
+            if not SYMBOL_FONT.search(sp["font"]):
+                if id(sp) not in decoded:
+                    text = "".join(x["c"] for x in sp["chars"])
+                    decoded[id(sp)] = decode_span(text, sp["font"]) if legacy_encoding(sp["font"]) or looks_like_vni(text) else (text, None)
+                text, legacy_family = decoded[id(sp)]
+                if legacy_family is not None:
+                    if len(text) != len(sp["chars"]):
+                        return None  # VNI writes a letter as two codes: not read glyph by glyph
+                    raw, family = text[next(i for i, x in enumerate(sp["chars"]) if x is c)], legacy_family
+                fonts[family or ""] += 1
+            ch = _mathtype_char(raw, sp, self._symbol_maps.get(_font_key(sp["font"])))
             if ch is None:
                 return None
-            if not SYMBOL_FONT.search(sp["font"]):
-                fonts[_family(sp["font"]) or ""] += 1
             x0, y0, x1, y1 = c["bbox"]
             glyphs.append(nativemath.Glyph(
-                ch, x0, y0, x1, y1, c["origin"][1], sp["size"], font=_family(sp["font"]) or "", bold=_bold(sp),
+                ch, x0, y0, x1, y1, c["origin"][1], sp["size"], font=family or "", bold=_bold(sp),
                 italic=_italic(sp), color=_color(sp, honour_alpha=not self.invisible_layer),
             ))
+        for a, b in pairwise(sorted(glyphs, key=lambda g: (g.c, g.x0))):  # a glyph drawn twice (overstruck bold)
+            if a.c == b.c and abs(a.x0 - b.x0) < 0.15 * a.size and abs(a.oy - b.oy) < 0.05 * a.size:
+                return None
         size = max(g.size for g in glyphs if g.c not in "()[]{}") if any(g.c not in "()[]{}" for g in glyphs) else 0
         # an answer label typed into the object ("B. x = 4") stays text before the equation (nativemath splits it)
         order = sorted(range(len(glyphs)), key=lambda i: glyphs[i].x0)[:3]
@@ -2639,6 +2709,15 @@ class _Extractor:
         for o in obstacles:
             if o.y0 < prev.y1 and o.y1 > prev.y0 and o.x0 >= prev.x1 - 1:
                 right = min(right, o.x0 - 2)
+        if text.startswith(OBJ):
+            # a formula opens the line: after "…sau đây:" it is shown on its own; it wrapped only if it would
+            # not have fitted (a formula alone on the line is one "word" as wide as the line)
+            if prev_text.endswith(":"):
+                return False
+            if text.strip() == OBJ:
+                if prev_text.endswith(OBJ):
+                    return False  # formulas line under line: each its own statement
+                return prev.x1 + (row.x1 - row.x0) + 0.25 * row.size >= right - 2
         first_word = text.split()[0]
         char_w = (row.x1 - row.x0) / max(len(row.text), 1)
         return prev.x1 + (len(first_word) + 1) * char_w >= right - 2

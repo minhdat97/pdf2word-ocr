@@ -69,7 +69,7 @@ GREEK_VARIANTS = {"EPSILON SYMBOL": "ϵ", "THETA SYMBOL": "ϑ", "PHI SYMBOL": "�
 MATH_STYLES = {"ITALIC": "{}", "BOLD ITALIC": r"\boldsymbol{{{}}}", "BOLD": r"\mathbf{{{}}}"}
 # punctuation a run of words in an equation (Word's "normal text") carries with it
 TEXT_PUNCT = set("(),.:;+-/'")
-BRACKETS = set("()[]{}")
+BRACKETS = set("()[]{}|‖")
 # MathType sets a bracket around a taller content (a fraction, a script) at a larger size, centred on the
 # maths axis: up to this much larger than its line, its baseline lowered by up to half the difference
 BRACKET_GROWTH = 1.6
@@ -254,6 +254,17 @@ def _line_size(glyphs: list[Glyph], mathtype: bool) -> float:
     return max(g.size for g in glyphs)
 
 
+def _columns(glyphs: list[Glyph]) -> bool:
+    """Gaps of half an em or more between neighbouring glyphs: columns of a table, not one expression."""
+    size = max(g.size for g in glyphs)
+    right = None
+    for g in sorted(glyphs, key=lambda g: g.x0):
+        if right is not None and g.x0 - right >= 0.5 * size:
+            return True
+        right = g.x1 if right is None else max(right, g.x1)
+    return False
+
+
 def _grown_bracket(g: Glyph, size: float, dy: float, mathtype: bool) -> bool:
     """A MathType bracket set larger than its line ("(W/m²)" around a script) on the line's axis."""
     return (mathtype and g.c in BRACKETS and size < g.size <= BRACKET_GROWTH * size
@@ -286,6 +297,8 @@ def _layout(glyphs: list[Glyph], bars: list[Bar], depth: int = 0, outer_size: fl
         den = [g for g in members if g.cy > b.y]
         if not num or not den or len(num) + len(den) != len(members):
             raise Unsure("bar without numerator or denominator")
+        if info.get("mathtype") and (_columns(num) or _columns(den)):
+            raise Unsure("columns over a rule")  # a value table with a rule under its first row, not a fraction
         part_size = max(g.size for g in members)
         # Word's fraction: both parts centred on the bar, the bar as long as the wider part (a rule
         # between two lines of formulas or table rows is not one)
@@ -623,6 +636,13 @@ def _build(glyphs: list[Glyph], bars: list[Bar], uprights, others: int, mathtype
         for a, b in zip(ups[::2], ups[1::2])
     ):
         raise Unsure("upright strokes not in pairs")
+    if mathtype:  # MathType's bars are as tall as what they hold: taller strokes are a figure's (plates of a capacitor)
+        for a, b in zip(ups[::2], ups[1::2]):
+            held = [g for g in glyphs if a[2] < g.cx < b[0]]
+            top = min([g.oy - 0.78 * g.size for g in held] + [r.y for r in bars if a[2] < (r.x0 + r.x1) / 2 < b[0]])
+            bottom = max([g.oy + 0.22 * g.size for g in held] + [r.y for r in bars if a[2] < (r.x0 + r.x1) / 2 < b[0]])
+            if max(a[3] - a[1], b[3] - b[1]) > bottom - top + 0.5 * size:
+                raise Unsure("bars taller than what they hold")
     for x0, y0, x1, y1 in uprights:
         line = [g for g in glyphs if g.size >= SCRIPT * size and y0 - 1 <= g.oy <= y1 + 1]
         if not line:

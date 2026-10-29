@@ -9,6 +9,7 @@ With strip_watermarks, background watermarks, semi-transparent stamped text and
 links in the header/footer zone are dropped before the document is written.
 """
 
+import hashlib
 import re
 import tempfile
 from collections import Counter
@@ -31,6 +32,17 @@ from .ocr import formula_reader, formulas_mode, ocr_page
 from .settings import MAX_DRAWINGS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
 
 MODES = ("basic", "ocr", "ocr-full")
+
+
+def _zone_text(p: Paragraph) -> str:
+    """A zone line's text for telling repeated lines: an equation counts by its LaTeX and a formula picture
+    by its bytes, not as the one placeholder character they share ("A. ￼ B. ￼" on every page)."""
+    if not any(r.math or r.image for r in p.runs):
+        return p.text
+    return "".join(
+        (r.math_text or r.math) if r.math else "\x00" + hashlib.sha1(r.image).hexdigest()[:12] if r.image else r.text
+        for r in p.runs
+    )
 
 
 def _norm(text: str) -> str:
@@ -271,7 +283,7 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
         if isinstance(el, Paragraph) and el.zone:
             mid = (el.x0 + el.x1) / 2
             edge = "c" if abs(mid - width / 2) < 0.1 * width else "l" if mid < width / 2 else "r"
-            return ("P", el.zone, _norm(el.text), edge)
+            return ("P", el.zone, _norm(_zone_text(el)), edge)
         if isinstance(el, Picture) and (zone := _picture_zone(el, page)):
             return ("I", zone, round(el.x0 / 3), round(el.y0 / 3), round((el.x1 - el.x0) / 3), round((el.y1 - el.y0) / 3))
         return None
