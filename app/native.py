@@ -327,8 +327,8 @@ def _form_symbol_maps(doc: pymupdf.Document, forms: set[int]) -> dict[str, bool]
                 if SYMBOL_FONT.search(name):
                     key = _font_key(name)
                     out[key] = out.get(key, False) or _read_key(doc, fx, "ToUnicode")[0] != "null"
-    except Exception:  # noqa: BLE001 – past the budget or damaged: those fonts' codes above 0x7F are not read
-        pass
+    except Exception:  # noqa: BLE001 – past the budget or damaged: the fonts not read yet stay unknown
+        return out
     return out
 
 
@@ -2079,7 +2079,7 @@ class _Extractor:
         s = FORMULA_DPI / 72
         pix = page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=True, annots=False)
         if not pix.h or not pix.w:
-            ok, buf = cv2.imencode(".png", np.zeros((1, 1, 4), np.uint8))
+            _ok, buf = cv2.imencode(".png", np.zeros((1, 1, 4), np.uint8))
             return pymupdf.Rect(rect), buf.tobytes()
         rgba = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)
         rows = np.flatnonzero(rgba[:, :, 3].max(axis=1) > 0)
