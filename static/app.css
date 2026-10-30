@@ -30,6 +30,11 @@ a { color: var(--accent); }
 header.wrap { padding-top: 36px; padding-bottom: 22px; }
 .brand { display: inline-block; font-weight: 600; font-size: 14px; text-decoration: none; margin-bottom: 6px; }
 .brand:hover { text-decoration: underline; }
+.top-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.top-row .brand { margin-bottom: 0; }
+.donate { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 700; color: #b3135d; background: #ffe3ee; border: 1px solid #ffc4da; border-radius: 999px; padding: 6px 14px; text-decoration: none; white-space: nowrap; }
+.donate:hover { background: #ffd3e4; }
+@media (prefers-color-scheme: dark) { .donate { color: #ffb6d3; background: #4a2336; border-color: #6b3150; } .donate:hover { background: #5a2a42; } }
 h1 { font-size: clamp(26px, 5vw, 32px); line-height: 1.2; margin: 0 0 6px; }
 .lead { color: var(--muted); margin: 0; }
 
