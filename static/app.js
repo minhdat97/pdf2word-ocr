@@ -17,6 +17,7 @@ const ERRORS = {
   busy: "Máy chủ đang bận. Hãy thử lại sau ít phút.",
   server_full: "Máy chủ đang bận. Hãy thử lại sau ít phút.",
   careful_busy: "Đang có nhiều người chuyển công thức. Hãy thử lại sau ít phút.",
+  careful_busy_tick: "Đang có nhiều người chuyển công thức. Hãy thử lại sau ít phút hoặc bỏ chọn “Chuyển thành công thức sửa được”.",
   abandoned: "Trang tạm dừng quá lâu nên lượt chuyển đã bị huỷ. Hãy chuyển lại.",
   cancelled: "Lượt chuyển đã bị huỷ. Hãy chuyển lại.",
 };
@@ -30,6 +31,8 @@ function duration(s) {
 // Thời gian ước cho "Chuyển thành công thức sửa được": phút tròn, dưới một phút thì nói vậy.
 const about = (s) => (s < 60 ? "dưới 1 phút" : `khoảng ${Math.round(s / 60)} phút`);
 let state = {};
+// Lần chọn file của trang: kết quả về sau khi đã "Chuyển file khác" (lần chuyển công thức còn chạy) thì bỏ.
+let generation = 0;
 
 // ?debug hiện nhật ký các request (khi cần dò lỗi).
 const DEBUG = new URLSearchParams(location.search).has("debug");
@@ -105,7 +108,7 @@ async function runTask(tool, options, label, hint = "", waiting = "Đang chờ �
     if (err.code === "timeout" || err.code === "network") navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);
     throw err;
   } finally {
-    currentTask = null;
+    if (currentTask === task_id) currentTask = null;
   }
 }
 
@@ -129,7 +132,8 @@ async function pollTask(task_id, label, hint, waiting) {
     const data = res.data;
     if (!data) throw new Error(res.error || "Không lấy được trạng thái");
     const { current, total } = data.progress;
-    const step = `${data.status} ${current}`;
+    // tick: máy chủ báo tiến độ trong một trang (từng nhóm công thức) – trang nhiều công thức không bị coi là treo
+    const step = `${data.status} ${current} ${data.progress.tick || 0}`;
     if (data.status === "queued" || step !== seen) deadline = Date.now() + PATIENCE_MS;
     seen = step;
     if (label && data.status === "queued") setProgress(null, waiting);
@@ -168,6 +172,10 @@ function showError(err) {
 }
 
 function reset() {
+  // việc còn chạy của file trang rời đi (lần chuyển công thức, file Word đầu đang hiện) thôi chạy, kết quả của nó bị bỏ
+  if (currentTask) navigator.sendBeacon(`/v1/tasks/${currentTask}/cancel`);
+  currentTask = null;
+  generation++;
   state = {};
   for (const id of ["error", "work", "options", "done", "kind", "failed"]) $(id).hidden = true;
   $("pick").hidden = false;
@@ -212,6 +220,7 @@ function showMode() {
 
 async function handleFile(file) {
   reset();
+  const gen = generation;
   if (!file.name.toLowerCase().endsWith(".pdf")) return showError(new Error("Chỉ nhận file .pdf."));
   if (file.size > 50 * 1024 * 1024) return showError(new Error(ERRORS.too_large));
   state.name = file.name;
@@ -228,6 +237,7 @@ async function handleFile(file) {
 
     setProgress(null, "Đang đọc file…");
     const analysis = (await runTask("analyse-document", {})).options;
+    if (gen !== generation) return;
     if (analysis.password_protected) throw Object.assign(new Error("password"), { code: "password" });
     state.analysis = analysis;
     const total = analysis.page_count;
@@ -248,7 +258,7 @@ async function handleFile(file) {
     $("busy").hidden = true;
     $("options").hidden = false;
   } catch (err) {
-    showError(err);
+    if (gen === generation) showError(err);
   }
 }
 
@@ -261,6 +271,7 @@ async function convert(e, again = false) {
   const scanCareful = Boolean(ocrType && state.carefulOk && $("careful").checked);
   const careful = again || scanCareful;
   const ci = (state.analysis && state.analysis.careful) || {};
+  const gen = generation;
   const options = {
     ocr_type: ocrType,
     languages: ocrType ? $("lang").value.split("+") : [],
@@ -278,6 +289,7 @@ async function convert(e, again = false) {
     const result = careful
       ? await runTask("pdf-to-word", options, "Đang chuyển công thức", hint, "Đang chờ đến lượt chuyển công thức…")
       : await runTask("pdf-to-word", options, "Đang chuyển");
+    if (gen !== generation) return;
     const info = result.options;
     const stem = state.name.replace(/\.pdf$/i, "");
     $("download").href = `/v1/files/${result.output_files[0]}?name=${encodeURIComponent(stem + ".docx")}`;
@@ -291,37 +303,40 @@ async function convert(e, again = false) {
     if (info.removed_watermarks || info.removed_lines) notes.push("Đã bỏ watermark, chữ chìm và link ở đầu/chân trang.");
     if (info.vietocr_skipped) notes.push("File scan rất dài nên chữ chỉ được đọc nhanh – nên soát kỹ chính tả.");
     if (info.careful) {
-      // trang scan: máy chủ chỉ đếm vùng còn là ảnh; số đã chuyển = số còn là ảnh trước khi bấm nút trừ đi số đó
-      const scanKept = scanCareful && info.formulas === "model" ? info.formula_pictures || 0 : 0;
-      const scanRead = again && scanCareful ? Math.max(0, (state.scanLeft || 0) - scanKept) : 0;
-      const read = (info.native_formulas_read || 0) + scanRead;
-      const kept = (info.native_formulas_unsure || 0) + scanKept;
-      if (read) notes.push(`Đã chuyển ${read} công thức từ ảnh – nên soát lại.`);
+      // trang scan đọc bằng mô hình: vùng công thức viết từ kết quả đọc / còn là ảnh
+      const scans = scanCareful && info.formulas === "model";
+      const read = (info.native_formulas_read || 0) + (scans ? info.formulas_read || 0 : 0);
+      const kept = (info.native_formulas_unsure || 0) + (scans ? info.formula_pictures || 0 : 0);
+      if (read) notes.push(`Đã chuyển ${read} công thức – nên soát lại.`);
       if (kept) notes.push(`${kept} công thức đọc chưa chắc nên giữ dạng ảnh.`);
       if (info.native_formulas_over) {
         notes.push(`${info.native_formulas_over} công thức quá giới hạn ${info.max_formulas} công thức/file nên giữ dạng ảnh.`);
       }
-      if (info.formulas_skipped) notes.push(`File hơn ${ci.max_scan_pages || 5} trang scan nên công thức ở trang scan chưa chuyển.`);
-      if (info.native_formulas_failed || (scanCareful && info.formulas && info.formulas !== "model")) {
-        notes.push("Máy chủ chưa chuyển được công thức lúc này – hãy thử lại sau.");
+      if (scanCareful && info.formulas_skipped) {
+        notes.push(`File hơn ${ci.max_scan_pages || 5} trang scan nên công thức ở trang scan chưa chuyển.`);
+      }
+      const failed = info.native_formulas_failed || (scanCareful && info.formulas && info.formulas !== "model");
+      if (failed || (again && !read && !kept && !info.native_formulas_over)) {
+        notes.push("Máy chủ chưa chuyển được công thức lúc này.");
       }
     }
     const items = notes.map((t) => Object.assign(document.createElement("li"), { textContent: t }));
     // Công thức còn dạng ảnh mà mô hình đọc được: của trang có chữ (tối đa max_formulas mỗi file), của trang scan khi
-    // ô của trang scan dùng được. Một nút chuyển lại với mô hình; thời gian ước: lần vừa rồi + mỗi công thức, mỗi trang scan.
+    // ô của trang scan dùng được. Một nút chuyển lại với mô hình (cả trang scan khi ô dùng được); thời gian ước: lần
+    // vừa rồi + mỗi công thức, mỗi trang có công thức dạng ảnh (Tesseract đọc lại trang), mỗi trang scan.
     const nativeLeft = !info.careful && ci.available ? info.native_formula_pictures || 0 : 0;
     const scanLeft = !info.careful && state.carefulOk ? info.formula_pictures || 0 : 0;
     if (nativeLeft + scanLeft) {
-      state.scanLeft = scanLeft;
       state.estimate = seconds
         + Math.min(nativeLeft, ci.max_formulas || 200) * (ci.seconds_per_formula || 1)
-        + (scanLeft ? ocrPages() * (ci.seconds_per_scan_page || 70) : 0);
+        + (nativeLeft ? (info.native_picture_pages || 0) * (ci.seconds_per_picture_page || 5) : 0)
+        + (state.carefulOk ? ocrPages() * (ci.seconds_per_scan_page || 70) : 0);
       const btn = Object.assign(document.createElement("button"), {
         type: "button", className: "linkbtn", textContent: "Chuyển thành công thức sửa được",
       });
       btn.onclick = () => {
         btn.disabled = true;
-        if (scanLeft) $("careful").checked = true;
+        $("careful").checked = state.carefulOk;  // careful đọc cả trang scan bằng mô hình: ghi chú tính cả chúng
         convert(null, true);
       };
       const li = document.createElement("li");
@@ -357,10 +372,12 @@ async function convert(e, again = false) {
     $("busy").hidden = true;
     $("done").hidden = false;
   } catch (err) {
+    if (gen !== generation) return;
     if (again) {
       for (const b of document.querySelectorAll("#notes .linkbtn")) b.disabled = false;
     } else {
       $("options").hidden = false;
+      if (err.code === "careful_busy") err = Object.assign(new Error("careful_busy_tick"), { code: "careful_busy_tick" });
     }
     showError(err);
   }

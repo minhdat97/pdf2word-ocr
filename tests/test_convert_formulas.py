@@ -147,6 +147,55 @@ class FormulaLimitTest(unittest.TestCase):
         self.assertTrue(all(b is budgets[0] for b in budgets))  # one budget shared by the file's pages
         self.assertEqual(budgets[0].left, convert.MFR_MAX_FORMULAS)
 
+    def run_mixed(self, scans: int, limit: int, available: bool = True) -> tuple[dict, list[str]]:
+        """`scans` scanned pages then a text page, careful: the order of pages read and of the turn given back."""
+        events = []
+
+        def fake_native_page(page, languages, strip=False, budget=None):
+            events.append(f"text {budget.failed if budget else None}")
+            layout = image_page(page)
+            layout.word_count = 1
+            return layout
+
+        def fake_ocr_page(page, languages):
+            events.append("scan")
+            return image_page(page)
+
+        doc = pymupdf.open(scan_pdf(scans))
+        doc.new_page(-1, width=200, height=280).insert_text((20, 40), "Câu 1. Một vật dao động điều hoà.", fontsize=9)
+        path = Path(tempfile.mkstemp(suffix=".pdf")[1])
+        doc.save(path)
+        try:
+            with (
+                mock.patch.object(convert, "MFR_MAX_PAGES", limit),
+                mock.patch.object(convert, "native_page", fake_native_page),
+                mock.patch.object(convert, "ocr_page", fake_ocr_page),
+                mock.patch.object(mathocr, "installed", return_value=available),
+                mock.patch.object(ocr, "FORMULAS", "scripts"),
+                mock.patch.object(mathocr, "_reader_failed", False),
+            ):
+                out, info = convert.convert(path, "ocr", ["vie"], lambda i, n: None, careful=True,
+                                            model_unused=lambda: events.append("unused"))
+                out.unlink()
+        finally:
+            path.unlink()
+        return info, events
+
+    def test_turn_given_back_after_the_last_text_page(self):
+        # too many scanned pages for the model: only the text page's formula pictures need it, so it is read first
+        # and the next careful conversion need not wait for the scanned pages' OCR
+        info, events = self.run_mixed(3, 2)
+        self.assertEqual(events, ["text False", "unused", "scan", "scan", "scan"])
+        self.assertTrue(info["formulas_skipped"])
+        _info, events = self.run_mixed(2, 2)  # the scanned pages read with the model: page order, the turn kept
+        self.assertEqual(events, ["scan", "scan", "text False"])
+
+    def test_model_off_since_the_page_offered_it(self):
+        # mathocr.broken() (or P2W_MFR=0) after the analysis: the result says the model could not be used
+        info, events = self.run_mixed(3, 2, available=False)
+        self.assertEqual(events, ["unused", "scan", "scan", "scan", "text True"])
+        self.assertTrue(info["native_formulas_failed"])
+
     def test_skip_is_per_thread(self):
         seen = {}
         inside, done = threading.Event(), threading.Event()

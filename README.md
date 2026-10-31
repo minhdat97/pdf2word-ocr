@@ -86,19 +86,23 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   giữ luồng nào, lần chuyển thường xếp sau nó vẫn chạy; tối đa `P2W_CAREFUL_QUEUE` (3) lần chờ, thêm nữa thì
   bị từ chối (`careful_busy`, giao diện: "Đang có nhiều người chuyển công thức. Hãy thử lại sau ít phút."),
   nên lần chuyển công thức không lấp hàng đợi chung. Lần chuyển không dùng mô hình (file quá số trang scan và
-  không có trang có chữ) trả lượt ngay khi bắt đầu. Ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô
+  không có trang có chữ) trả lượt ngay khi bắt đầu; trang scan không đọc bằng mô hình thì lượt được trả sau
+  trang có chữ cuối cùng, hay khi đã đọc đủ `P2W_MFR_MAX_FORMULAS` ảnh công thức hoặc mô hình hỏng. Ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô
   hình không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
   `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và máy chủ dùng được mô hình (có
   mô hình, không tắt, không hỏng; không hiện khi `P2W_FORMULAS=model`); file quá số trang scan thì ô tắt kèm
   lý do; ô ghi thời gian ước ("chậm hơn: khoảng X phút", `P2W_SECONDS_PER_SCAN_PAGE` mỗi trang scan). Lần
   chuyển nhanh còn công thức dạng ảnh mà mô hình đọc được (trang có chữ; trang scan khi ô dùng được) thì
   ghi chú một dòng "N công thức đang là ảnh – [Chuyển thành công thức sửa được] (khoảng X phút)": X là thời
-  gian lần vừa rồi cộng `P2W_SECONDS_PER_FORMULA` mỗi công thức (tối đa `P2W_MFR_MAX_FORMULAS`) và mỗi trang
-  scan như trên; bấm là chuyển lại với mô hình, file Word vừa chuyển vẫn tải được trong lúc chờ, cả khi lần
-  này không xong. Xong thì ghi chú mỗi ý một dòng: số công thức đã chuyển ("nên soát lại"), đọc chưa chắc
-  nên giữ ảnh, quá giới hạn mỗi file, máy chủ chưa chuyển được. Qua API, file dài hơn, máy không có mô hình
-  hay mô hình hỏng thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` / `formulas` /
-  `native_formulas_failed`).
+  gian lần vừa rồi cộng `P2W_SECONDS_PER_FORMULA` mỗi công thức (tối đa `P2W_MFR_MAX_FORMULAS`),
+  `P2W_SECONDS_PER_PICTURE_PAGE` mỗi trang có công thức dạng ảnh (Tesseract đọc lại trang) và mỗi trang scan
+  như trên (lần chuyển lại đọc cả trang scan bằng mô hình khi ô dùng được); bấm là chuyển lại với mô hình,
+  file Word vừa chuyển vẫn tải được trong lúc chờ, cả khi lần này không xong; "Chuyển file khác" lúc đó huỷ
+  lần chuyển lại (kết quả của nó không hiện cho file mới). Xong thì ghi chú mỗi ý một dòng: số công thức đã
+  chuyển ("nên soát lại"; trang scan: vùng viết từ kết quả mô hình, `formulas_read`), đọc chưa chắc nên giữ
+  ảnh, quá giới hạn mỗi file, máy chủ chưa chuyển được. Hàng đợi đầy khi đã chọn ô: lời báo nhắc bỏ chọn ô
+  để chuyển ngay. Qua API, file dài hơn, máy không có mô hình hay mô hình hỏng (cả khi hỏng sau lúc trang
+  hiện nút) thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` / `formulas` / `native_formulas_failed`).
 
 `P2W_FORMULAS`: `scripts` (mặc định), `model` (mọi lần OCR đều đọc công thức trang scan bằng mô hình),
 `off` (không đọc công thức; "Chuyển thành công thức sửa được" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_MATH_DETECT=off` tắt cả việc tìm vùng.
@@ -112,7 +116,8 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
 `P2W_MFR_MAX_FORMULAS` (200: công thức dạng ảnh của trang có chữ đọc tối đa mỗi file),
-`P2W_SECONDS_PER_FORMULA` (0,8), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây giao diện tính cho "khoảng X phút"),
+`P2W_SECONDS_PER_FORMULA` (0,7), `P2W_SECONDS_PER_PICTURE_PAGE` (3), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây
+giao diện tính cho "khoảng X phút"),
 `P2W_MFR_SPLIT` (`0`: bộ giải mã nguyên khối),
 `P2W_CAREFUL_WORKERS` (1: số lần chuyển công thức chạy cùng lúc), `P2W_CAREFUL_QUEUE` (3: số lần chuyển công
 thức chờ tối đa), `P2W_ABANDON_SECONDS` (600: việc chờ không ai hỏi chừng ấy giây bị bỏ),
@@ -138,8 +143,10 @@ không mô hình; 2026-10-28):
 
 Trang scan dày nhất (~2 phút) còn xa mức 10 phút giao diện bỏ cuộc; một file 5 trang dày giữ lượt chuyển
 công thức ~9 phút, lần sau chờ trong lúc đó. Công thức dạng ảnh của trang có chữ: đề Vật lí MathType 6 trang
-(158 ảnh) thêm 36 giây trên Mac một luồng (1,9 → 37,7 giây), tức ~0,23 giây mỗi ảnh, ước ~0,65 giây trên máy
-chủ theo các hệ số trên (`P2W_SECONDS_PER_FORMULA` 0,8 để dư); 200 công thức ~2–3 phút.
+(158 ảnh) thêm 36 giây trên Mac một luồng (2,0 → 37,7 giây): ~0,85 giây mỗi trang Tesseract đọc các dải quanh
+ảnh cho phép so chữ số, ~0,2 giây mỗi ảnh mô hình; trên máy chủ theo các hệ số trên ~2 giây mỗi trang
+(`P2W_SECONDS_PER_PICTURE_PAGE` 3), ~0,58 giây mỗi ảnh (`P2W_SECONDS_PER_FORMULA` 0,7, để dư); 200 công thức
+trên 10 trang ~3 phút. 50 trang A4 dày chữ, mỗi trang một ảnh: 29 giây trên Mac (đọc cả trang: 292 giây).
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -180,19 +187,22 @@ hay `P2W_FORMULAS=model|off`: lệnh xoá file khi file không đặt gì khác,
 | Tải về | `GET /v1/files/<token>?name=...` |
 
 Kết quả `analyse-document` có thêm `careful`: `{"available": true, "scan_offered": true, "max_scan_pages":
-5, "max_formulas": 200, "seconds_per_formula": 0.8, "seconds_per_scan_page": 70}` (máy chủ dùng được mô hình
+5, "max_formulas": 200, "seconds_per_formula": 0.7, "seconds_per_picture_page": 3, "seconds_per_scan_page":
+70}` (máy chủ dùng được mô hình
 không, ô cho trang scan có nên hiện không, tối đa mấy trang scan, mấy công thức dạng ảnh mỗi file, số giây
 giao diện tính cho "khoảng X phút"). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc công thức trang
 scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn dùng mô hình mà file quá nhiều trang scan),
-`vietocr_skipped`, `formula_pictures` (vùng công thức trang scan giữ thành ảnh), `equations` /
-`native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành ảnh), và khi
+`vietocr_skipped`, `formula_pictures` / `formulas_read` (vùng công thức trang scan giữ thành ảnh / viết từ kết
+quả đọc), `equations` / `native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành
+ảnh), `native_picture_pages` (số trang có công thức dạng ảnh), và khi
 `careful`: `native_formulas_read` (ảnh công thức đã thành Equation hay chữ có chỉ số), `native_formulas_unsure`
 (đọc chưa chắc, giữ ảnh), `native_formulas_over` (quá `max_formulas`, giữ ảnh), `native_formulas_failed`
-(không dùng được mô hình, giữ ảnh).
+(không dùng được mô hình – không có, tắt hay hỏng –, giữ ảnh).
 
 Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
-trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt chuyển công thức) không tính, nên file
-scan dài hay chuyển công thức vẫn nhận được kết quả.
+tin mới: trang nào xong thêm, hay `progress.tick` tăng (máy chủ báo sau mỗi nhóm 20 ảnh công thức của một
+trang, nên trang nhiều công thức không bị coi là treo); thời gian chờ trong hàng đợi (cả chờ lượt chuyển
+công thức) không tính, nên file scan dài hay chuyển công thức vẫn nhận được kết quả.
 
 `task_id` do client sinh (32 ký tự hex). Việc đang chờ mà `P2W_ABANDON_SECONDS` (10 phút) không ai
 hỏi trạng thái thì bị bỏ khi tới lượt. `POST /v1/tasks` trả 503 `busy` (hàng đợi đầy), 503 `careful_busy`
@@ -323,12 +333,24 @@ tắt.
     Equation trong dòng (ảnh giữ kèm: Equation Word không nhận thì ghi ảnh); công thức một dòng ("x_A",
     "4,5.10³", "3 km") thành chữ có chỉ số trên/dưới, font của chữ quanh nó; chữ thường mà mô hình từ chối
     (chỉ có chữ cái – trục "Ox", đơn vị "m/s" –, chữ Việt "20 phút": mô hình không có chữ Việt) thành chữ
-    Tesseract đọc cùng chỗ khi một lần đọc tin được của mô hình ra đúng chữ đó (không kể dấu tiếng Việt):
-    hai cách đọc không bao giờ sai giống nhau (Tesseract đọc chữ nghiêng MathType A thành "4", B thành
-    "8": giữ ảnh). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300 DPI) trên
-    nền trắng, xếp chồng trên một tấm nên không lẫn chữ bên cạnh; chữ Tesseract của trang render cùng 300
-    DPI, lấy các từ nằm ít nhất một nửa trong khung công thức. Dấu câu cuối mà dòng đã có ngay sau ảnh không
-    lặp lại.
+    Tesseract đọc cùng chỗ khi cả hai lần đọc của mô hình đều tin được và ra đúng chữ đó: hai cách đọc ít khi
+    sai giống nhau (Tesseract đọc chữ nghiêng MathType A thành "4", B thành "8": giữ ảnh). Dấu tiếng Việt của
+    Tesseract chỉ được nhận trên từ chữ thường là âm tiết tiếng Việt ("phút", "vòng"): Tesseract cũng tự thêm
+    dấu cho tên trục, tên điểm, chữ hoa ("Ox" thành "Ôx", "U" thành "Ữ"), những chỗ đó giữ ảnh. Phép so của
+    trang scan chỉ xét chữ số ngoài chỉ số và ngoài phân số, nên ở đây giữ ảnh thêm khi: chỉ số dưới có d/D
+    (mô hình không có đ/Đ: W_đ, R_Đ, F_đh), chỉ là chữ o (l₀ đọc thành l_o) hay có từ chữ thường ngoài vài chữ
+    viết tắt (max, min, tb, ms…: "v_ngược" đọc thành v_nguoc), chỉ số có chữ mà Tesseract thấy chữ Việt ở đó;
+    số mũ không phải số/chữ có dấu, độ, phẩy ("10⁻⁴ rad/s" đọc thành 10^{- rad/s}); tử hay mẫu là một chữ chỉ
+    chiều cao mới phân biệt hoa/thường (s/S, v/V…); kết quả mở đầu bằng "+". Khoảng trắng trong chỉ số bị bỏ
+    ("10⁻²³", không "10⁻ ²³"). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300
+    DPI) trên nền trắng, xếp chồng trên một tấm (tối đa 20 ảnh, 8 triệu điểm ảnh, giải mã từng tấm) nên không
+    lẫn chữ bên cạnh; ảnh lớn hơn mô hình đọc (2 triệu điểm ảnh) không được giải mã, giữ ảnh. Tesseract chỉ đọc
+    các dải ngang của trang quanh các ảnh (dòng của chúng, thêm 30 % chiều cao ảnh trên và dưới, gộp chỗ chồng
+    nhau, xếp chồng làm một ảnh 300 DPI, tối đa 60 giây), lấy các từ nằm ít nhất một nửa trong khung công
+    thức: trang dày chữ chỉ tốn phần dòng có công thức. Trang rộng hơn 4500 điểm ảnh ở 300 DPI hay dải quá
+    lớn, trang xoay (khung công thức theo trang chưa xoay) thì giữ ảnh. Dấu câu cuối mà dòng đã có sau ảnh
+    (kể cả sau các mẩu khoảng trắng) không lặp lại. Equation đứng một mình trong đoạn hay ô lấy font chữ phổ
+    biến của trang, nên vẫn là Equation trong dòng (không thành Equation giữa dòng).
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
     mép (tên trục "s (km)", vạch chia "O", "2 4 5"; ở trên/dưới hình thì phải nằm trong bề ngang
     hình – "PHẦN I." trên bảng là tiêu đề) được render cùng hình; hình lớn đè lên chữ
@@ -519,8 +541,8 @@ Kết quả hiện tại (M4 Pro):
 - Đề Vật lí 10 gõ MathType, Word xuất PDF 6 trang: ~1,2 giây, ~145 ảnh công thức; khớp 98,7% từ
   với file Word gốc (công thức tính là một từ); Word render đúng 6 trang; trang đọc đề đọc đủ 28/28
   đáp án.
-- "Chuyển thành công thức sửa được" trên đề đó (158 ảnh công thức): 124 đọc được – 12 Equation, 112 chữ có
-  chỉ số –, so với 157 công thức chuẩn gõ tay: 124 đúng, 0 sai; 34 giữ ảnh (phần lớn nhãn A, B chữ nghiêng);
+- "Chuyển thành công thức sửa được" trên đề đó (158 ảnh công thức): 120 đọc được – 11 Equation, 109 chữ có
+  chỉ số –, so với 157 công thức chuẩn gõ tay: 120 đúng, 0 sai; 38 giữ ảnh (phần lớn nhãn A, B chữ nghiêng);
   so với file Word gốc mọi Equation đều khớp, chữ 99,3 %. Không chọn: 22 PDF có chữ, Bai_1–6 và VL1108 ra
   .docx giống hệt từng byte bản trước; chọn: chỉ đề Vật lí và một đề mẫu (1/2 ảnh đọc được) đổi, và chỉ ở
   đoạn có ảnh công thức; file không còn ảnh công thức giống hệt.
@@ -600,7 +622,7 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   màu chỉ đậm hơn giấy dưới 10/255 (hay dưới độ chênh sáng của ảnh chụp) thì thành ô trắng.
 - Công thức thành ảnh (MathType, Equation có căn/ma trận/ngoặc lớn, font toán thiếu bảng mã): xem
   và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không đọc được nội dung – trừ khi chọn
-  "Chuyển thành công thức sửa được" (đề Vật lí MathType: 124/158 ảnh; nhãn chữ nghiêng A, B mà Tesseract
+  "Chuyển thành công thức sửa được" (đề Vật lí MathType: 120/158 ảnh; nhãn chữ nghiêng A, B mà Tesseract
   đọc thành "4", "8" vẫn là ảnh). Công thức
   có chữ thật (PDF từ LaTeX, chỉ dùng font Symbol) vẫn là chữ; công thức Cambria Math không có chữ
   toán nghiêng hay gạch phân số ("4,5 × 10³ J", "80,0 ∘C") vẫn là chữ thường font Cambria Math.

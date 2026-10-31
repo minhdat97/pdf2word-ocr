@@ -68,9 +68,9 @@ class NativePageTest(unittest.TestCase):
 
     def test_2d_reading_becomes_an_equation_keeping_its_picture(self):
         _doc, page = unreadable_page()
-        layout, runs, budget = read_page(page, FakeReader(r"f=\frac{v}{\lambda}"))
+        layout, runs, budget = read_page(page, FakeReader(r"f=\frac{1}{T}"))
         maths = [r for r in runs if r.math]
-        self.assertEqual([r.math for r in maths], [r"f=\frac{v}{\lambda}"])
+        self.assertEqual([r.math for r in maths], [r"f=\frac{1}{T}"])
         self.assertTrue(maths[0].image)  # written as the picture should Word's equation fail (docx_builder)
         self.assertEqual(maths[0].font, "Times")  # the text's font around it: an inline equation (_keep_inline)
         self.assertEqual((layout.equations, layout.native_formula_pictures, layout.native_formulas_read), (1, 0, 1))
@@ -108,7 +108,7 @@ class NativePageTest(unittest.TestCase):
     def test_budget_is_shared_and_counted(self):
         _doc, page = unreadable_page()
         spent = nativeread.FormulaBudget(0, ["vie"])
-        layout, _runs, budget = read_page(page, FakeReader(r"f=\frac{v}{\lambda}"), budget=spent)
+        layout, _runs, budget = read_page(page, FakeReader(r"f=\frac{1}{T}"), budget=spent)
         self.assertEqual((budget.over, budget.read), (1, 0))
         self.assertEqual(layout.native_formula_pictures, 1)
 
@@ -195,6 +195,126 @@ class HolderTest(unittest.TestCase):
         _f, budget = self.read(runs, p, FakeReader("A"), words)
         self.assertEqual((budget.read, budget.unsure), (0, 1))
         self.assertTrue(runs[1].image)
+
+
+    def test_equation_alone_takes_the_page_font(self):
+        # nothing else in its cell: without a font Word would set it as a centred display equation
+        runs = [picture_run()]
+        c = Cell()
+        other = nativeread.Holder(Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12), [Run("Câu 1.", font="Arial")])
+        f = {"run": runs[0], "box": pymupdf.Rect(100, 100, 138.4, 114.4), "size": 12.0, "pieces": None}
+        c.runs = runs
+        with mock.patch.object(nativeread, "_reader", return_value=FakeReader(r"f=\frac{1}{T}")), \
+                mock.patch.object(nativeread, "_words", return_value=[]):
+            nativeread.read_pictures(pymupdf.open().new_page(), [f], [nativeread.Holder(c, runs), other],
+                                     nativeread.FormulaBudget(200, ["vie"]))
+        self.assertEqual((f["read"], runs[0].font), ("eq", "Arial"))
+
+    def test_mark_after_blank_runs_is_not_doubled(self):
+        # native puts space runs between a picture and the mark after it
+        runs = [Run("Khi đó ", font="Times"), picture_run(), Run(" ", font="Times"), Run(", suy ra", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        words = [Word(415, 415, 580, 480, 90.0, "4,5", 0, 40.0)]
+        _f, _budget = self.read(runs, p, FakeReader("4,5,"), words)
+        self.assertEqual(p.text, "Khi đó 4,5 , suy ra")
+
+    def test_tesseract_marks_on_a_capital_keep_the_picture(self):
+        # "Ox" with a circumflex Tesseract made up: only lowercase Vietnamese syllables may take Tesseract's marks
+        runs = [Run("trục ", font="Times"), picture_run(), Run(".", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        words = [Word(415, 415, 580, 480, 90.0, "Ôx", 0, 40.0)]
+        _f, budget = self.read(runs, p, FakeReader("O x"), words)
+        self.assertEqual((budget.read, budget.unsure), (0, 1))
+
+    def test_one_plain_reading_disagreeing_keeps_the_picture(self):
+        # "\mu m": one reading "um" (Tesseract's text too), the other μm – not both the same text
+        runs = [Run("bước sóng ", font="Times"), picture_run(), Run(".", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        words = [Word(415, 415, 580, 480, 90.0, "um", 0, 40.0)]
+        _f, budget = self.read(runs, p, FakeReader(r"u \mathrm{m}", r"\mu \mathrm{m}"), words)
+        self.assertEqual((budget.read, budget.unsure), (0, 1))
+
+
+class BoundsTest(unittest.TestCase):
+    def test_tesseract_reads_the_bands_around_the_pictures(self):
+        # words come back in page pixels at DPI, though Tesseract read only the formula lines, stacked
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        for y in range(60, 800, 20):
+            if y != 420:
+                page.insert_text((50, y), "Mot dong chu day dac cua trang de thi.", fontsize=11)
+        for x, text in ((50, "Toc do v ="), (140, "4,5"), (175, "m/s.")):
+            page.insert_text((x, 420), text, fontsize=12)
+        box = pymupdf.Rect(138, 409, 160, 424)  # "4,5" (where a picture would be)
+        bands = nativeread._bands(page, [box, pymupdf.Rect(300, 410, 320, 423)])
+        self.assertEqual(len(bands), 1)  # overlapping bands merged, the page's width
+        self.assertLess(bands[0].height, 30)
+        words = nativeread._words(page, [box], ["vie"])
+        inside = " ".join(w.text for w in nativeread._inside(words, box))
+        self.assertEqual("".join(c for c in inside if c.isdigit()), "45")  # the word under the box, mapped back
+        self.assertTrue(all(w.y1 > 395 * 300 / 72 and w.y0 < 435 * 300 / 72 for w in words))
+
+    def test_too_large_pages_and_pictures_are_not_read(self):
+        page = pymupdf.open().new_page(width=2990, height=842)  # wider than OCR_MAX_SIDE_PX at 300 dpi
+        self.assertIsNone(nativeread._bands(page, [pymupdf.Rect(100, 100, 140, 115)]))
+        run = picture_run()
+        run.image_w, run.image_h = 2000.0, 1500.0  # page-sized: never decoded
+        f = {"run": run, "box": pymupdf.Rect(0, 0, 2000, 1500), "size": 12.0, "pieces": None}
+        runs = [Run("a ", font="Times"), run]
+        h = nativeread.Holder(Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs), runs)
+        budget = nativeread.FormulaBudget(200, ["vie"])
+        with mock.patch.object(nativeread, "_reader", return_value=FakeReader("x_{A}")), \
+                mock.patch.object(nativeread, "_crop", side_effect=AssertionError("decoded")):
+            nativeread.read_pictures(pymupdf.open().new_page(), [f], [h], budget)
+        self.assertEqual((budget.read, budget.unsure), (0, 1))
+
+    def test_rotated_page_keeps_its_pictures(self):
+        # its boxes are the unrotated page's, its rendering (Tesseract's words) is turned
+        page = pymupdf.open().new_page()
+        page.set_rotation(90)
+        runs = [Run("a ", font="Times"), picture_run()]
+        f = {"run": runs[1], "box": pymupdf.Rect(100, 100, 138.4, 114.4), "size": 12.0, "pieces": None}
+        h = nativeread.Holder(Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs), runs)
+        budget = nativeread.FormulaBudget(200, ["vie"])
+        with mock.patch.object(nativeread, "_reader", return_value=FakeReader(r"f=\frac{1}{T}")):
+            nativeread.read_pictures(page, [f], [h], budget)
+        self.assertEqual((budget.read, budget.unsure), (0, 1))
+
+
+class RiskyTest(unittest.TestCase):
+    def test_kept(self):
+        D = mathocr.MathDecision
+        for d, ocr in [
+            (D("text", parts=[("W", None), ("d", "sub")]), ""),  # W_đ
+            (D("text", parts=[("R", None), ("D", "sub")]), ""),  # R_Đ
+            (D("text", parts=[("v", None), ("nguoc", "sub")]), ""),  # v_ngược
+            (D("text", parts=[("Δl", None), ("o", "sub")]), ""),  # Δl_0
+            (D("text", parts=[("f", None), ("3", "sub"), ("=8,4.10", None), ("- rad/s", "super")]), ""),
+            (D("text", parts=[("x", None), ("A", "sub")]), "xÀ"),  # script letters by Vietnamese ink
+            (D("eq", latex=r"v=\frac{s}{t}"), ""),  # s/S: only the glyph's height tells
+            (D("eq", latex=r"+=\frac{676}{35}"), ""),
+        ]:
+            with self.subTest(d.as_latex()):
+                self.assertIsNotNone(nativeread._risky(d, ocr))
+
+    def test_used(self):
+        D = mathocr.MathDecision
+        for d in [
+            D("text", parts=[("v", None), ("AB", "sub")]),
+            D("text", parts=[("v", None), ("max", "sub")]),
+            D("text", parts=[("x", None), ("A", "sub")]),
+            D("text", parts=[("6,02.10", None), ("23", "super"), (" mol", None), ("-1", "super")]),
+            D("eq", latex=r"f=\frac{1}{T}"),
+            D("eq", latex=r"\frac{\Delta v}{\Delta t}"),
+        ]:
+            with self.subTest(d.as_latex()):
+                self.assertIsNone(nativeread._risky(d, "x"))
+
+    def test_tight_scripts(self):
+        D = mathocr.MathDecision
+        d = nativeread._tight_scripts(D("text", parts=[("8,1.10", None), ("- 23", "super"), (" W.", None)]))
+        self.assertEqual(d.parts, [("8,1.10", None), ("-23", "super"), (" W.", None)])
+        self.assertEqual(nativeread._tight_scripts(D("eq", latex=r"x^{-\ 2}=\frac{1}{2}")).latex, r"x^{-2}=\frac{1}{2}")
 
 
 class PlainReadingsTest(unittest.TestCase):

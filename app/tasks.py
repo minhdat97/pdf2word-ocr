@@ -27,6 +27,7 @@ from .settings import (
     MFR_MAX_FORMULAS,
     MFR_MAX_PAGES,
     SECONDS_PER_FORMULA,
+    SECONDS_PER_PICTURE_PAGE,
     SECONDS_PER_SCAN_PAGE,
     TASK_TTL_SECONDS,
     TESSDATA_DIR,
@@ -65,7 +66,8 @@ class Task:
     input_tokens: list[str]
     options: dict
     status: str = "queued"  # queued -> processing -> done | failed
-    progress: dict = field(default_factory=lambda: {"current": 0, "total": 0})
+    # "tick" counts the progress calls: news for the page within a long page (formula pictures read chunk by chunk)
+    progress: dict = field(default_factory=lambda: {"current": 0, "total": 0, "tick": 0})
     output_files: list[str] | None = None
     result_options: dict | None = None
     error: str | None = None
@@ -142,7 +144,7 @@ def careful_info() -> dict:
     """What the page needs to offer "Chuyển thành công thức sửa được" (added to the analyse-document result): whether
     a careful conversion can use the formula model now (installed, not turned off, not broken), the most scanned
     pages a file may have for it, the most formula pictures of text pages it reads per file, and the seconds the
-    page counts per formula picture and per scanned page for its "khoảng X phút". (For scanned pages it is not
+    page counts per formula picture, per page holding them and per scanned page for its "khoảng X phút". (For scanned pages it is not
     offered when every OCR conversion uses the model anyway, P2W_FORMULAS=model: "scan_offered".)"""
     return {
         "available": mathocr.available(),
@@ -150,6 +152,7 @@ def careful_info() -> dict:
         "max_scan_pages": MFR_MAX_PAGES,
         "max_formulas": MFR_MAX_FORMULAS,
         "seconds_per_formula": SECONDS_PER_FORMULA,
+        "seconds_per_picture_page": SECONDS_PER_PICTURE_PAGE,
         "seconds_per_scan_page": SECONDS_PER_SCAN_PAGE,
     }
 
@@ -283,7 +286,7 @@ class TaskManager:
         def progress(done: int, total: int) -> None:
             if task.cancelled:
                 raise TaskError("cancelled")
-            task.progress = {"current": done, "total": total}
+            task.progress = {"current": done, "total": total, "tick": task.progress.get("tick", 0) + 1}
 
         try:
             if not storage.exists(task.input_tokens[0]):  # (kept while the task waits: storage.cleanup_expired)

@@ -74,12 +74,14 @@ MFR_SPLIT = os.environ.get("P2W_MFR_SPLIT", "1") != "0"
 # long scan would hold a worker for too long.
 MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 5))
 # Formula pictures of text pages a careful conversion reads per file, in page order (app/nativeread.py); the rest
-# stay pictures. With the time the page shows before a careful conversion ("khoảng X phút"): seconds per formula
-# picture and per scanned page on the server (2-core; measured, README "Thời gian").
+# stay pictures. With the time the page shows before a careful conversion ("khoảng X phút"): seconds on the server
+# (2-core) per formula picture, per page holding them and per scanned page (README "Thời gian"). Measured on the
+# vatli test file (6 pages, 158 MathType pictures): +36 s on the Mac with one model thread, of which ~0.85 s a page
+# is Tesseract reading the bands around the pictures for the digit check and ~0.2 s a picture the model; ×2.3 /
+# ×2.9 on the server: ~2 s a page, ~0.58 s a picture (3 and 0.7: a margin).
 MFR_MAX_FORMULAS = int(os.environ.get("P2W_MFR_MAX_FORMULAS", 200))
-# (vatli test file, 158 MathType pictures: 36 s on the Mac with one model thread and Tesseract, 0.23 s a picture;
-# ×2.8 on the server as the README's timings: ~0.65 s; 0.8 leaves a margin)
-SECONDS_PER_FORMULA = float(os.environ.get("P2W_SECONDS_PER_FORMULA", 0.8))
+SECONDS_PER_FORMULA = float(os.environ.get("P2W_SECONDS_PER_FORMULA", 0.7))
+SECONDS_PER_PICTURE_PAGE = float(os.environ.get("P2W_SECONDS_PER_PICTURE_PAGE", 3))
 SECONDS_PER_SCAN_PAGE = float(os.environ.get("P2W_SECONDS_PER_SCAN_PAGE", 70))
 # Conversions with the formula model running at once (app/tasks.py): one holds a core and ~1.5 GB for minutes, so
 # the other worker stays free for default conversions; more careful ones wait in the queue (status "queued").

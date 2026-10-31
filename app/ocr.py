@@ -370,13 +370,13 @@ class _HocrParser(HTMLParser):
             self.word.text += data
 
 
-def tesseract_lines(gray: np.ndarray, lang: str, dpi: int) -> list[Line]:
+def tesseract_lines(gray: np.ndarray, lang: str, dpi: int, timeout: float = 300) -> list[Line]:
     with tempfile.TemporaryDirectory() as tmp:
         img_path = os.path.join(tmp, "page.png")
         cv2.imwrite(img_path, gray)
         cmd = [TESSERACT_CMD, img_path, "stdout", "-l", lang, "--dpi", str(dpi), "--psm", "3", "hocr"]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, env=_tesseract_env(), timeout=300)
+            proc = subprocess.run(cmd, capture_output=True, text=True, env=_tesseract_env(), timeout=timeout)
         except FileNotFoundError as exc:
             raise TaskError("internal_server_error", "tesseract not installed") from exc
     if proc.returncode != 0:
@@ -1343,6 +1343,7 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
         else:  # the detector or the reader without the model failed on this page: its OCR text
             log.exception("formula reading failed on a page")
     formula_pictures = sum(isinstance(w.math, FormulaPicture) for ln in lines for w in ln.words)
+    formulas_read = sum(isinstance(w.math, mathocr.MathDecision) for ln in lines for w in ln.words)
     s = 72 / dpi
     pictures = []
     if whole_page:
@@ -1351,6 +1352,7 @@ def _ocr(page: pymupdf.Page, lang: str, clip: pymupdf.Rect | None, whole_page: b
     layout = build_layout(lines, grids, gray, dpi, pymupdf.Rect(0, 0, w * s, h * s), rgb)
     layout.pictures = pictures
     layout.formula_pictures = formula_pictures
+    layout.formulas_read = formulas_read
     return layout
 
 

@@ -450,22 +450,27 @@ def convert(
     text_pages = sum(not (mode == "ocr-full" or kind == "scan") for kind in kinds)
     how = "model" if careful else None  # how formulas are read (None: settings.FORMULAS)
     # the formula pictures of text pages, read with the model at the teacher's request (budget shared by the pages)
-    budget = (
-        nativeread.FormulaBudget(MFR_MAX_FORMULAS, list(languages) or ["vie"])
-        if careful and text_pages and mathocr.available()
-        else None
-    )
+    budget = nativeread.FormulaBudget(MFR_MAX_FORMULAS, list(languages) or ["vie"]) if careful and text_pages else None
+    if budget is not None and not mathocr.available():
+        budget.failed = True  # the model went off since the page offered it (mathocr.broken()): the result says so
     with formulas_mode(how):
         # long scans without the slower models, so one file does not hold a worker for long (a small server)
         skip_formulas = ocr_pages > MFR_MAX_PAGES and formula_reader() == "model"
-        uses_model = (bool(ocr_pages) and not skip_formulas and formula_reader() == "model") or budget is not None
+        scans_use_model = bool(ocr_pages) and not skip_formulas and formula_reader() == "model"
+        uses_model = scans_use_model or (budget is not None and not budget.failed)
     if not uses_model and model_unused is not None:
         model_unused()
+    # with the scanned pages read without the model, the text pages go first and the careful turn goes to the next
+    # conversion after the last of them: the scanned pages' OCR (minutes on the server) does not hold it
+    text = [not (mode == "ocr-full" or kind == "scan") for kind in kinds]
+    order = sorted(range(total), key=lambda i: not text[i]) if uses_model and not scans_use_model else list(range(total))
+    last_text = max((k for k, i in enumerate(order) if text[i]), default=-1)
     skip_vietocr = ocr_pages > VIETOCR_MAX_PAGES and vietocr.available()
-    pages: list[PageLayout] = []
+    found: list[PageLayout | None] = [None] * total
     with formulas_mode(how), mathocr.skipped(skip_formulas), vietocr.skipped(skip_vietocr):
-        for i, (page, kind) in enumerate(zip(doc, kinds, strict=True)):
-            progress(i, total)
+        for k, i in enumerate(order):
+            page, kind = doc[i], kinds[i]
+            progress(k, total)
             if mode == "ocr-full" or (mode == "ocr" and kind == "scan"):
                 layout = ocr_page(page, languages)
             elif kind == "scan" or len(page.get_cdrawings()) > MAX_DRAWINGS:
@@ -473,14 +478,19 @@ def convert(
                 layout = image_page(page)
             else:
                 if budget is not None:
-                    budget.check = lambda i=i: progress(i, total)  # a cancelled conversion stops within the page
+                    budget.check = lambda k=k: progress(k, total)  # a cancelled conversion stops within the page
                 with formulas_mode(None):  # its raster pictures read as by default (see above)
                     layout = native_page(page, languages if mode == "ocr" else None, strip=strip, budget=budget)
-            pages.append(layout)
+            found[i] = layout
+            # the model is done with this file: the last text page read, or the budget spent or the model failed
+            done = k == last_text or (budget is not None and (budget.left <= 0 or budget.failed))
+            if done and uses_model and not scans_use_model and model_unused is not None:
+                model_unused()
         # the model may have failed to load or broken on a page (mathocr.broken()): the pages after it, and that page
         # again, were read the default way (app/ocr.py), so the result says so
         formulas = formula_reader()
     progress(total, total)
+    pages: list[PageLayout] = [p for p in found if p is not None]
 
     sources = Counter(p.source for p in pages)
     words = sum(p.word_count for p in pages)
@@ -512,9 +522,11 @@ def convert(
         "vietocr_skipped": skip_vietocr,
         # formula regions of scanned pages kept as pictures (fractions, roots: by default always, careful: unread)
         "formula_pictures": sum(p.formula_pictures for p in pages),
+        "formulas_read": sum(p.formulas_read for p in pages),  # formula regions of scanned pages written from a reading
         # formulas of text pages: rebuilt as Word equations / kept as pictures (MathType, layouts not read)
         "equations": sum(p.equations for p in pages),
         "native_formula_pictures": sum(p.native_formula_pictures for p in pages),
+        "native_picture_pages": sum(1 for p in pages if p.native_formula_pictures),  # pages a careful conversion OCRs
         # careful: formula pictures of text pages read with the model / not trusted (kept) / past the budget (kept)
         "native_formulas_read": budget.read if budget else 0,
         "native_formulas_unsure": budget.unsure if budget else 0,
