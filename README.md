@@ -118,7 +118,7 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
 `P2W_MFR_MAX_FORMULAS` (200: công thức dạng ảnh của trang có chữ đọc tối đa mỗi file; 0 tắt việc đọc chúng),
-`P2W_SECONDS_PER_FORMULA` (0,7), `P2W_SECONDS_PER_PICTURE_PAGE` (3), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây
+`P2W_SECONDS_PER_FORMULA` (2,5), `P2W_SECONDS_PER_PICTURE_PAGE` (3), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây
 giao diện tính cho "khoảng X phút"),
 `P2W_MFR_SPLIT` (`0`: bộ giải mã nguyên khối),
 `P2W_CAREFUL_WORKERS` (1: số lần chuyển công thức chạy cùng lúc), `P2W_CAREFUL_QUEUE` (3: số lần chuyển công
@@ -145,10 +145,12 @@ không mô hình; 2026-10-28):
 
 Trang scan dày nhất (~2 phút) còn xa mức 10 phút giao diện bỏ cuộc; một file 5 trang dày giữ lượt chuyển
 công thức ~9 phút, lần sau chờ trong lúc đó. Công thức dạng ảnh của trang có chữ: đề Vật lí MathType 6 trang
-(158 ảnh) thêm 36 giây trên Mac một luồng (2,0 → 37,7 giây): ~0,85 giây mỗi trang Tesseract đọc các dải quanh
-ảnh cho phép so chữ số, ~0,2 giây mỗi ảnh mô hình; trên máy chủ theo các hệ số trên ~2 giây mỗi trang
-(`P2W_SECONDS_PER_PICTURE_PAGE` 3), ~0,58 giây mỗi ảnh (`P2W_SECONDS_PER_FORMULA` 0,7, để dư); 200 công thức
-trên 10 trang ~3 phút. 50 trang A4 dày chữ, mỗi trang một ảnh: 29 giây trên Mac (đọc cả trang: 292 giây).
+(158 ảnh) đo trên máy chủ (2026-10-31): 6 phút 42 giây, mỗi nhóm 20 ảnh 40–70 giây, tức ~2,5 giây mỗi ảnh
+(`P2W_SECONDS_PER_FORMULA`); Tesseract đọc các dải quanh ảnh cho phép so chữ số vài giây mỗi trang
+(`P2W_SECONDS_PER_PICTURE_PAGE` 3). Trên Mac một luồng chỉ thêm 36 giây (2,0 → 37,7 giây, ~0,2 giây mỗi ảnh): Mac
+dùng KleidiAI, hệ số ×2,9 ở trên đo so với Mac không dùng, nên không suy được thời gian máy chủ từ Mac. 200 công
+thức ~8–9 phút giữ lượt chuyển công thức (mỗi nhóm 20 ảnh là một tin mới cho giao diện, không chạm mức 10
+phút). 50 trang A4 dày chữ, mỗi trang một ảnh: 29 giây trên Mac (đọc cả trang: 292 giây).
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
@@ -189,7 +191,7 @@ hay `P2W_FORMULAS=model|off`: lệnh xoá file khi file không đặt gì khác,
 | Tải về | `GET /v1/files/<token>?name=...` |
 
 Kết quả `analyse-document` có thêm `careful`: `{"available": true, "scan_offered": true, "max_scan_pages":
-5, "max_formulas": 200, "seconds_per_formula": 0.7, "seconds_per_picture_page": 3, "seconds_per_scan_page":
+5, "max_formulas": 200, "seconds_per_formula": 2.5, "seconds_per_picture_page": 3, "seconds_per_scan_page":
 70}` (máy chủ dùng được mô hình
 không, ô cho trang scan có nên hiện không, tối đa mấy trang scan, mấy công thức dạng ảnh mỗi file, số giây
 giao diện tính cho "khoảng X phút"). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc công thức trang
@@ -688,7 +690,7 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
   lộn xộn).
-- Chuyển công thức chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang scan nhiều công thức, ~0,65 giây mỗi ảnh
+- Chuyển công thức chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang scan nhiều công thức, ~2,5 giây mỗi ảnh
   công thức của trang có chữ): trang scan chỉ cho file tối đa
   `P2W_MFR_MAX_PAGES` (5) trang scan, mỗi lúc một lần – lần sau có thể chờ tới ~9 phút sau một file 5 trang
   dày; quá `P2W_VIETOCR_MAX_PAGES` (30) trang scan thì bỏ cả VietOCR; trang bị đóng mà không kịp báo (máy
