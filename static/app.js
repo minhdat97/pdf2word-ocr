@@ -97,22 +97,30 @@ const PATIENCE_MS = 10 * 60 * 1000;
 const NETWORK_RETRY_MS = 30 * 1000;
 
 // label: chữ của dòng trạng thái theo trang ("Đang chuyển"); hint: thêm sau số trang; waiting: lúc còn chờ lượt.
+// Lỗi "stale": trang đã sang file khác ("Chuyển file khác") – việc của file cũ thôi, người gọi bỏ qua lặng lẽ.
+const stale = () => Object.assign(new Error("stale"), { code: "stale" });
+
 async function runTask(tool, options, label, hint = "", waiting = "Đang chờ đến lượt…") {
   const task_id = newTaskId();
+  const gen = generation;
   await api("POST", "/v1/tasks", { tool, task_id, input_tokens: [state.token], options });
+  if (gen !== generation) {  // "Chuyển file khác" lúc việc đang được gửi: reset() chưa biết việc này để huỷ
+    navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);
+    throw stale();
+  }
   currentTask = task_id;
   try {
-    return await pollTask(task_id, label, hint, waiting);
+    return await pollTask(task_id, label, hint, waiting, gen);
   } catch (err) {
     // trang thôi chờ: máy chủ cũng thôi
-    if (err.code === "timeout" || err.code === "network") navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);
+    if (["timeout", "network", "stale"].includes(err.code)) navigator.sendBeacon(`/v1/tasks/${task_id}/cancel`);
     throw err;
   } finally {
     if (currentTask === task_id) currentTask = null;
   }
 }
 
-async function pollTask(task_id, label, hint, waiting) {
+async function pollTask(task_id, label, hint, waiting, gen) {
   let deadline = Date.now() + PATIENCE_MS;
   let seen = "";
   let logged = false;
@@ -120,6 +128,7 @@ async function pollTask(task_id, label, hint, waiting) {
   while (true) {
     if (Date.now() > deadline) throw Object.assign(new Error("timeout"), { code: "timeout" });
     await new Promise((r) => setTimeout(r, failingSince ? 2000 : 700));
+    if (gen !== generation) throw stale();  // trạng thái của file cũ không ghi lên dòng trạng thái của file mới
     let res;
     try {
       res = await fetch(`/v1/tasks/${task_id}`).then((r) => r.json());
@@ -187,6 +196,15 @@ function reset() {
   for (const d of document.querySelectorAll("#work details")) d.open = false;
 }
 
+// Thời gian ước khi tích ô của trang scan: mỗi trang scan; trang có chữ của file còn có công thức dạng ảnh chưa biết
+// trước số lượng (cũng được chuyển) nên khi đó ghi "trở lên".
+function scanEstimate() {
+  const info = (state.analysis && state.analysis.careful) || {};
+  const pages = ocrPages();
+  const more = state.analysis.page_count > pages;
+  return about(Math.max(pages * (info.seconds_per_scan_page ?? 70), more ? 60 : 0)) + (more ? " trở lên" : "");
+}
+
 // Số trang sẽ đọc chữ từ ảnh với lựa chọn hiện tại (như máy chủ đếm cho "Chuyển thành công thức sửa được").
 function ocrPages() {
   const a = state.analysis;
@@ -209,7 +227,7 @@ function showCareful() {
   $("carefulrow").classList.toggle("off", tooMany);
   $("carefulmeta").textContent = tooMany
     ? `– chỉ cho file tối đa ${max} trang scan (file này ${pages} trang)`
-    : `– chậm hơn: ${about(pages * (info.seconds_per_scan_page || 70))}`;
+    : `– chậm hơn: ${scanEstimate()}`;
   state.carefulOk = offered && !tooMany;
 }
 
@@ -282,7 +300,7 @@ async function convert(e, again = false) {
   if (!again) $("done").hidden = true;
   $("error").hidden = true;
   $("busy").hidden = false;
-  const hint = careful ? ` – ${about(again ? state.estimate : ocrPages() * (ci.seconds_per_scan_page || 70))}` : "";
+  const hint = careful ? ` – ${again ? about(state.estimate) : scanEstimate()}` : "";
   setProgress(null, careful ? `Đang chuyển công thức${hint}…` : "Đang chuyển…");
   const started = performance.now();
   try {
@@ -324,13 +342,13 @@ async function convert(e, again = false) {
     // Công thức còn dạng ảnh mà mô hình đọc được: của trang có chữ (tối đa max_formulas mỗi file), của trang scan khi
     // ô của trang scan dùng được. Một nút chuyển lại với mô hình (cả trang scan khi ô dùng được); thời gian ước: lần
     // vừa rồi + mỗi công thức, mỗi trang có công thức dạng ảnh (Tesseract đọc lại trang), mỗi trang scan.
-    const nativeLeft = !info.careful && ci.available ? info.native_formula_pictures || 0 : 0;
+    const nativeLeft = !info.careful && ci.available && ci.max_formulas > 0 ? info.native_formula_pictures || 0 : 0;
     const scanLeft = !info.careful && state.carefulOk ? info.formula_pictures || 0 : 0;
     if (nativeLeft + scanLeft) {
       state.estimate = seconds
-        + Math.min(nativeLeft, ci.max_formulas || 200) * (ci.seconds_per_formula || 1)
-        + (nativeLeft ? (info.native_picture_pages || 0) * (ci.seconds_per_picture_page || 5) : 0)
-        + (state.carefulOk ? ocrPages() * (ci.seconds_per_scan_page || 70) : 0);
+        + Math.min(nativeLeft, ci.max_formulas) * (ci.seconds_per_formula ?? 1)
+        + (nativeLeft ? (info.native_picture_pages || 0) * (ci.seconds_per_picture_page ?? 5) : 0)
+        + (state.carefulOk ? ocrPages() * (ci.seconds_per_scan_page ?? 70) : 0);
       const btn = Object.assign(document.createElement("button"), {
         type: "button", className: "linkbtn", textContent: "Chuyển thành công thức sửa được",
       });
@@ -377,7 +395,9 @@ async function convert(e, again = false) {
       for (const b of document.querySelectorAll("#notes .linkbtn")) b.disabled = false;
     } else {
       $("options").hidden = false;
-      if (err.code === "careful_busy") err = Object.assign(new Error("careful_busy_tick"), { code: "careful_busy_tick" });
+      if (err.code === "careful_busy" && scanCareful) {
+        err = Object.assign(new Error("careful_busy_tick"), { code: "careful_busy_tick" });  // ô đang tích: bỏ chọn là chuyển được ngay
+      }
     }
     showError(err);
   }

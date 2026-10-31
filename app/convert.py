@@ -450,7 +450,11 @@ def convert(
     text_pages = sum(not (mode == "ocr-full" or kind == "scan") for kind in kinds)
     how = "model" if careful else None  # how formulas are read (None: settings.FORMULAS)
     # the formula pictures of text pages, read with the model at the teacher's request (budget shared by the pages)
-    budget = nativeread.FormulaBudget(MFR_MAX_FORMULAS, list(languages) or ["vie"]) if careful and text_pages else None
+    budget = (
+        nativeread.FormulaBudget(MFR_MAX_FORMULAS, list(languages) or ["vie"])
+        if careful and text_pages and MFR_MAX_FORMULAS > 0
+        else None
+    )
     if budget is not None and not mathocr.available():
         budget.failed = True  # the model went off since the page offered it (mathocr.broken()): the result says so
     with formulas_mode(how):

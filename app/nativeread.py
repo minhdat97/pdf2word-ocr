@@ -23,6 +23,8 @@ the words at least half inside the formula's box (the setup that read the vatli 
 from __future__ import annotations
 
 import re
+import time
+import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -55,7 +57,11 @@ CANVAS_MAX = 4 * mathocr.MAX_CROP_PIXELS  # px of one chunk's canvas (a chunk en
 # than the page is wide at DPI (OCR_MAX_SIDE_PX) nor this many pixels in all: a larger page keeps its pictures.
 BAND_MARGIN = 0.3
 BANDS_MAX = 3 * OCR_MAX_SIDE_PX * OCR_MAX_SIDE_PX // 4
-TESSERACT_SECONDS = 60
+MIN_DPI = 100  # a page wider than OCR_MAX_SIDE_PX at DPI is read at a lower dpi (A3 landscape: 272), not below this
+TESSERACT_SECONDS = 60  # one page's bands at most
+OCR_FILE_SECONDS = 180  # all pages of a file at most (a file of many dense pages would hold the careful turn long)
+# Fonts whose letters are symbols (Word draws Latin letters in Symbol as Greek): never the font of a reading
+SYMBOL_FONTS = re.compile(r"symbol|wingdings|webdings|dingbat|mt\s*extra|marlett", re.I)
 
 
 @dataclass
@@ -70,6 +76,7 @@ class FormulaBudget:
     unsure: int = 0  # read, not trusted: kept as pictures
     over: int = 0  # past the budget: kept as pictures
     failed: bool = False  # the model could not be used (missing, broken): the rest kept as pictures
+    ocr_seconds: float = OCR_FILE_SECONDS  # Tesseract time left for the file: once spent, pictures are kept
 
     @property
     def read(self) -> int:
@@ -121,12 +128,16 @@ def _stack(crops: list[np.ndarray]) -> tuple[np.ndarray, list[tuple[int, int, in
     return canvas, boxes
 
 
-def _bands(page: pymupdf.Page, boxes: list[pymupdf.Rect]) -> list[pymupdf.Rect] | None:
+def _dpi(page: pymupdf.Page) -> int:
+    """The dpi the bands are read at: DPI, lower for a page wider than OCR_MAX_SIDE_PX at DPI (0: too wide)."""
+    dpi = min(DPI, int(OCR_MAX_SIDE_PX * 72 / max(page.rect.width, 1)))
+    return dpi if dpi >= MIN_DPI else 0
+
+
+def _bands(page: pymupdf.Page, boxes: list[pymupdf.Rect], dpi: int = DPI) -> list[pymupdf.Rect] | None:
     """The page's horizontal bands around the boxes (merged where they overlap), or None if they are too large to
-    read (a page wider than OCR_MAX_SIDE_PX at DPI, BANDS_MAX pixels in all)."""
+    read (BANDS_MAX pixels in all at dpi)."""
     area = page.rect
-    if area.width * DPI / 72 > OCR_MAX_SIDE_PX:
-        return None
     spans = sorted((max(area.y0, b.y0 - BAND_MARGIN * b.height), min(area.y1, b.y1 + BAND_MARGIN * b.height)) for b in boxes)
     merged: list[list[float]] = []
     for y0, y1 in spans:
@@ -135,38 +146,42 @@ def _bands(page: pymupdf.Page, boxes: list[pymupdf.Rect]) -> list[pymupdf.Rect] 
         else:
             merged.append([y0, y1])
     bands = [pymupdf.Rect(area.x0, y0, area.x1, y1) for y0, y1 in merged if y1 > y0]
-    if sum(b.width * b.height for b in bands) * (DPI / 72) ** 2 > BANDS_MAX:
+    if sum(b.width * b.height for b in bands) * (dpi / 72) ** 2 > BANDS_MAX:
         return None
     return bands
 
 
-def _words(page: pymupdf.Page, boxes: list[pymupdf.Rect], languages: list[str]) -> list | None:
+def _words(page: pymupdf.Page, boxes: list[pymupdf.Rect], languages: list[str], timeout: float = TESSERACT_SECONDS) -> list | None:
     """Tesseract's words of the bands of the page around the boxes, in page pixels at DPI; None if too large."""
-    bands = _bands(page, boxes)
+    dpi = _dpi(page)
+    bands = _bands(page, boxes, dpi) if dpi else None
     if bands is None:
         return None
     if not bands:
         return []
-    images = [render_gray(page, DPI, clip=b) for b in bands]
+    images = [render_gray(page, dpi, clip=b) for b in bands]
     width = max(img.shape[1] for img in images)
     canvas = np.full((sum(img.shape[0] for img in images) + GAP * (len(images) + 1), width), 255, np.uint8)
     slots = []  # (top in the canvas, height, top in page pixels)
     y = GAP
     for img, band in zip(images, bands, strict=True):
         canvas[y : y + img.shape[0], : img.shape[1]] = img
-        slots.append((y, img.shape[0], round(band.y0 * DPI / 72)))
+        slots.append((y, img.shape[0], band.y0 * dpi / 72))
         y += img.shape[0] + GAP
     drop_light_ink(canvas)
-    lines = tesseract_lines(canvas, "+".join(languages) or "vie", DPI, timeout=TESSERACT_SECONDS)
+    lines = tesseract_lines(canvas, "+".join(languages) or "vie", dpi, timeout=timeout)
     fix_lines(lines)
-    x0 = round(page.rect.x0 * DPI / 72)
+    x0, k = page.rect.x0 * dpi / 72, DPI / dpi  # back to page pixels at DPI
     words = []
     for w in (w for ln in lines for w in ln.words):
         cy = (w.y0 + w.y1) / 2
         slot = next((s for s in slots if s[0] <= cy < s[0] + s[1]), None)
         if slot is not None:
             dy = slot[2] - slot[0]
-            words.append(replace(w, x0=w.x0 + x0, x1=w.x1 + x0, y0=w.y0 + dy, y1=w.y1 + dy))
+            words.append(replace(
+                w, x0=round((w.x0 + x0) * k), x1=round((w.x1 + x0) * k), y0=round((w.y0 + dy) * k),
+                y1=round((w.y1 + dy) * k), em_px=w.em_px * k,
+            ))
     return words
 
 
@@ -181,10 +196,14 @@ def _inside(words: list, box: pymupdf.Rect) -> list:
     return sorted(out, key=lambda w: (w.line_no, w.x0))
 
 
+def _texty(r: Run) -> bool:
+    return bool(r.font and not r.math and not r.image and r.text.strip() and not SYMBOL_FONTS.search(r.font))
+
+
 def _font(runs: list[Run], i: int) -> str | None:
-    """The text font around the picture (the nearest run before it, else after it)."""
+    """The text font around the picture (the nearest text run before it, else after it; not a symbol font)."""
     for r in [*reversed(runs[:i]), *runs[i + 1 :]]:
-        if r.font and not r.math and not r.image and r.text.strip():
+        if _texty(r):
             return r.font
     return None
 
@@ -241,17 +260,21 @@ def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder
         return
     if budget.check is not None:
         budget.check()
-    try:
-        words = _words(page, [f["box"] for f in keep], budget.languages)
-    except Exception:  # Tesseract failed or took too long: no digit check, so nothing is trusted
-        words = None
+    words = None
+    if budget.ocr_seconds > 0:  # the file's Tesseract time not spent
+        started = time.monotonic()
+        try:
+            words = _words(page, [f["box"] for f in keep], budget.languages, min(TESSERACT_SECONDS, budget.ocr_seconds))
+        except Exception:  # Tesseract failed or took too long: no digit check, so nothing is trusted
+            words = None
+        budget.ocr_seconds -= time.monotonic() - started
     if words is None:
         budget.unsure += len(keep)
         return
     changed: set[int] = set()
     # the page's text font: an equation alone in its paragraph or cell has no text around it, and an equation run
     # without a font is written as Word's display equation (docx_builder._keep_inline): centred, full-size fractions
-    fonts = Counter(r.font for h in holders for r in h.runs if r.font and not r.math and not r.image and r.text.strip())
+    fonts = Counter(r.font for h in holders for r in h.runs if _texty(r))
     page_font = fonts.most_common(1)[0][0] if fonts else FONT
     done = 0
     for chunk in _chunks(keep):
@@ -290,7 +313,7 @@ def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder
             ):
                 budget.unsure += 1
                 continue
-            d = _tight_scripts(d)
+            d = _tight(d)
             h = where[id(f["run"])]
             if _apply(f, h, d, page_font):
                 changed.add(id(h.owner))
@@ -307,14 +330,16 @@ def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder
 
 END_PUNCT = ".,;:"
 NEXT_MARKS = ".,;:?!)]"  # marks Tesseract's last word may take from the text right after the picture
+SENTENCE_MARKS = ".,;:?!"  # Tesseract may misread one as another (":" as ";", "." as ",")
 PLAIN_MAX = 24  # characters of Tesseract's text a plain reading may stand for (labels, units, short words)
 
 
 def _after(h: Holder, run: Run) -> str:
     """The text after the run in its paragraph or cell, from its first character that is not blank (native puts
-    space and tab runs between a picture and the mark after it: "￼", " ", " ", ", suy ra")."""
+    space and tab runs between a picture and the mark after it: "￼", " ", " ", ", suy ra"); a Greek question mark
+    (PDFs extract ";" so) as ";"."""
     i = next((j for j, r in enumerate(h.runs) if r is run), len(h.runs))
-    return "".join(r.text for r in h.runs[i + 1 :]).lstrip()
+    return "".join(r.text for r in h.runs[i + 1 :]).lstrip().replace("\u037e", ";")
 
 
 def _as_tesseract(reader, canvas: np.ndarray, box: tuple, em: float, text: str, after: str) -> mathocr.MathDecision | None:
@@ -322,7 +347,8 @@ def _as_tesseract(reader, canvas: np.ndarray, box: tuple, em: float, text: str, 
     text (no script, no 2-D part), letter for letter but for Vietnamese marks and spaces; else None. A last mark of
     Tesseract's text that the text after the picture starts with is that text's ("km/h?" before "?")."""
     ocr = text.strip()
-    if ocr and after[:1] in NEXT_MARKS and after[:1] and ocr.endswith(after[:1]):
+    if ocr and after[:1] and (ocr.endswith(after[:1]) and after[:1] in NEXT_MARKS
+                              or ocr[-1] in SENTENCE_MARKS and after[:1] in SENTENCE_MARKS):
         ocr = ocr[:-1].rstrip()
     if not ocr or len(ocr) > PLAIN_MAX:
         return None
@@ -343,14 +369,22 @@ def _as_tesseract(reader, canvas: np.ndarray, box: tuple, em: float, text: str, 
 _SYLLABLE = re.compile(r"(?:ngh|ng|nh|ch|gh|gi|kh|ph|qu|th|tr|[bcdghklmnprstvx])?[aeiouy]{1,3}(?:ch|ng|nh|[cmnpt])?")
 
 
+# The marks of Vietnamese letters: grave, acute, circumflex, tilde, breve, hook above, horn, dot below
+VIETNAMESE_MARKS = set("\u0300\u0301\u0302\u0303\u0306\u0309\u031b\u0323")
+
+
 def _marks_ok(text: str) -> bool:
     """The Vietnamese marks of Tesseract's text may stand where the model read none: only on lowercase words of
-    two letters or more that are Vietnamese syllables ("phút", "vòng"). Tesseract also puts marks on letters that
-    have none – axis and point names, capitals ("Ox" as "Ôx", "U" as "Ữ") – and no reader checks those."""
+    three letters or more that are Vietnamese syllables ("phút", "vòng", "giờ"). Tesseract also puts marks on
+    letters that have none – axis and point names, capitals ("Ox" as "Ôx", "U" as "Ữ"), short letter pairs ("di" as
+    "đĩ", "ac" as "ác") – and no reader checks those; nor đ (the model reads it d), nor marks Vietnamese has not (ï)."""
     for word in re.findall(r"[^\W\d_]+", text):
         if word == _base_letters(word):
             continue
-        if not word.islower() or len(word) < 2 or not _SYLLABLE.fullmatch(_base_letters(word).lower()):
+        marks = {c for c in unicodedata.normalize("NFD", word) if unicodedata.combining(c)}
+        if "đ" in word.lower() or not marks <= VIETNAMESE_MARKS:
+            return False
+        if not word.islower() or len(word) < 3 or not _SYLLABLE.fullmatch(_base_letters(word).lower()):
             return False
     return True
 
@@ -358,6 +392,9 @@ def _marks_ok(text: str) -> bool:
 # Subscripts the model reads as written: digits, capitals (point names: v_{AB}), one small letter and these Latin
 # abbreviations. Others are mostly Vietnamese words it spells without marks (v_ngược as v_{nguoc}, Q_tỏa as Q_{toa}).
 LATIN_SUBS = {"max", "min", "tb", "ms", "ci", "tp", "tt", "ht", "hp", "th", "ph", "mt", "nt"}
+# One-letter subscripts that may be a digit the model read as a letter (U₅ as U_s, l₀ as l_o, R₁ as R_l): the
+# digit check pairs script characters with anything
+DIGIT_LIKE = set("sSoOlIzZgqb")
 # Exponents read as written: a signed number, a signed letter, a degree, primes, a star
 _EXPONENT = re.compile(r"[-−+]?(?:\d+(?:[,.]\d+)?|[A-Za-z])|°|'+|\*")
 
@@ -369,7 +406,8 @@ def _leaves(items) -> str:
 def _risky(d: mathocr.MathDecision, ocr: str) -> str | None:
     """Why a reading read_regions() accepts may still be wrong here, or None. Its checks compare digits with
     Tesseract outside scripts and 2-D parts only, which the pictures of text pages need more of:
-      - a subscript holding d/D (the model has no đ/Đ: W_đ, R_Đ, F_đh), the letter o alone (l_0 as l_o) or a word
+      - a subscript holding d/D (the model has no đ/Đ: W_đ, R_Đ, F_đh), one letter that may be a digit (U₅ as U_s,
+        l₀ as l_o: DIGIT_LIKE) or a word
         of small letters (v_ngược, t_lên), and any script letter where Tesseract saw a Vietnamese letter;
       - an exponent that is not a signed number or letter, a degree or primes (10^{-4} rad/s read as 10^{- rad/s});
       - a lone letter whose case only its height tells as a numerator or denominator (s/t read as S/t), and a
@@ -395,8 +433,8 @@ def _risky(d: mathocr.MathDecision, ocr: str) -> str | None:
             if slot == 3:
                 if not _EXPONENT.fullmatch(text):
                     return "exponent"
-            elif re.search(r"[dD]", text) or text in ("o", "O"):
-                return "subscript d/o"
+            elif re.search(r"[dD]", text) or text in DIGIT_LIKE:
+                return "subscript d, or a letter like a digit"
             elif any(not w.isupper() and w not in LATIN_SUBS for w in re.findall(r"[A-Za-z]{2,}", text)):
                 return "word in a subscript"
             if re.search(r"[A-Za-z]", text) and mathregions.vietnamese(ocr):
@@ -404,8 +442,21 @@ def _risky(d: mathocr.MathDecision, ocr: str) -> str | None:
     return None
 
 
-def _tight_scripts(d: mathocr.MathDecision) -> mathocr.MathDecision:
-    """The decision without spaces inside its scripts (the model's "10^{-\\,23}": superscript "- 23")."""
+def _glued(items: list) -> list:
+    """Items without the spaces between two digits ("\\frac{2\\ 1}{4}": Word would show the numerator "2 1")."""
+    out = []
+    for k, node in enumerate(items):
+        prev, nxt = (out[-1] if out else None), (items[k + 1] if k + 1 < len(items) else None)
+        if node == ["t", "\\ "] and prev and nxt and prev[0] == nxt[0] == "t" and prev[1][-1:] in "0123456789," \
+                and nxt[1][:1].isdigit():
+            continue
+        out.append(node)
+    return out
+
+
+def _tight(d: mathocr.MathDecision) -> mathocr.MathDecision:
+    """The decision without spaces inside its scripts (the model's "10^{-\\,23}": superscript "- 23") and inside the
+    numbers of its fractions and roots ("\\frac{2\\ 1}{4}")."""
     if d.kind == "text":
         parts = [(text if script is None else re.sub(r"\s", "", text), script) for text, script in d.parts]
         return mathocr.MathDecision("text", parts=[p for p in parts if p[0]], conf=d.conf, source=d.source)
@@ -426,13 +477,16 @@ def _tight_scripts(d: mathocr.MathDecision) -> mathocr.MathDecision:
             for slot in (2, 3):
                 if node[slot] is not None:
                     node[slot] = tight(node[slot])
+        elif node[0] == "f" and node[1] in ("frac", "sqrt"):
+            node[3][:] = [_glued(arg) for arg in node[3]]
     return mathocr.MathDecision("eq", latex=mathocr._ser(items), tail=d.tail, conf=d.conf, source=d.source)
 
 
 def _without_next_punct(text: str, after: str) -> str:
-    """The reading without its final mark when the text right after the picture starts with it: Tesseract's word
-    ran past the formula ("km/h." for the picture of "km/h"), so the reading took the mark the line already has."""
-    if text and text[-1] in END_PUNCT and after.startswith(text[-1]):
+    """The reading without its final mark when the text right after the picture starts with a mark: Tesseract's
+    word ran past the formula ("km/h." for the picture of "km/h", or "v2;" before ":", a mark it misread), so the
+    reading took the mark the line already has."""
+    if text and text[-1] in END_PUNCT and after[:1] and after[:1] in SENTENCE_MARKS:
         return text[:-1].rstrip()
     return text
 

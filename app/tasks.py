@@ -165,7 +165,7 @@ def _uses_model(task: Task) -> bool:
     if task.tool != "pdf-to-word":
         return False
     if OCR_TYPES[task.options["ocr_type"]] == "basic":  # no OCR: only the formula pictures of its text pages
-        return task.options["careful"] and mathocr.available()
+        return task.options["careful"] and MFR_MAX_FORMULAS > 0 and mathocr.available()
     return (task.options["careful"] or FORMULAS == "model") and mathocr.available()
 
 

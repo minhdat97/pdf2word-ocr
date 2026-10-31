@@ -197,6 +197,11 @@ class HolderTest(unittest.TestCase):
         self.assertTrue(runs[1].image)
 
 
+    def test_symbol_font_neighbour_is_not_the_reading_font(self):
+        # "⇒" typed in Symbol right before the picture: Word would draw the reading's letters as Greek
+        runs = [Run("Suy ra ", font="Times New Roman"), Run("⇒", font="Symbol"), Run("\t"), picture_run()]
+        self.assertEqual(nativeread._font(runs, 3), "Times New Roman")
+
     def test_equation_alone_takes_the_page_font(self):
         # nothing else in its cell: without a font Word would set it as a centred display equation
         runs = [picture_run()]
@@ -226,6 +231,18 @@ class HolderTest(unittest.TestCase):
         _f, budget = self.read(runs, p, FakeReader("O x"), words)
         self.assertEqual((budget.read, budget.unsure), (0, 1))
 
+    def test_marks(self):
+        self.assertTrue(nativeread._marks_ok("20 phút"))
+        self.assertTrue(nativeread._marks_ok("vòng/phút"))
+        for text in ("đĩ", "dï", "ác", "đa", "Ôx", "Ữ", "độ"):  # short pairs, đ for d, ï, capitals
+            with self.subTest(text):
+                self.assertFalse(nativeread._marks_ok(text))
+
+    def test_misread_mark_before_the_next_mark(self):
+        # Tesseract read the ":" after the picture as ";": the reading took it, the line has its own
+        self.assertEqual(nativeread._without_next_punct("v2;", ": thì"), "v2")
+        self.assertEqual(nativeread._without_next_punct("v2", ": thì"), "v2")
+
     def test_one_plain_reading_disagreeing_keeps_the_picture(self):
         # "\mu m": one reading "um" (Tesseract's text too), the other μm – not both the same text
         runs = [Run("bước sóng ", font="Times"), picture_run(), Run(".", font="Times")]
@@ -254,9 +271,22 @@ class BoundsTest(unittest.TestCase):
         self.assertEqual("".join(c for c in inside if c.isdigit()), "45")  # the word under the box, mapped back
         self.assertTrue(all(w.y1 > 395 * 300 / 72 and w.y0 < 435 * 300 / 72 for w in words))
 
+    def test_wide_page_read_at_a_lower_dpi(self):
+        # A3 landscape: 1190 pt is wider than OCR_MAX_SIDE_PX at 300 dpi; its bands are read at 272 dpi and the
+        # words come back in page pixels at 300 dpi
+        page = pymupdf.open().new_page(width=1190, height=842)
+        for x, text in ((50, "Toc do v ="), (140, "4,5"), (175, "m/s."), (700, "Cau 2. Mot vat roi tu do.")):
+            page.insert_text((x, 420), text, fontsize=12)
+        self.assertEqual(nativeread._dpi(page), 272)
+        box = pymupdf.Rect(138, 409, 160, 424)
+        words = nativeread._words(page, [box], ["vie"])
+        inside = " ".join(w.text for w in nativeread._inside(words, box))
+        self.assertEqual("".join(c for c in inside if c.isdigit()), "45")
+        self.assertEqual(nativeread._dpi(pymupdf.open().new_page(width=4000, height=842)), 0)  # too wide: not read
+
     def test_too_large_pages_and_pictures_are_not_read(self):
-        page = pymupdf.open().new_page(width=2990, height=842)  # wider than OCR_MAX_SIDE_PX at 300 dpi
-        self.assertIsNone(nativeread._bands(page, [pymupdf.Rect(100, 100, 140, 115)]))
+        page = pymupdf.open().new_page(width=4000, height=842)  # under MIN_DPI to fit OCR_MAX_SIDE_PX
+        self.assertIsNone(nativeread._words(page, [pymupdf.Rect(100, 100, 140, 115)], ["vie"]))
         run = picture_run()
         run.image_w, run.image_h = 2000.0, 1500.0  # page-sized: never decoded
         f = {"run": run, "box": pymupdf.Rect(0, 0, 2000, 1500), "size": 12.0, "pieces": None}
@@ -289,6 +319,7 @@ class RiskyTest(unittest.TestCase):
             (D("text", parts=[("R", None), ("D", "sub")]), ""),  # R_Đ
             (D("text", parts=[("v", None), ("nguoc", "sub")]), ""),  # v_ngược
             (D("text", parts=[("Δl", None), ("o", "sub")]), ""),  # Δl_0
+            (D("text", parts=[("U", None), ("s", "sub")]), ""),  # U_5
             (D("text", parts=[("f", None), ("3", "sub"), ("=8,4.10", None), ("- rad/s", "super")]), ""),
             (D("text", parts=[("x", None), ("A", "sub")]), "xÀ"),  # script letters by Vietnamese ink
             (D("eq", latex=r"v=\frac{s}{t}"), ""),  # s/S: only the glyph's height tells
@@ -312,9 +343,12 @@ class RiskyTest(unittest.TestCase):
 
     def test_tight_scripts(self):
         D = mathocr.MathDecision
-        d = nativeread._tight_scripts(D("text", parts=[("8,1.10", None), ("- 23", "super"), (" W.", None)]))
+        d = nativeread._tight(D("text", parts=[("8,1.10", None), ("- 23", "super"), (" W.", None)]))
         self.assertEqual(d.parts, [("8,1.10", None), ("-23", "super"), (" W.", None)])
-        self.assertEqual(nativeread._tight_scripts(D("eq", latex=r"x^{-\ 2}=\frac{1}{2}")).latex, r"x^{-2}=\frac{1}{2}")
+        self.assertEqual(nativeread._tight(D("eq", latex=r"x^{-\ 2}=\frac{1}{2}")).latex, r"x^{-2}=\frac{1}{2}")
+        # numbers of fractions and roots: "2 1" over 4 in Word otherwise; a space between words stays
+        self.assertEqual(nativeread._tight(D("eq", latex=r"\frac{2\ 1}{4}+\sqrt{1,2\ 5}")).latex, r"\frac{21}{4}+\sqrt{1,25}")
+        self.assertEqual(nativeread._tight(D("eq", latex=r"\frac{m\ g}{2}")).latex, r"\frac{m\ g}{2}")
 
 
 class PlainReadingsTest(unittest.TestCase):

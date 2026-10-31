@@ -91,7 +91,8 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   hình không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
   `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và máy chủ dùng được mô hình (có
   mô hình, không tắt, không hỏng; không hiện khi `P2W_FORMULAS=model`); file quá số trang scan thì ô tắt kèm
-  lý do; ô ghi thời gian ước ("chậm hơn: khoảng X phút", `P2W_SECONDS_PER_SCAN_PAGE` mỗi trang scan). Lần
+  lý do; ô ghi thời gian ước ("chậm hơn: khoảng X phút", `P2W_SECONDS_PER_SCAN_PAGE` mỗi trang scan; file còn
+  trang có chữ thì "… trở lên": công thức dạng ảnh của chúng cũng được chuyển). Lần
   chuyển nhanh còn công thức dạng ảnh mà mô hình đọc được (trang có chữ; trang scan khi ô dùng được) thì
   ghi chú một dòng "N công thức đang là ảnh – [Chuyển thành công thức sửa được] (khoảng X phút)": X là thời
   gian lần vừa rồi cộng `P2W_SECONDS_PER_FORMULA` mỗi công thức (tối đa `P2W_MFR_MAX_FORMULAS`),
@@ -115,7 +116,7 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
-`P2W_MFR_MAX_FORMULAS` (200: công thức dạng ảnh của trang có chữ đọc tối đa mỗi file),
+`P2W_MFR_MAX_FORMULAS` (200: công thức dạng ảnh của trang có chữ đọc tối đa mỗi file; 0 tắt việc đọc chúng),
 `P2W_SECONDS_PER_FORMULA` (0,7), `P2W_SECONDS_PER_PICTURE_PAGE` (3), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây
 giao diện tính cho "khoảng X phút"),
 `P2W_MFR_SPLIT` (`0`: bộ giải mã nguyên khối),
@@ -335,20 +336,24 @@ tắt.
     (chỉ có chữ cái – trục "Ox", đơn vị "m/s" –, chữ Việt "20 phút": mô hình không có chữ Việt) thành chữ
     Tesseract đọc cùng chỗ khi cả hai lần đọc của mô hình đều tin được và ra đúng chữ đó: hai cách đọc ít khi
     sai giống nhau (Tesseract đọc chữ nghiêng MathType A thành "4", B thành "8": giữ ảnh). Dấu tiếng Việt của
-    Tesseract chỉ được nhận trên từ chữ thường là âm tiết tiếng Việt ("phút", "vòng"): Tesseract cũng tự thêm
-    dấu cho tên trục, tên điểm, chữ hoa ("Ox" thành "Ôx", "U" thành "Ữ"), những chỗ đó giữ ảnh. Phép so của
+    Tesseract chỉ được nhận trên từ chữ thường từ 3 chữ cái là âm tiết tiếng Việt, chỉ các dấu tiếng Việt, không
+    có đ ("phút", "vòng", "giờ"): Tesseract cũng tự thêm dấu cho tên trục, tên điểm, chữ hoa, cặp chữ ngắn ("Ox"
+    thành "Ôx", "U" thành "Ữ", "di" thành "đĩ", "ac" thành "ác"), những chỗ đó giữ ảnh. Phép so của
     trang scan chỉ xét chữ số ngoài chỉ số và ngoài phân số, nên ở đây giữ ảnh thêm khi: chỉ số dưới có d/D
-    (mô hình không có đ/Đ: W_đ, R_Đ, F_đh), chỉ là chữ o (l₀ đọc thành l_o) hay có từ chữ thường ngoài vài chữ
+    (mô hình không có đ/Đ: W_đ, R_Đ, F_đh), chỉ một chữ trông như chữ số (s o l I z g q b: U₅ đọc thành U_s, l₀
+    thành l_o) hay có từ chữ thường ngoài vài chữ
     viết tắt (max, min, tb, ms…: "v_ngược" đọc thành v_nguoc), chỉ số có chữ mà Tesseract thấy chữ Việt ở đó;
     số mũ không phải số/chữ có dấu, độ, phẩy ("10⁻⁴ rad/s" đọc thành 10^{- rad/s}); tử hay mẫu là một chữ chỉ
     chiều cao mới phân biệt hoa/thường (s/S, v/V…); kết quả mở đầu bằng "+". Khoảng trắng trong chỉ số bị bỏ
-    ("10⁻²³", không "10⁻ ²³"). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300
+    ("10⁻²³", không "10⁻ ²³"), giữa hai chữ số trong phân số, căn cũng vậy ("21/4", không "2 1" trên 4). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300
     DPI) trên nền trắng, xếp chồng trên một tấm (tối đa 20 ảnh, 8 triệu điểm ảnh, giải mã từng tấm) nên không
     lẫn chữ bên cạnh; ảnh lớn hơn mô hình đọc (2 triệu điểm ảnh) không được giải mã, giữ ảnh. Tesseract chỉ đọc
     các dải ngang của trang quanh các ảnh (dòng của chúng, thêm 30 % chiều cao ảnh trên và dưới, gộp chỗ chồng
-    nhau, xếp chồng làm một ảnh 300 DPI, tối đa 60 giây), lấy các từ nằm ít nhất một nửa trong khung công
-    thức: trang dày chữ chỉ tốn phần dòng có công thức. Trang rộng hơn 4500 điểm ảnh ở 300 DPI hay dải quá
-    lớn, trang xoay (khung công thức theo trang chưa xoay) thì giữ ảnh. Dấu câu cuối mà dòng đã có sau ảnh
+    nhau, xếp chồng làm một ảnh 300 DPI – trang rộng hơn 4500 điểm ảnh thì DPI thấp hơn cho vừa, như A3 ngang
+    272, không dưới 100 –, tối đa 60 giây mỗi trang, 180 giây mỗi file), lấy các từ nằm ít nhất một nửa trong
+    khung công thức: trang dày chữ chỉ tốn phần dòng có công thức. Dải quá lớn, hết thời gian Tesseract của
+    file, trang xoay (khung công thức theo trang chưa xoay) thì giữ ảnh. Chữ đọc được lấy font chữ thường gần
+    nhất (không bao giờ Symbol, Wingdings, MT Extra: Word vẽ chữ Latin của Symbol thành chữ Hy Lạp). Dấu câu cuối mà dòng đã có sau ảnh
     (kể cả sau các mẩu khoảng trắng) không lặp lại. Equation đứng một mình trong đoạn hay ô lấy font chữ phổ
     biến của trang, nên vẫn là Equation trong dòng (không thành Equation giữa dòng).
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
@@ -662,6 +667,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   ≥92 mà sai chữ cái thì vẫn giữ.
 - Dấu phẩy mất hẳn khi nhận dạng ("8,5" → "85") không khôi phục được (VietOCR lấy lại được một
   phần khi có mô hình).
+- Công thức dạng ảnh của trang có chữ: chữ cái (ngoài chỉ số) không đối chiếu được với Tesseract, nên chữ Hy
+  Lạp giống chữ Latin có thể bị đọc nhầm (ν thành v, τ thành r; hiếm trong đề Vật lí phổ thông); công thức
+  chuyển thành chữ dùng chữ đứng (t₁ không nghiêng như MathType), dấu nhân "·" thành ".".
 - Đọc công thức: chỉ số bậc căn mô hình bỏ sót thì căn bậc ba thành căn bậc hai ("√(a−b)" cho
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
