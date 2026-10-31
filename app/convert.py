@@ -21,7 +21,7 @@ from statistics import median
 import cv2
 import numpy as np
 
-from . import mathocr, vietocr
+from . import mathocr, nativeread, vietocr
 from .analyze import open_pdf, page_kind
 from .docx_builder import build_docx
 from .errors import TaskError
@@ -29,7 +29,7 @@ from .layout import canonical, looks_like_page_label, looks_like_page_number
 from .model import TAB, PageLayout, Paragraph, Picture, Run
 from .native import HEADER_ZONE, ITEM_LABEL, image_page, native_page
 from .ocr import formula_reader, formulas_mode, ocr_page
-from .settings import MAX_DRAWINGS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
+from .settings import MAX_DRAWINGS, MFR_MAX_FORMULAS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
 
 MODES = ("basic", "ocr", "ocr-full")
 
@@ -434,10 +434,11 @@ def convert(
     careful: bool = False,
     model_unused: Callable[[], None] | None = None,
 ) -> tuple[Path, dict]:
-    """Convert a PDF to .docx. careful ("Đọc kỹ"): the formula model reads the formulas of scanned pages (up to about
-    2 minutes per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES of them; otherwise they
-    are read as settings.FORMULAS says (by default superscripts and subscripts without the model). Pictures OCR'd on
-    pages with text are read as settings.FORMULAS says too: MFR_MAX_PAGES counts scanned pages only.
+    """Convert a PDF to .docx. careful ("Chuyển thành công thức sửa được"): the formula model reads the formulas of
+    scanned pages (up to about 2 minutes per dense page on a 2-core server) where the file has at most MFR_MAX_PAGES
+    of them, otherwise they are read as settings.FORMULAS says (by default superscripts and subscripts without the
+    model); and it reads the formulas text pages keep as pictures, up to MFR_MAX_FORMULAS per file
+    (app/nativeread.py). Raster pictures OCR'd on pages with text are read as settings.FORMULAS says.
     model_unused: called as soon as it is known that the formula model will not be used (app/tasks.py gives the
     careful turn to the next conversion)."""
     if mode not in MODES:
@@ -446,11 +447,18 @@ def convert(
     total = doc.page_count
     kinds = [page_kind(page)["kind"] for page in doc]
     ocr_pages = sum(mode == "ocr-full" or (mode == "ocr" and kind == "scan") for kind in kinds)
+    text_pages = sum(not (mode == "ocr-full" or kind == "scan") for kind in kinds)
     how = "model" if careful else None  # how formulas are read (None: settings.FORMULAS)
+    # the formula pictures of text pages, read with the model at the teacher's request (budget shared by the pages)
+    budget = (
+        nativeread.FormulaBudget(MFR_MAX_FORMULAS, list(languages) or ["vie"])
+        if careful and text_pages and mathocr.available()
+        else None
+    )
     with formulas_mode(how):
         # long scans without the slower models, so one file does not hold a worker for long (a small server)
         skip_formulas = ocr_pages > MFR_MAX_PAGES and formula_reader() == "model"
-        uses_model = bool(ocr_pages) and not skip_formulas and formula_reader() == "model"
+        uses_model = (bool(ocr_pages) and not skip_formulas and formula_reader() == "model") or budget is not None
     if not uses_model and model_unused is not None:
         model_unused()
     skip_vietocr = ocr_pages > VIETOCR_MAX_PAGES and vietocr.available()
@@ -464,8 +472,10 @@ def convert(
                 # (tens of thousands of vector paths would take the layout analysis hours)
                 layout = image_page(page)
             else:
-                with formulas_mode(None):  # its pictures read as by default, not "Đọc kỹ" (see above)
-                    layout = native_page(page, languages if mode == "ocr" else None, strip=strip)
+                if budget is not None:
+                    budget.check = lambda i=i: progress(i, total)  # a cancelled conversion stops within the page
+                with formulas_mode(None):  # its raster pictures read as by default (see above)
+                    layout = native_page(page, languages if mode == "ocr" else None, strip=strip, budget=budget)
             pages.append(layout)
         # the model may have failed to load or broken on a page (mathocr.broken()): the pages after it, and that page
         # again, were read the default way (app/ocr.py), so the result says so
@@ -505,4 +515,10 @@ def convert(
         # formulas of text pages: rebuilt as Word equations / kept as pictures (MathType, layouts not read)
         "equations": sum(p.equations for p in pages),
         "native_formula_pictures": sum(p.native_formula_pictures for p in pages),
+        # careful: formula pictures of text pages read with the model / not trusted (kept) / past the budget (kept)
+        "native_formulas_read": budget.read if budget else 0,
+        "native_formulas_unsure": budget.unsure if budget else 0,
+        "native_formulas_over": budget.over if budget else 0,
+        "native_formulas_failed": bool(budget and budget.failed),  # the model could not be used: pictures kept
+        "max_formulas": MFR_MAX_FORMULAS,
     }

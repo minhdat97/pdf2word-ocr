@@ -224,7 +224,7 @@ class ReaderChoiceTest(unittest.TestCase):
         self.assertIsInstance(lines[0].words[1].math, ocr.FormulaPicture)
 
     def test_model_that_does_not_load_reads_the_default_way(self):
-        # "Đọc kỹ", but the model's files are damaged: the page is read without it, not left unread
+        # careful, but the model's files are damaged: the page is read without it, not left unread
         gray = np.full((300, 600), 255, np.uint8)
         gray[100:130, 100:300] = 0
         ink = (gray < 128).astype(np.uint8)

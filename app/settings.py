@@ -59,8 +59,9 @@ VIETOCR_MAX_PAGES = int(os.environ.get("P2W_VIETOCR_MAX_PAGES", 30))
 VIETOCR_WORDS = os.environ.get("P2W_VIETOCR_WORDS", "unsure").strip().lower() or "unsure"
 
 # Formula model (app/mathocr.py, pix2text-mfr-1.5) reads formula regions of OCR pages in a careful conversion
-# ("Đọc kỹ", or every conversion with FORMULAS "model"). Usable when its files are in MFR_DIR unless P2W_MFR=0;
-# onnxruntime threads per conversion.
+# ("Chuyển thành công thức sửa được", or every OCR conversion with FORMULAS "model"), and the formulas a text page
+# keeps as pictures in a careful conversion (app/nativeread.py). Usable when its files are in MFR_DIR unless
+# P2W_MFR=0; onnxruntime threads per conversion.
 MFR_DIR = Path(os.environ.get("P2W_MFR_DIR", BASE_DIR / "models" / "mfr"))
 MFR_ENABLED = os.environ.get("P2W_MFR", "1") != "0"
 MFR_THREADS = int(os.environ.get("P2W_MFR_THREADS", MODEL_THREADS))
@@ -72,6 +73,14 @@ MFR_SPLIT = os.environ.get("P2W_MFR_SPLIT", "1") != "0"
 # with the model a page takes up to about 2 minutes on a 2-core server (35 s on average on the test scans), and a
 # long scan would hold a worker for too long.
 MFR_MAX_PAGES = int(os.environ.get("P2W_MFR_MAX_PAGES", 5))
+# Formula pictures of text pages a careful conversion reads per file, in page order (app/nativeread.py); the rest
+# stay pictures. With the time the page shows before a careful conversion ("khoảng X phút"): seconds per formula
+# picture and per scanned page on the server (2-core; measured, README "Thời gian").
+MFR_MAX_FORMULAS = int(os.environ.get("P2W_MFR_MAX_FORMULAS", 200))
+# (vatli test file, 158 MathType pictures: 36 s on the Mac with one model thread and Tesseract, 0.23 s a picture;
+# ×2.8 on the server as the README's timings: ~0.65 s; 0.8 leaves a margin)
+SECONDS_PER_FORMULA = float(os.environ.get("P2W_SECONDS_PER_FORMULA", 0.8))
+SECONDS_PER_SCAN_PAGE = float(os.environ.get("P2W_SECONDS_PER_SCAN_PAGE", 70))
 # Conversions with the formula model running at once (app/tasks.py): one holds a core and ~1.5 GB for minutes, so
 # the other worker stays free for default conversions; more careful ones wait in the queue (status "queued").
 CAREFUL_WORKERS = int(os.environ.get("P2W_CAREFUL_WORKERS", 1))

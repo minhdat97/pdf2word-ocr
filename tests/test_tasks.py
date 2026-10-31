@@ -1,4 +1,4 @@
-"""The task queue (app/tasks.py): at most CAREFUL_WORKERS conversions with the formula model ("Đọc kỹ") run at
+"""The task queue (app/tasks.py): at most CAREFUL_WORKERS conversions with the formula model (careful) run at
 once; a careful task that waits stays "queued" without holding a thread, the tasks behind it go ahead; at most
 CAREFUL_QUEUE careful ones wait; one that will not use the model gives its turn back; a closed page's task is
 dropped or stopped, an unpolled one dropped; the queue and per-file limits hold. Conversions are fakes that wait for
@@ -138,10 +138,21 @@ class QueueTest(unittest.TestCase):
         with mock.patch.object(tasks.mathocr, "available", return_value=False):
             a, b = self.submit(careful=True), self.submit(careful=True)
         self.assertTrue(self.started(a) and self.started(b))  # both at once: the model is not used
-        c, d = self.submit(careful=True, ocr_type=""), self.submit()  # basic mode reads no scan
+        c, d = self.submit(careful=True, ocr_type=""), self.submit()  # c takes the careful turn, free here
         self.finish_task(a)
         self.finish_task(b)
         self.assertTrue(self.started(c) and self.started(d))
+
+    def test_careful_text_pdf_takes_the_careful_turn(self):
+        # "Chuyển thành công thức sửa được" on a text PDF reads its formula pictures with the model: one at a time
+        a = self.submit(careful=True, ocr_type="")
+        b = self.submit(careful=True, ocr_type="")
+        self.assertTrue(self.started(a))
+        self.assertTrue(self.waiting(b))
+        c = self.submit(ocr_type="")  # a default conversion goes ahead meanwhile
+        self.assertTrue(self.started(c))
+        self.finish_task(a)
+        self.assertTrue(self.started(b))
 
     def test_status_and_result(self):
         a = self.submit(careful=True)
@@ -256,11 +267,19 @@ class AnalyseResultTest(unittest.TestCase):
     def test_careful_info(self):
         with mock.patch.object(tasks.mathocr, "available", return_value=True), \
                 mock.patch.object(tasks, "FORMULAS", "scripts"), mock.patch.object(tasks, "MFR_MAX_PAGES", 5):
-            self.assertEqual(tasks.careful_info(), {"available": True, "max_scan_pages": 5})
+            info = tasks.careful_info()
+        self.assertEqual(
+            {k: info[k] for k in ("available", "scan_offered", "max_scan_pages", "max_formulas")},
+            {"available": True, "scan_offered": True, "max_scan_pages": 5, "max_formulas": 200},
+        )
+        self.assertGreater(info["seconds_per_formula"], 0)  # the page's "khoảng X phút"
+        self.assertGreater(info["seconds_per_scan_page"], 0)
         with mock.patch.object(tasks.mathocr, "available", return_value=False):
             self.assertFalse(tasks.careful_info()["available"])
         with mock.patch.object(tasks.mathocr, "available", return_value=True), mock.patch.object(tasks, "FORMULAS", "model"):
-            self.assertFalse(tasks.careful_info()["available"])  # every conversion is careful already
+            info = tasks.careful_info()
+        # every OCR conversion reads its scanned pages with the model already; text PDFs still ask for it
+        self.assertEqual((info["available"], info["scan_offered"]), (True, False))
 
 
 if __name__ == "__main__":

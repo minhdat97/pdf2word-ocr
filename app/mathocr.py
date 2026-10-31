@@ -31,7 +31,7 @@ takes the case measured on the glyph. On 522 formula boxes of two physics
 exams (one real scan, a native PDF and two simulated scans of it) it kept 399,
 none wrong.
 
-Only a careful conversion ("Đọc kỹ", app/convert.py) uses the model; the default
+Only a careful conversion ("Chuyển thành công thức sửa được", app/convert.py) uses the model; the default
 reads superscripts and subscripts without it (app/scriptocr.py).
 Without the model files (or with P2W_MFR=0) read_regions() returns Nones.
 decoder_model.onnx may be replaced by its two halves (scripts/split_mfr_decoder.py:
@@ -1088,6 +1088,21 @@ def vote(readings: list[tuple[str, float]], ocr_text: str = "", min_conf: float 
         return None
     # readings that agree may differ in spacing: take the one with a space between number and unit ("20 km")
     return max(best, key=lambda d: (len(re.findall(r"[\d}] [A-Za-z°Ω]", d.as_latex())) if d.kind == "text" else 0, d.conf))
+
+
+def plain_readings(reader: FormulaReader, crop: np.ndarray) -> list[str | None]:
+    """Two readings of a crop (padded as PADS[0] and HEAD_PAD), each as its text without spaces when it is one line
+    of plain text (confident, no script, no 2-D part, nothing judge() calls junk), else None. judge() turns such
+    readings down ("letters only": OCR reads letters as well; "word phut": the model has no Vietnamese letters) – a
+    caller with Tesseract's text of the same ink may still use that text where a reading agrees (app/nativeread.py)."""
+    out: list[str | None] = []
+    for tex, conf in reader.read([_pad(crop, PADS[0]), _pad(crop, HEAD_PAD)]):
+        items, ok = _parse(tex or "")
+        text = None
+        if conf >= VOTE_MIN_CONF and ok and not _junk(items) and not any(n[0] in ("f", "s") for n in _walk(items)):
+            text = _text(items)
+        out.append(re.sub(r"\s", "", text) if text else None)
+    return out
 
 
 def _usable(readings: list[tuple[str, float]], ocr_text: str) -> bool:

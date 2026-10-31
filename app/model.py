@@ -138,3 +138,4 @@ class PageLayout:
     formula_pictures: int = 0  # OCR: formula regions kept as pictures (fractions, roots not read)
     equations: int = 0  # native: Word equations rebuilt from the text layer
     native_formula_pictures: int = 0  # native: formulas kept as pictures (MathType, layouts not read)
+    native_formulas_read: int = 0  # native: formula pictures read with the formula model (careful conversion)

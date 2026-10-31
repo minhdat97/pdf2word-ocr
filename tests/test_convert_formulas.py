@@ -1,7 +1,7 @@
-"""The slower models per conversion: the formula model reads only in a careful conversion ("Đọc kỹ") of a file with
-at most MFR_MAX_PAGES scanned pages (otherwise formulas are read without it), VietOCR only in one with at most
-VIETOCR_MAX_PAGES (convert() turns them off for its own thread only), and the result says so. The task option
-"careful" reaches convert().
+"""The slower models per conversion: the formula model reads only in a careful conversion ("Chuyển thành công thức
+sửa được") – the scanned pages of a file with at most MFR_MAX_PAGES of them (otherwise formulas are read without
+it) –, VietOCR only in one with at most VIETOCR_MAX_PAGES (convert() turns them off for its own thread only), and
+the result says so. The task option "careful" reaches convert().
 
     python -m unittest discover -s tests
 """
@@ -111,16 +111,18 @@ class FormulaLimitTest(unittest.TestCase):
             self.assertFalse(info["formulas_skipped"])  # the model was not wanted
             self.assertEqual((info["careful"], info["formulas"]), (False, "scripts"))
             self.assertEqual(wanted, [("scripts", True)] * pages)
-            self.assertEqual(info["formula_pictures"], 2 * pages)  # the page offers "Đọc kỹ" for these
+            self.assertEqual(info["formula_pictures"], 2 * pages)  # the page offers the careful conversion for these
             self.assertEqual(self.unused, 1)
 
     def test_careful_pictures_of_text_pages_read_the_default_way(self):
-        # "Đọc kỹ" is for scanned pages (MFR_MAX_PAGES counts them): a picture OCR'd on a page with text is read the
-        # default way, whatever its number
-        seen = []
+        # careful on text pages: their formula pictures go to app/nativeread.py with one budget for the file (passed
+        # to native_page), while a raster picture OCR'd on them is read the default way (MFR_MAX_PAGES counts
+        # scanned pages), whatever its number
+        seen, budgets = [], []
 
-        def fake_native_page(page, languages, strip=False):
+        def fake_native_page(page, languages, strip=False, budget=None):
             seen.append((ocr.formula_reader(), languages))
+            budgets.append(budget)
             return image_page(page)
 
         doc = pymupdf.open()
@@ -141,6 +143,9 @@ class FormulaLimitTest(unittest.TestCase):
         finally:
             path.unlink()
         self.assertEqual(seen, [("scripts", ["vie"])] * 3)
+        self.assertIsNotNone(budgets[0])
+        self.assertTrue(all(b is budgets[0] for b in budgets))  # one budget shared by the file's pages
+        self.assertEqual(budgets[0].left, convert.MFR_MAX_FORMULAS)
 
     def test_skip_is_per_thread(self):
         seen = {}

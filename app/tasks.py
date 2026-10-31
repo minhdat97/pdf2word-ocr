@@ -24,7 +24,10 @@ from .settings import (
     FORMULAS,
     MAX_PENDING_TASKS,
     MAX_TASKS_PER_FILE,
+    MFR_MAX_FORMULAS,
     MFR_MAX_PAGES,
+    SECONDS_PER_FORMULA,
+    SECONDS_PER_SCAN_PAGE,
     TASK_TTL_SECONDS,
     TESSDATA_DIR,
     WORKERS,
@@ -69,7 +72,7 @@ class Task:
     created: float = field(default_factory=time.time)
     started: float | None = None
     completed: float | None = None
-    # runs with the formula model ("Đọc kỹ"): at most CAREFUL_WORKERS such tasks at once (TaskManager)
+    # runs with the formula model (careful): at most CAREFUL_WORKERS such tasks at once (TaskManager)
     careful: bool = field(default=False, repr=False)
     seen: float = field(default_factory=time.time, repr=False)  # last time its page asked about it
     cancelled: bool = field(default=False, repr=False)  # its page was closed: stop at the next page
@@ -126,7 +129,7 @@ def _validate(payload: dict) -> Task:
         strip = options.get("strip_watermarks", False)
         if not isinstance(strip, bool):
             raise ValueError("invalid_options: strip_watermarks must be true or false")
-        careful = options.get("careful", False)  # "Đọc kỹ": formulas of scanned pages read by the formula model
+        careful = options.get("careful", False)  # "Chuyển thành công thức sửa được": the formula model (convert())
         if not isinstance(careful, bool):
             raise ValueError("invalid_options: careful must be true or false")
         options = {"ocr_type": ocr_type, "languages": languages, "strip_watermarks": strip, "careful": careful}
@@ -136,24 +139,36 @@ def _validate(payload: dict) -> Task:
 
 
 def careful_info() -> dict:
-    """What the page needs to offer "Đọc kỹ" (added to the analyse-document result): whether a careful conversion
-    can use the formula model now (installed, not turned off, not broken; not when every conversion uses it,
-    P2W_FORMULAS=model) and the most scanned pages a file may have for it."""
-    return {"available": FORMULAS != "model" and mathocr.available(), "max_scan_pages": MFR_MAX_PAGES}
+    """What the page needs to offer "Chuyển thành công thức sửa được" (added to the analyse-document result): whether
+    a careful conversion can use the formula model now (installed, not turned off, not broken), the most scanned
+    pages a file may have for it, the most formula pictures of text pages it reads per file, and the seconds the
+    page counts per formula picture and per scanned page for its "khoảng X phút". (For scanned pages it is not
+    offered when every OCR conversion uses the model anyway, P2W_FORMULAS=model: "scan_offered".)"""
+    return {
+        "available": mathocr.available(),
+        "scan_offered": FORMULAS != "model",
+        "max_scan_pages": MFR_MAX_PAGES,
+        "max_formulas": MFR_MAX_FORMULAS,
+        "seconds_per_formula": SECONDS_PER_FORMULA,
+        "seconds_per_scan_page": SECONDS_PER_SCAN_PAGE,
+    }
 
 
 def _uses_model(task: Task) -> bool:
-    """A conversion that may read formulas with the formula model: OCR asked, "Đọc kỹ" (or P2W_FORMULAS=model),
-    the model usable. (One that turns out not to – a file with too many scanned pages or none – gives its turn back
-    as soon as convert() knows: TaskManager._run.)"""
-    if task.tool != "pdf-to-word" or OCR_TYPES[task.options["ocr_type"]] == "basic":
+    """A conversion that may read formulas with the formula model, the model usable: careful ("Chuyển thành công
+    thức sửa được": scanned pages and the formula pictures of text pages), or OCR with P2W_FORMULAS=model. (One that
+    turns out not to – a file with too many scanned pages and no text page – gives its turn back as soon as
+    convert() knows: TaskManager._run.)"""
+    if task.tool != "pdf-to-word":
         return False
+    if OCR_TYPES[task.options["ocr_type"]] == "basic":  # no OCR: only the formula pictures of its text pages
+        return task.options["careful"] and mathocr.available()
     return (task.options["careful"] or FORMULAS == "model") and mathocr.available()
 
 
 class TaskManager:
     """Runs tasks on `workers` threads, oldest first, except that at most `careful_workers` conversions with the
-    formula model ("Đọc kỹ": up to ~2 minutes per scanned page on a 2-core server) run at once. A careful task
+    formula model (careful: up to ~2 minutes per scanned page on a 2-core server) run at once. A careful task
     that has to wait stays "queued" without holding a thread, and the tasks behind it go ahead of it meanwhile;
     at most `careful_queue` wait. A queued task whose page was closed (cancel()) or has not asked about it for
     ABANDON_SECONDS is dropped; a running one cancelled stops at its next page."""

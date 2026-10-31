@@ -40,7 +40,7 @@ import cv2
 import numpy as np
 import pymupdf
 
-from . import nativemath
+from . import nativemath, nativeread
 from .layout import alignment, cell_align, looks_like_link
 from .model import LINE_BREAK, TAB, Cell, Columns, PageLayout, Paragraph, Picture, Run, Table
 from .ocr import ocr_region
@@ -3173,9 +3173,27 @@ def _settle_equations(ex: _Extractor, flow: list) -> None:
                 runs[:] = [x for x in runs if id(x) not in others]
 
 
+def _holders(flow: list) -> list[nativeread.Holder]:
+    """The runs of the page's paragraphs and table cells (live lists), with the object holding each list."""
+    out = []
+    for e in flow:
+        if isinstance(e, Paragraph):
+            out.append(nativeread.Holder(e, e.runs))
+        elif isinstance(e, Columns):
+            out += [nativeread.Holder(p, p.runs) for col in e.cells for p in col]
+        elif isinstance(e, Table):
+            out += [nativeread.Holder(c, c.runs) for row in e.cells for c in row]
+    return out
+
+
 def native_page(
-    page: pymupdf.Page, ocr_languages: list[str] | None = None, strip: bool = False
+    page: pymupdf.Page,
+    ocr_languages: list[str] | None = None,
+    strip: bool = False,
+    budget: nativeread.FormulaBudget | None = None,
 ) -> PageLayout:
+    """budget: the formula pictures are read with the formula model ("Chuyển thành công thức sửa được",
+    app/nativeread.py), up to what is left of the file's budget."""
     ex = _Extractor(page, ocr_languages)
     # Ruled tables first: their cell shading must not be taken for highlighted text.
     table_specs = ex.tables()
@@ -3296,6 +3314,8 @@ def native_page(
         p.first_line_indent_pt = indent if abs(indent) > 3 else 0.0
 
     _settle_equations(ex, flow)
+    if budget is not None:
+        nativeread.read_pictures(page, ex.formulas, _holders(flow), budget)
 
     # Line heights from the measured pitch; boxes become line-box extents so
     # spacing reproduces the original baselines.
@@ -3337,9 +3357,12 @@ def native_page(
         prev_bottom = el.y1
     layout.elements = flow
     layout.legacy_spans = ex.legacy_spans
-    placed = [f["run"] for f in ex.formulas if f["run"] is not None]
+    # formulas in the document (rows inside a figure are drawn in the figure's picture)
+    shown = {id(r) for h in _holders(flow) for r in h.runs}
+    placed = [f["run"] for f in ex.formulas if f["run"] is not None and id(f["run"]) in shown]
     layout.equations = sum(1 for r in placed if r.math)
     layout.native_formula_pictures = len(placed) - layout.equations
+    layout.native_formulas_read = sum(1 for f in ex.formulas if f.get("read"))
     if ex._forms_doc is not None:  # the page copy of MathType forms: its pictures are drawn
         ex._forms_doc.close()
         ex._forms_doc = None

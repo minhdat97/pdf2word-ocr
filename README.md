@@ -69,7 +69,9 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   dòng. Nhãn A.–D. Tesseract đọc sai hay bỏ sót ("c.9") được viết lại cả khi vùng không đọc. Cần Tesseract
   4.1 trở lên (danh sách ký tự có dấu cách, `hocr_char_boxes`): chạy `tests/test_scriptocr.py` trên máy
   chủ, phép thử in một trang rồi đọc lại. `P2W_SCRIPTS_LANG` (`eng`): mô hình Tesseract đọc các dòng chỉ số.
-- **"Đọc kỹ"** (ô "Đọc kỹ công thức" của giao diện; tuỳ chọn `"careful": true` của tác vụ, xem Luồng API):
+- **"Chuyển thành công thức sửa được"** (trước gọi "Đọc kỹ"; ô của giao diện cho trang scan và nút sau lần
+  chuyển nhanh; tuỳ chọn `"careful": true` của tác vụ, xem Luồng API; nó cũng đọc công thức dạng ảnh của
+  trang có chữ, xem Pipeline):
   mô hình pix2text-mfr-1.5 (giấy phép MIT, ONNX ~120 MB khi chạy, onnxruntime) đọc vùng công thức thành
   LaTeX. Kết quả tin được thì thay chữ Tesseract đọc sai: số mũ/chỉ số dưới thành chữ chỉ số trên/dưới,
   căn, phân số thành Equation sửa được trong Word; kết quả không chắc thì giữ chữ OCR. `fetch_models.py`
@@ -79,23 +81,27 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   Thiếu một trong hai file thì dùng `decoder_model.onnx` (máy chủ chỉ có ba file cũ vẫn chạy).
   `P2W_MFR_SPLIT=0` (đặt trong drop-in systemd) quay về bộ giải mã nguyên khối dù có hai file tách; đừng
   xoá hai file: `deploy.sh` thấy thiếu là tải lại. Chậm (xem Máy chủ nhỏ) nên chỉ cho file có tối đa
-  `P2W_MFR_MAX_PAGES` (5) trang scan và mỗi lúc chỉ một lần chuyển "Đọc kỹ" (`P2W_CAREFUL_WORKERS`): lần
-  khác chờ trong hàng đợi (trạng thái `queued`, giao diện ghi "Đang chờ đến lượt đọc kỹ…"), không giữ
-  luồng nào, lần chuyển thường xếp sau nó vẫn chạy; tối đa `P2W_CAREFUL_QUEUE` (3) lần chờ, thêm nữa thì bị
-  từ chối (`careful_busy`, giao diện: "Đang có nhiều người đọc kỹ…"), nên "Đọc kỹ" không lấp hàng đợi chung.
-  Lần chuyển "Đọc kỹ" không dùng mô hình (file quá số trang scan, không có trang scan) trả lượt ngay khi bắt
-  đầu. Chỉ trang scan được đọc bằng mô hình: ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô hình
-  không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
-  `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và
-  máy chủ đọc kỹ được (có mô hình, không tắt, không hỏng); file quá số trang scan thì ô tắt kèm lý do; khi
-  đọc kỹ dòng trạng thái ghi "mỗi trang scan khoảng 1–2 phút". Lần chuyển thường có phân số, căn giữ dạng
-  ảnh (file đọc kỹ được) thì ghi chú ghi số công thức kèm nút "chuyển lại, đọc kỹ" (file Word vừa chuyển
-  vẫn tải được trong lúc chờ, cả khi lần đọc kỹ không xong). Qua API, file dài hơn,
-  máy không có mô hình hay mô hình hỏng thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` /
-  `formulas`).
+  `P2W_MFR_MAX_PAGES` (5) trang scan và mỗi lúc chỉ một lần chuyển công thức (`P2W_CAREFUL_WORKERS`): lần
+  khác chờ trong hàng đợi (trạng thái `queued`, giao diện ghi "Đang chờ đến lượt chuyển công thức…"), không
+  giữ luồng nào, lần chuyển thường xếp sau nó vẫn chạy; tối đa `P2W_CAREFUL_QUEUE` (3) lần chờ, thêm nữa thì
+  bị từ chối (`careful_busy`, giao diện: "Đang có nhiều người chuyển công thức. Hãy thử lại sau ít phút."),
+  nên lần chuyển công thức không lấp hàng đợi chung. Lần chuyển không dùng mô hình (file quá số trang scan và
+  không có trang có chữ) trả lượt ngay khi bắt đầu. Ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô
+  hình không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
+  `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và máy chủ dùng được mô hình (có
+  mô hình, không tắt, không hỏng; không hiện khi `P2W_FORMULAS=model`); file quá số trang scan thì ô tắt kèm
+  lý do; ô ghi thời gian ước ("chậm hơn: khoảng X phút", `P2W_SECONDS_PER_SCAN_PAGE` mỗi trang scan). Lần
+  chuyển nhanh còn công thức dạng ảnh mà mô hình đọc được (trang có chữ; trang scan khi ô dùng được) thì
+  ghi chú một dòng "N công thức đang là ảnh – [Chuyển thành công thức sửa được] (khoảng X phút)": X là thời
+  gian lần vừa rồi cộng `P2W_SECONDS_PER_FORMULA` mỗi công thức (tối đa `P2W_MFR_MAX_FORMULAS`) và mỗi trang
+  scan như trên; bấm là chuyển lại với mô hình, file Word vừa chuyển vẫn tải được trong lúc chờ, cả khi lần
+  này không xong. Xong thì ghi chú mỗi ý một dòng: số công thức đã chuyển ("nên soát lại"), đọc chưa chắc
+  nên giữ ảnh, quá giới hạn mỗi file, máy chủ chưa chuyển được. Qua API, file dài hơn, máy không có mô hình
+  hay mô hình hỏng thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` / `formulas` /
+  `native_formulas_failed`).
 
-`P2W_FORMULAS`: `scripts` (mặc định), `model` (mọi lần chuyển đều "Đọc kỹ"), `off` (không đọc công
-thức; "Đọc kỹ" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_MATH_DETECT=off` tắt cả việc tìm vùng.
+`P2W_FORMULAS`: `scripts` (mặc định), `model` (mọi lần OCR đều đọc công thức trang scan bằng mô hình),
+`off` (không đọc công thức; "Chuyển thành công thức sửa được" vẫn dùng mô hình); `P2W_MFR=0` tắt mô hình, `P2W_MATH_DETECT=off` tắt cả việc tìm vùng.
 
 Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc định 3600),
 `P2W_MAX_UPLOAD_MB` (50), `P2W_MAX_PAGES` (50), `P2W_WORKERS` (2), `P2W_MAX_STORAGE_MB` (4096),
@@ -105,16 +111,18 @@ Biến môi trường tuỳ chọn: `P2W_DATA_DIR`, `P2W_FILE_TTL` (giây, mặc
 `P2W_VIETOCR_WORDS` (`unsure` mặc định, `all`), `P2W_FORMULAS` (`scripts` mặc định, `model`, `off`),
 `P2W_SCRIPTS_LANG` (`eng`),
 `P2W_MFR` (`0` để tắt mô hình công thức), `P2W_MFR_DIR` (`models/mfr`), `P2W_MFR_MAX_PAGES` (5),
+`P2W_MFR_MAX_FORMULAS` (200: công thức dạng ảnh của trang có chữ đọc tối đa mỗi file),
+`P2W_SECONDS_PER_FORMULA` (0,8), `P2W_SECONDS_PER_SCAN_PAGE` (70: giây giao diện tính cho "khoảng X phút"),
 `P2W_MFR_SPLIT` (`0`: bộ giải mã nguyên khối),
-`P2W_CAREFUL_WORKERS` (1: số lần chuyển "Đọc kỹ" chạy cùng lúc), `P2W_CAREFUL_QUEUE` (3: số lần "Đọc kỹ" chờ
-tối đa), `P2W_ABANDON_SECONDS` (600: việc chờ không ai hỏi chừng ấy giây bị bỏ),
+`P2W_CAREFUL_WORKERS` (1: số lần chuyển công thức chạy cùng lúc), `P2W_CAREFUL_QUEUE` (3: số lần chuyển công
+thức chờ tối đa), `P2W_ABANDON_SECONDS` (600: việc chờ không ai hỏi chừng ấy giây bị bỏ),
 `P2W_VIETOCR_THREADS`, `P2W_MFR_THREADS` (số lõi chia cho `P2W_WORKERS`, tối đa 2),
 `P2W_MATH_DETECT` (cách tìm vùng công thức: `rules` mặc định, `off` để tắt).
 
 Máy chủ nhỏ (2 lõi ARM Neoverse-N1, 12 GB, `P2W_WORKERS=2`): mỗi lần chuyển dùng 1 luồng cho mỗi mô hình,
 nên hai lần chuyển cùng lúc không giành lõi của nhau (đo: hai lần chuyển VL1212 cùng lúc mỗi lần chậm như
-chạy một mình, cả process ~2,5 GB); mỗi lúc chỉ một lần "Đọc kỹ", nên lõi kia luôn còn cho lần chuyển
-thường. File hơn `P2W_MFR_MAX_PAGES` (5) trang scan không "Đọc kỹ", file hơn `P2W_VIETOCR_MAX_PAGES` (30)
+chạy một mình, cả process ~2,5 GB); mỗi lúc chỉ một lần chuyển công thức, nên lõi kia luôn còn cho lần
+chuyển thường. File hơn `P2W_MFR_MAX_PAGES` (5) trang scan không đọc công thức trang scan bằng mô hình, file hơn `P2W_VIETOCR_MAX_PAGES` (30)
 trang scan không dùng VietOCR (giao diện ghi một dòng), để một file dài không giữ máy chủ quá lâu. Thời gian
 mỗi trang scan trên máy chủ, giây (ước từ CPU đo trên Mac không dùng KleidiAI, một luồng: Tesseract ×2,3, mô
 hình ×2,9 – khớp trong 10 % với lần đo thật đề VL1212 trên máy chủ: 438 giây có cả hai mô hình, 17 giây
@@ -125,16 +133,18 @@ không mô hình; 2026-10-28):
 | chỉ Tesseract (`P2W_VIETOCR=0`, `P2W_FORMULAS=off`) | 5,4 (6 / 7 / 3) | 4,7 | 4,4 / 5,4 / 9 |
 | mặc định: VietOCR int8 `unsure` + công thức không mô hình (tỉ lệ int8 / float16 đo trên máy chủ: 0,46, trên Mac 0,44) | 12,4 (16 / 16 / 6) | 8,3 | 8,2 / 9,7 / 21 |
 | như trên, VietOCR float16 (`P2W_VIETOCR_INT8=0`) | 19,7 (25 / 26 / 8) | 12,4 | 12,2 / 14,7 / 33 |
-| "Đọc kỹ": thêm mô hình công thức, bộ giải mã tách đôi | 73,9 (105 / 105 / 12) | 30,2 | 34,6 / 21,7 / 114 |
+| chuyển công thức: thêm mô hình công thức, bộ giải mã tách đôi | 73,9 (105 / 105 / 12) | 30,2 | 34,6 / 21,7 / 114 |
 | bản trước (mọi lần chuyển dùng cả hai mô hình, VietOCR đọc mọi từ) | 155,7 (203 / 239 / 25) | 65,9 | 66,3 / 44,1 / 233 |
 
-Trang "Đọc kỹ" dày nhất (~2 phút) còn xa mức 10 phút giao diện bỏ cuộc; một file 5 trang dày giữ lượt
-"Đọc kỹ" ~9 phút, lần "Đọc kỹ" sau chờ trong lúc đó.
+Trang scan dày nhất (~2 phút) còn xa mức 10 phút giao diện bỏ cuộc; một file 5 trang dày giữ lượt chuyển
+công thức ~9 phút, lần sau chờ trong lúc đó. Công thức dạng ảnh của trang có chữ: đề Vật lí MathType 6 trang
+(158 ảnh) thêm 36 giây trên Mac một luồng (1,9 → 37,7 giây), tức ~0,23 giây mỗi ảnh, ước ~0,65 giây trên máy
+chủ theo các hệ số trên (`P2W_SECONDS_PER_FORMULA` 0,8 để dư); 200 công thức ~2–3 phút.
 
 Bảo vệ khi chạy công khai:
 - Giới hạn theo IP người dùng (`CF-Connecting-IP` do Cloudflare Tunnel đặt; máy chủ chỉ nghe
-  127.0.0.1): 40 lần tải lên, 120 lần xử lý mỗi 10 phút. Hàng đợi tối đa 20 việc, trong đó "Đọc kỹ"
-  tối đa 1 chạy + 3 chờ; mỗi file một việc chạy cùng lúc, tối đa 6 lần. Trang đóng hay tải lại thì việc
+  127.0.0.1): 40 lần tải lên, 120 lần xử lý mỗi 10 phút. Hàng đợi tối đa 20 việc, trong đó chuyển công
+  thức tối đa 1 chạy + 3 chờ; mỗi file một việc chạy cùng lúc, tối đa 6 lần. Trang đóng hay tải lại thì việc
   của nó bị huỷ (đang chờ: bỏ ngay; đang chạy: dừng ở trang sau); việc đang chờ mà 10 phút không ai hỏi
   bị bỏ khi tới lượt. Tổng file lưu tối đa 4 GB; file của việc chưa xong không bị xoá khi quá 1 giờ (xoá ở
   lần dọn sau khi việc xong). Trang dài hơn 3000pt bị từ chối; trang hơn 20.000 nét vẽ giữ thành ảnh.
@@ -164,24 +174,29 @@ hay `P2W_FORMULAS=model|off`: lệnh xoá file khi file không đặt gì khác,
 | Xin URL upload | `POST /v1/upload-url` → URL ký HMAC, hết hạn 15 phút (kiểu presigned URL của object store) |
 | Upload | `PUT /v1/files/<token>?expires&sig` |
 | Phân tích | `POST /v1/tasks` `{"tool":"analyse-document"}` |
-| Convert | `POST /v1/tasks` `{"tool":"pdf-to-word","options":{"ocr_type":"ocr","languages":["vie"]}}` (thêm `"careful":true` để "Đọc kỹ") |
+| Convert | `POST /v1/tasks` `{"tool":"pdf-to-word","options":{"ocr_type":"ocr","languages":["vie"]}}` (thêm `"careful":true` để "Chuyển thành công thức sửa được", cả với `ocr_type` `""`) |
 | Poll | `GET /v1/tasks/<task_id>` → `status`, `progress`, `result.output_files`, `result.error_fe` |
 | Huỷ | `POST /v1/tasks/<task_id>/cancel` (trang gửi khi đóng/tải lại): việc đang chờ bỏ ngay, đang chạy dừng ở trang sau |
 | Tải về | `GET /v1/files/<token>?name=...` |
 
-Kết quả `analyse-document` có thêm `careful`: `{"available": true, "max_scan_pages": 5}` (máy chủ
-"Đọc kỹ" được không, tối đa mấy trang scan). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc
-công thức trang scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn đọc kỹ mà file quá dài),
+Kết quả `analyse-document` có thêm `careful`: `{"available": true, "scan_offered": true, "max_scan_pages":
+5, "max_formulas": 200, "seconds_per_formula": 0.8, "seconds_per_scan_page": 70}` (máy chủ dùng được mô hình
+không, ô cho trang scan có nên hiện không, tối đa mấy trang scan, mấy công thức dạng ảnh mỗi file, số giây
+giao diện tính cho "khoảng X phút"). Kết quả `pdf-to-word` có `careful`, `formulas` (cách đọc công thức trang
+scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn dùng mô hình mà file quá nhiều trang scan),
 `vietocr_skipped`, `formula_pictures` (vùng công thức trang scan giữ thành ảnh), `equations` /
-`native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành ảnh).
+`native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành ảnh), và khi
+`careful`: `native_formulas_read` (ảnh công thức đã thành Equation hay chữ có chỉ số), `native_formulas_unsure`
+(đọc chưa chắc, giữ ảnh), `native_formulas_over` (quá `max_formulas`, giữ ảnh), `native_formulas_failed`
+(không dùng được mô hình, giữ ảnh).
 
 Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
-trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt "Đọc kỹ") không tính, nên file scan dài
-hay "Đọc kỹ" vẫn nhận được kết quả.
+trang nào xong thêm; thời gian chờ trong hàng đợi (cả chờ lượt chuyển công thức) không tính, nên file
+scan dài hay chuyển công thức vẫn nhận được kết quả.
 
 `task_id` do client sinh (32 ký tự hex). Việc đang chờ mà `P2W_ABANDON_SECONDS` (10 phút) không ai
 hỏi trạng thái thì bị bỏ khi tới lượt. `POST /v1/tasks` trả 503 `busy` (hàng đợi đầy), 503 `careful_busy`
-(đã có 3 lần "Đọc kỹ" chờ), 429 `too_many_tasks`/`rate_limited`. Mã lỗi `error_fe` cho giao diện:
+(đã có 3 lần chuyển công thức chờ), 429 `too_many_tasks`/`rate_limited`. Mã lỗi `error_fe` cho giao diện:
 `password`, `corrupt_pdf`, `no_pages_in_pdf`, `too_many_pages`, `no_text_found`, `input_tokens` (file
 không còn), `cancelled`, `abandoned`, `internal_server_error`. Mở trang với `?debug` để thấy mục "Nhật ký
 API" (toàn bộ request/response).
@@ -301,6 +316,19 @@ tắt.
     mũ "⁰" cùng ") được" là một dòng riêng bắt đầu giữa "J/kg" và "C") được ghép theo thứ tự ngang,
     không thành tab; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
     thức rộng cạnh hình không bị coi là nhãn của hình.
+  - **"Chuyển thành công thức sửa được"** (`careful`, `app/nativeread.py`): các ảnh công thức nội dòng trên
+    được mô hình công thức đọc như vùng công thức trang scan (`mathocr.read_regions`: hai lần đọc phải
+    khớp, chữ số khớp chữ Tesseract đọc cùng chỗ, kiểm chữ tiếng Việt và nhãn như trang scan), tối đa
+    `P2W_MFR_MAX_FORMULAS` (200) mỗi file theo thứ tự trang. Công thức hai tầng (phân số, căn, vectơ) thành
+    Equation trong dòng (ảnh giữ kèm: Equation Word không nhận thì ghi ảnh); công thức một dòng ("x_A",
+    "4,5.10³", "3 km") thành chữ có chỉ số trên/dưới, font của chữ quanh nó; chữ thường mà mô hình từ chối
+    (chỉ có chữ cái – trục "Ox", đơn vị "m/s" –, chữ Việt "20 phút": mô hình không có chữ Việt) thành chữ
+    Tesseract đọc cùng chỗ khi một lần đọc tin được của mô hình ra đúng chữ đó (không kể dấu tiếng Việt):
+    hai cách đọc không bao giờ sai giống nhau (Tesseract đọc chữ nghiêng MathType A thành "4", B thành
+    "8": giữ ảnh). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300 DPI) trên
+    nền trắng, xếp chồng trên một tấm nên không lẫn chữ bên cạnh; chữ Tesseract của trang render cùng 300
+    DPI, lấy các từ nằm ít nhất một nửa trong khung công thức. Dấu câu cuối mà dòng đã có ngay sau ảnh không
+    lặp lại.
   - Ảnh raster và hình vector thành ảnh nổi đúng vị trí trên trang; nhãn chữ trong hình hoặc sát
     mép (tên trục "s (km)", vạch chia "O", "2 4 5"; ở trên/dưới hình thì phải nằm trong bề ngang
     hình – "PHẦN I." trên bảng là tiêu đề) được render cùng hình; hình lớn đè lên chữ
@@ -415,7 +443,7 @@ tắt.
      chỉ ở chỗ hình học thấy, chữ số đứng trên dòng cao bằng chữ số, 0/O theo bề rộng, o/O, v/V theo chiều
      cao, chữ sau số mũ phải là đơn vị); chữ cái không kiểm được phải có trong chữ OCR của trang; rồi qua
      cùng luật an toàn như kết quả mô hình. Vùng cao (phân số, căn) thành ảnh công thức.
-     "Đọc kỹ": mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau (lần đầu là chữ thường trùng chữ
+     Chuyển công thức (`careful`): mô hình đọc mỗi vùng 2–3 lần với lề cắt khác nhau (lần đầu là chữ thường trùng chữ
      Tesseract, "6 kPa.", thì giữ luôn, không đọc lần hai), chỉ lấy kết quả
      các lần đọc khớp nhau và qua luật an toàn (`app/mathocr.py`: không ký hiệu lạ, chữ số khớp
      Tesseract theo thứ tự – mô hình bớt hay thêm một chữ số ("200" cho "2000", "500 00" cho
@@ -491,6 +519,11 @@ Kết quả hiện tại (M4 Pro):
 - Đề Vật lí 10 gõ MathType, Word xuất PDF 6 trang: ~1,2 giây, ~145 ảnh công thức; khớp 98,7% từ
   với file Word gốc (công thức tính là một từ); Word render đúng 6 trang; trang đọc đề đọc đủ 28/28
   đáp án.
+- "Chuyển thành công thức sửa được" trên đề đó (158 ảnh công thức): 124 đọc được – 12 Equation, 112 chữ có
+  chỉ số –, so với 157 công thức chuẩn gõ tay: 124 đúng, 0 sai; 34 giữ ảnh (phần lớn nhãn A, B chữ nghiêng);
+  so với file Word gốc mọi Equation đều khớp, chữ 99,3 %. Không chọn: 22 PDF có chữ, Bai_1–6 và VL1108 ra
+  .docx giống hệt từng byte bản trước; chọn: chỉ đề Vật lí và một đề mẫu (1/2 ảnh đọc được) đổi, và chỉ ở
+  đoạn có ảnh công thức; file không còn ảnh công thức giống hệt.
 
 Chọn model: trên mẫu test, `tessdata_best` cho ~99% ký tự, còn model chuẩn ghép `vie+eng`
 chỉ ~87–90% (mất dấu). Khử nhiễu, nhị phân hoá hay tăng DPI không cải thiện thêm. Lọc mực
@@ -546,7 +579,7 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   VietOCR chỉ đọc lại từ chưa chắc ("đẳng", "HỒ" Tesseract tin mà sai dấu; một số "0" đổi theo các từ đọc
   cùng lượt) –, thêm 10. VietOCR int8: 97,58 % / 96,69 %, so với bản float mất 2 từ ("thẳng", "A"), thêm 5;
   các số khác như bản float. PDF có text không đổi (22 file).
-- "Đọc kỹ": .docx của đề Vật lí và hai bản scan giả, 30 trang chữ đọc được giống hệt từng byte cách đọc cũ
+- Chuyển công thức (trước gọi "Đọc kỹ"): .docx của đề Vật lí và hai bản scan giả, 30 trang chữ đọc được giống hệt từng byte cách đọc cũ
   của mô hình (bộ giải mã nguyên khối, vùng nào cũng đọc hai lần) cùng VietOCR `unsure`: chữ 99,7 %,
   số 93,4 %, Equation 13/24 (15/24), 47/51, 0 kết quả sai; 30 trang 97,75 % / 97,14 %, mất 3 từ đúng (3 từ
   VietOCR ở trên), thêm 6.
@@ -566,7 +599,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
 - Bảng scan: màu nền ô lệch vài đơn vị so với bản gốc (ảnh chụp điện thoại lệch nhiều hơn); ô tô
   màu chỉ đậm hơn giấy dưới 10/255 (hay dưới độ chênh sáng của ảnh chụp) thì thành ô trắng.
 - Công thức thành ảnh (MathType, Equation có căn/ma trận/ngoặc lớn, font toán thiếu bảng mã): xem
-  và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không đọc được nội dung. Công thức
+  và in đúng nhưng không sửa được trong Word, công cụ đọc đề cũng không đọc được nội dung – trừ khi chọn
+  "Chuyển thành công thức sửa được" (đề Vật lí MathType: 124/158 ảnh; nhãn chữ nghiêng A, B mà Tesseract
+  đọc thành "4", "8" vẫn là ảnh). Công thức
   có chữ thật (PDF từ LaTeX, chỉ dùng font Symbol) vẫn là chữ; công thức Cambria Math không có chữ
   toán nghiêng hay gạch phân số ("4,5 × 10³ J", "80,0 ∘C") vẫn là chữ thường font Cambria Math.
 - Đọc công thức mặc định (không mô hình): chỉ số có chữ Đ/đ (R_Đ, F_đh), chỉ số chữ y/p hay chữ x, v, s…
@@ -585,7 +620,7 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   ngay sau hàng. Số mũ chỉ
   nhận theo hình khi tách khỏi nét chữ trước nó (scan nhoè dính liền thì không thấy).
 - Trang scan: luôn dùng Times New Roman, chưa nhận in nghiêng/gạch chân; số mũ/chỉ số dưới chỉ có
-  ở chỗ đọc được (mặc định: số, đơn vị, chữ có số mũ/chỉ số; "Đọc kỹ" thêm phân số, căn);
+  ở chỗ đọc được (mặc định: số, đơn vị, chữ có số mũ/chỉ số; chuyển công thức thêm phân số, căn);
   chữ đậm theo từng từ thỉnh thoảng sai ở từ rời; Tesseract không đọc được dòng gạch dài kiểu
   "------HẾT------"; hình mờ, nét rất mảnh có thể bị cắt sát.
 - Watermark chữ xoay được set lại bằng font serif, không phải font gốc; font Type3 dùng font
@@ -609,11 +644,13 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu
   lộn xộn).
-- "Đọc kỹ" chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang đề nhiều công thức): chỉ cho file tối đa
+- Chuyển công thức chạy lâu (máy chủ 2 lõi ARM tới ~105 giây/trang scan nhiều công thức, ~0,65 giây mỗi ảnh
+  công thức của trang có chữ): trang scan chỉ cho file tối đa
   `P2W_MFR_MAX_PAGES` (5) trang scan, mỗi lúc một lần – lần sau có thể chờ tới ~9 phút sau một file 5 trang
   dày; quá `P2W_VIETOCR_MAX_PAGES` (30) trang scan thì bỏ cả VietOCR; trang bị đóng mà không kịp báo (máy
   tắt, mất mạng) thì việc đang chạy vẫn chạy hết, việc đang chờ chỉ bị bỏ sau 10 phút; chưa giới hạn thời
-  gian mỗi việc. Lượt "Đọc kỹ" chỉ một mỗi lúc cho mọi người, chưa chia theo IP.
+  gian mỗi việc. Lượt chuyển công thức chỉ một mỗi lúc cho mọi người, chưa chia theo IP. Ảnh công thức của
+  trang có chữ: tối đa `P2W_MFR_MAX_FORMULAS` (200) mỗi file, phần sau giữ ảnh.
 - Hàng đợi chạy trong process (ThreadPool), trạng thái task nằm trong RAM, file lưu ổ
   local: mất hết khi restart. Chưa có xác thực hay giới hạn tần suất (rate limit).
 

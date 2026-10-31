@@ -82,6 +82,7 @@ h1 { font-size: clamp(26px, 5vw, 32px); line-height: 1.2; margin: 0 0 6px; }
 .check.off > span { opacity: .65; }
 .linkbtn { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer;
            text-decoration: underline; }
+.linkbtn:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 details.more { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
 details.more summary { cursor: pointer; color: var(--muted); font-size: 15px; }
 .radio { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; cursor: pointer; }
