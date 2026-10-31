@@ -487,7 +487,7 @@ def convert(
                     layout = native_page(page, languages if mode == "ocr" else None, strip=strip, budget=budget)
             found[i] = layout
             # the model is done with this file: the last text page read, or the budget spent or the model failed
-            done = k == last_text or (budget is not None and (budget.left <= 0 or budget.failed))
+            done = k == last_text or (budget is not None and (budget.left <= 0 or budget.failed or budget.ocr_seconds <= 0))
             if done and uses_model and not scans_use_model and model_unused is not None:
                 model_unused()
         # the model may have failed to load or broken on a page (mathocr.broken()): the pages after it, and that page
@@ -530,11 +530,14 @@ def convert(
         # formulas of text pages: rebuilt as Word equations / kept as pictures (MathType, layouts not read)
         "equations": sum(p.equations for p in pages),
         "native_formula_pictures": sum(p.native_formula_pictures for p in pages),
-        "native_picture_pages": sum(1 for p in pages if p.native_formula_pictures),  # pages a careful conversion OCRs
+        "native_picture_pages": sum(1 for p in pages if p.native_readable_pictures),  # pages a careful conversion OCRs
+        # of them, those a careful conversion would try to read (not on turned pages, not larger than the model reads)
+        "native_readable_pictures": sum(p.native_readable_pictures for p in pages),
         # careful: formula pictures of text pages read with the model / not trusted (kept) / past the budget (kept)
         "native_formulas_read": budget.read if budget else 0,
         "native_formulas_unsure": budget.unsure if budget else 0,
         "native_formulas_over": budget.over if budget else 0,
+        "native_formulas_skipped": budget.skipped if budget else 0,  # never tried (turned page, too large, time spent)
         "native_formulas_failed": bool(budget and budget.failed),  # the model could not be used: pictures kept
         "max_formulas": MFR_MAX_FORMULAS,
     }

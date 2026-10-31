@@ -87,7 +87,8 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   bị từ chối (`careful_busy`, giao diện: "Đang có nhiều người chuyển công thức. Hãy thử lại sau ít phút."),
   nên lần chuyển công thức không lấp hàng đợi chung. Lần chuyển không dùng mô hình (file quá số trang scan và
   không có trang có chữ) trả lượt ngay khi bắt đầu; trang scan không đọc bằng mô hình thì lượt được trả sau
-  trang có chữ cuối cùng, hay khi đã đọc đủ `P2W_MFR_MAX_FORMULAS` ảnh công thức hoặc mô hình hỏng. Ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô
+  trang có chữ cuối cùng, hay khi đã đọc đủ `P2W_MFR_MAX_FORMULAS` ảnh công thức, hết thời gian Tesseract của
+  file hoặc mô hình hỏng. Ảnh có chữ trên trang có chữ đọc theo cách mặc định. Mô
   hình không tải được hay hỏng giữa chừng thì trang đó và các trang sau đọc theo cách mặc định, kết quả ghi
   `formulas: "scripts"`. Giao diện chỉ hiện ô khi sẽ đọc chữ từ trang scan và máy chủ dùng được mô hình (có
   mô hình, không tắt, không hỏng; không hiện khi `P2W_FORMULAS=model`); file quá số trang scan thì ô tắt kèm
@@ -101,7 +102,7 @@ tầng** ở bất cứ đâu (phân số, căn, gạch trên) và **chữ có s
   file Word vừa chuyển vẫn tải được trong lúc chờ, cả khi lần này không xong; "Chuyển file khác" lúc đó huỷ
   lần chuyển lại (kết quả của nó không hiện cho file mới). Xong thì ghi chú mỗi ý một dòng: số công thức đã
   chuyển ("nên soát lại"; trang scan: vùng viết từ kết quả mô hình, `formulas_read`), đọc chưa chắc nên giữ
-  ảnh, quá giới hạn mỗi file, máy chủ chưa chuyển được. Hàng đợi đầy khi đã chọn ô: lời báo nhắc bỏ chọn ô
+  ảnh, quá giới hạn mỗi file, chưa chuyển được (không thử đọc), máy chủ chưa chuyển được. Hàng đợi đầy khi đã chọn ô: lời báo nhắc bỏ chọn ô
   để chuyển ngay. Qua API, file dài hơn, máy không có mô hình hay mô hình hỏng (cả khi hỏng sau lúc trang
   hiện nút) thì đọc kiểu mặc định (kết quả ghi `formulas_skipped` / `formulas` / `native_formulas_failed`).
 
@@ -195,9 +196,12 @@ giao diện tính cho "khoảng X phút"). Kết quả `pdf-to-word` có `carefu
 scan: `model` / `scripts` / `off`), `formulas_skipped` (muốn dùng mô hình mà file quá nhiều trang scan),
 `vietocr_skipped`, `formula_pictures` / `formulas_read` (vùng công thức trang scan giữ thành ảnh / viết từ kết
 quả đọc), `equations` / `native_formula_pictures` (công thức trang có chữ dựng lại thành Equation / giữ thành
-ảnh), `native_picture_pages` (số trang có công thức dạng ảnh), và khi
+ảnh), `native_readable_pictures` / `native_picture_pages` (số công thức dạng ảnh lần chuyển công thức sẽ thử
+đọc – không kể trang xoay, ảnh quá lớn, công thức A dựng lại rồi trả về ảnh – / số trang có chúng; nút của
+giao diện đếm theo số này), và khi
 `careful`: `native_formulas_read` (ảnh công thức đã thành Equation hay chữ có chỉ số), `native_formulas_unsure`
-(đọc chưa chắc, giữ ảnh), `native_formulas_over` (quá `max_formulas`, giữ ảnh), `native_formulas_failed`
+(đọc chưa chắc, giữ ảnh), `native_formulas_over` (quá `max_formulas`, giữ ảnh), `native_formulas_skipped`
+(không thử đọc: trang xoay, ảnh quá lớn, hết thời gian Tesseract của file; giữ ảnh), `native_formulas_failed`
 (không dùng được mô hình – không có, tắt hay hỏng –, giữ ảnh).
 
 Giao diện hỏi trạng thái mỗi 0,7 giây và chỉ bỏ cuộc ("Xử lý quá lâu…") khi 10 phút liền không có
@@ -344,15 +348,23 @@ tắt.
     thành l_o) hay có từ chữ thường ngoài vài chữ
     viết tắt (max, min, tb, ms…: "v_ngược" đọc thành v_nguoc), chỉ số có chữ mà Tesseract thấy chữ Việt ở đó;
     số mũ không phải số/chữ có dấu, độ, phẩy ("10⁻⁴ rad/s" đọc thành 10^{- rad/s}); tử hay mẫu là một chữ chỉ
-    chiều cao mới phân biệt hoa/thường (s/S, v/V…); kết quả mở đầu bằng "+". Khoảng trắng trong chỉ số bị bỏ
-    ("10⁻²³", không "10⁻ ²³"), giữa hai chữ số trong phân số, căn cũng vậy ("21/4", không "2 1" trên 4). Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300
+    chiều cao mới phân biệt hoa/thường (s/S, v/V…); kết quả mở đầu bằng "+"; vectơ trên nhiều chữ thường
+    (\vec{mv} cho m\vec{v}); gạch ngang trên cặp chữ in hoa (\overline{MA}: trong đề thường là vectơ mà đầu
+    mũi tên bị bỏ sót); gạch ngang trên mà một lần đọc thêm với lề rộng hơn (8 và 12 điểm ảnh) thấy là mũi
+    tên (đầu mũi tên vectơ nằm sát mép ảnh, hai lần đọc lề hẹp tưởng là gạch: \vec{p} thành \bar{p}). Khoảng trắng trong chỉ số bị bỏ
+    ("10⁻²³", không "10⁻ ²³"), giữa hai chữ số trong phân số, căn cũng vậy ("21/4", không "2 1" trên 4), trước số mũ
+    ("6,72.10⁻¹⁸"), giữa phân số và chữ sau nó ("½at²"), quanh "=" và sau dấu trừ ("q=-4.10⁻⁸ C"). Chữ sau phân số,
+    căn cuối cùng mà không phải đơn vị là biến, ở lại trong Equation ("V=⅓Bh", "Q=U²t/R"); đơn vị (m, s, kg, m/s…)
+    sau công thức là chữ thường, sau một số trong Equation thì viết đứng (\mathrm: "45,22 mm", không 𝑚𝑚). Màu
+    chữ của ảnh (đáp án tô đỏ, xanh) được giữ cho chữ và Equation thay ảnh. Không chắc thì giữ ảnh. Ảnh đem đọc là chính ảnh công thức (chỉ nét của nó, 300
     DPI) trên nền trắng, xếp chồng trên một tấm (tối đa 20 ảnh, 8 triệu điểm ảnh, giải mã từng tấm) nên không
     lẫn chữ bên cạnh; ảnh lớn hơn mô hình đọc (2 triệu điểm ảnh) không được giải mã, giữ ảnh. Tesseract chỉ đọc
     các dải ngang của trang quanh các ảnh (dòng của chúng, thêm 30 % chiều cao ảnh trên và dưới, gộp chỗ chồng
     nhau, xếp chồng làm một ảnh 300 DPI – trang rộng hơn 4500 điểm ảnh thì DPI thấp hơn cho vừa, như A3 ngang
     272, không dưới 100 –, tối đa 60 giây mỗi trang, 180 giây mỗi file), lấy các từ nằm ít nhất một nửa trong
     khung công thức: trang dày chữ chỉ tốn phần dòng có công thức. Dải quá lớn, hết thời gian Tesseract của
-    file, trang xoay (khung công thức theo trang chưa xoay) thì giữ ảnh. Chữ đọc được lấy font chữ thường gần
+    file, trang xoay (khung công thức theo trang chưa xoay), ảnh quá lớn thì giữ ảnh mà không tính vào giới hạn
+    200 (kết quả ghi `native_formulas_skipped`, giao diện "N công thức chưa chuyển được…"). Chữ đọc được lấy font chữ thường gần
     nhất (không bao giờ Symbol, Wingdings, MT Extra: Word vẽ chữ Latin của Symbol thành chữ Hy Lạp). Dấu câu cuối mà dòng đã có sau ảnh
     (kể cả sau các mẩu khoảng trắng) không lặp lại. Equation đứng một mình trong đoạn hay ô lấy font chữ phổ
     biến của trang, nên vẫn là Equation trong dòng (không thành Equation giữa dòng).
@@ -669,7 +681,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   phần khi có mô hình).
 - Công thức dạng ảnh của trang có chữ: chữ cái (ngoài chỉ số) không đối chiếu được với Tesseract, nên chữ Hy
   Lạp giống chữ Latin có thể bị đọc nhầm (ν thành v, τ thành r; hiếm trong đề Vật lí phổ thông); công thức
-  chuyển thành chữ dùng chữ đứng (t₁ không nghiêng như MathType), dấu nhân "·" thành ".".
+  chuyển thành chữ dùng chữ đứng (t₁ không nghiêng như MathType), dấu nhân "·" thành ".". Công thức PDF đặt vào
+  khoảng trống giữa hai chữ của cùng một mẩu chữ (đề Vật lí trang 3: "dời từ … lên …") được đặt sau cả mẩu chữ
+  đó (có từ trước, cả khi không chuyển công thức).
 - Đọc công thức: chỉ số bậc căn mô hình bỏ sót thì căn bậc ba thành căn bậc hai ("√(a−b)" cho
   "∛(a−b)"); chữ tiếng Việt Tesseract tin <80 sát phân số vẫn có thể bị gộp vào vùng công thức
   (vùng đó thành ảnh). Chữ số trong phân số không đối chiếu với Tesseract (Tesseract đọc tử/mẫu

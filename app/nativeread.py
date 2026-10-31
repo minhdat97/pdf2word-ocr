@@ -75,6 +75,7 @@ class FormulaBudget:
     read_text: int = 0  # became text with superscripts / subscripts
     unsure: int = 0  # read, not trusted: kept as pictures
     over: int = 0  # past the budget: kept as pictures
+    skipped: int = 0  # never tried (page turned, larger than the model reads, Tesseract time spent): kept, not charged
     failed: bool = False  # the model could not be used (missing, broken): the rest kept as pictures
     ocr_seconds: float = OCR_FILE_SECONDS  # Tesseract time left for the file: once spent, pictures are kept
 
@@ -228,48 +229,60 @@ def _chunks(formulas: list[dict]):
         yield chunk
 
 
-def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder], budget: FormulaBudget) -> None:
-    """Read the page's formula pictures (formulas: native's formula dicts, page order) in place: a trusted reading
-    replaces the picture run in its paragraph or cell; f["read"] says how ("eq" / "text")."""
-    where = {id(r): h for h in holders for r in h.runs}
-    todo = [
+def _candidates(formulas: list[dict], holders: list[Holder]) -> list[dict]:
+    """The formula pictures placed in the page's paragraphs and cells that a reading could replace."""
+    where = {id(r) for h in holders for r in h.runs}
+    return [
         f
         for f in formulas
         if f["run"] is not None and f["run"].image and not f["run"].math and not f.get("pieces")
         and id(f["run"]) in where and f["run"].image_w > 1 and f["run"].image_h > 1
     ]
-    if not todo:
+
+
+def readable(page: pymupdf.Page, formulas: list[dict], holders: list[Holder]) -> int:
+    """How many of the page's formula pictures a careful conversion would try to read (what the page offers)."""
+    if page.rotation % 360:
+        return 0
+    return sum(1 for f in _candidates(formulas, holders) if _pixels(f) <= mathocr.MAX_CROP_PIXELS)
+
+
+def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder], budget: FormulaBudget) -> None:
+    """Read the page's formula pictures (formulas: native's formula dicts, page order) in place: a trusted reading
+    replaces the picture run in its paragraph or cell; f["read"] says how ("eq" / "text")."""
+    where = {id(r): h for h in holders for r in h.runs}
+    todo = _candidates(formulas, holders)
+    if not todo or budget.failed:
         return
-    if budget.failed or budget.left <= 0:
-        budget.over += 0 if budget.failed else len(todo)
+    # never tried, and not charged to the budget: the boxes are the unrotated page's while its rendering is turned;
+    # the file's Tesseract time is spent; larger than the model reads (a page-sized "formula" would take gigabytes)
+    if page.rotation % 360 or budget.ocr_seconds <= 0:
+        budget.skipped += len(todo)
         return
-    budget.over += max(0, len(todo) - budget.left)
-    todo = todo[: budget.left]
-    budget.left -= len(todo)
-    if page.rotation % 360:  # the boxes are the unrotated page's, its rendering is turned: keep the pictures
-        budget.unsure += len(todo)
+    keep = [f for f in todo if _pixels(f) <= mathocr.MAX_CROP_PIXELS]
+    budget.skipped += len(todo) - len(keep)
+    if not keep:
         return
+    if budget.left <= 0:
+        budget.over += len(keep)
+        return
+    budget.over += max(0, len(keep) - budget.left)
+    keep = keep[: budget.left]
+    budget.left -= len(keep)
     reader = _reader()
     if reader is None:
         budget.failed = True
         return
-    # larger than the model reads: not decoded (a page-sized "formula" would take gigabytes)
-    keep = [f for f in todo if _pixels(f) <= mathocr.MAX_CROP_PIXELS]
-    budget.unsure += len(todo) - len(keep)
-    if not keep:
-        return
     if budget.check is not None:
         budget.check()
-    words = None
-    if budget.ocr_seconds > 0:  # the file's Tesseract time not spent
-        started = time.monotonic()
-        try:
-            words = _words(page, [f["box"] for f in keep], budget.languages, min(TESSERACT_SECONDS, budget.ocr_seconds))
-        except Exception:  # Tesseract failed or took too long: no digit check, so nothing is trusted
-            words = None
-        budget.ocr_seconds -= time.monotonic() - started
+    started = time.monotonic()
+    try:
+        words = _words(page, [f["box"] for f in keep], budget.languages, min(TESSERACT_SECONDS, budget.ocr_seconds))
+    except Exception:  # Tesseract failed or took too long: no digit check, so nothing is tried
+        words = None
+    budget.ocr_seconds -= time.monotonic() - started
     if words is None:
-        budget.unsure += len(keep)
+        budget.skipped += len(keep)
         return
     changed: set[int] = set()
     # the page's text font: an equation alone in its paragraph or cell has no text around it, and an equation run
@@ -297,15 +310,20 @@ def read_pictures(page: pymupdf.Page, formulas: list[dict], holders: list[Holder
                 d if d is not None else _as_tesseract(reader, canvas, box, em, text, _after(where[id(f["run"])], f["run"]))
                 for d, box, em, text, (f, _) in zip(decisions, boxes, ems, texts, chunk, strict=True)
             ]
+            arrows = [
+                d is not None and d.kind == "eq" and _BAR.search(d.latex) is not None and _arrow_seen(reader, canvas, box, em)
+                for d, box, em in zip(decisions, boxes, ems, strict=True)
+            ]
         except Exception:
             mathocr.broken()
             budget.failed = True
             budget.unsure += len(keep) - done
             break
         done += len(chunk)
-        for (f, _), ws, text, d in zip(chunk, places, texts, decisions, strict=True):
+        for (f, _), ws, text, d, arrow in zip(chunk, places, texts, decisions, arrows, strict=True):
             if (
                 d is None
+                or arrow
                 or (d.kind == "eq" and not _converts(d.latex))
                 or mathocr.split_label(d) is not None
                 or _unmarked(d, ws)
@@ -399,6 +417,47 @@ DIGIT_LIKE = set("sSoOlIzZgqb")
 _EXPONENT = re.compile(r"[-−+]?(?:\d+(?:[,.]\d+)?|[A-Za-z])|°|'+|\*")
 
 
+_BAR = re.compile(r"\\(?:overline|bar)(?![A-Za-z])")
+_ARROW = re.compile(r"\\(?:vec|overrightarrow|overleftarrow|rightarrow|to)(?![A-Za-z])")
+ARROW_PADS = (8, 12)  # px of white around the crop: an arrowhead on its edge is seen with a wider margin
+
+
+def _arrow_seen(reader, canvas: np.ndarray, box: tuple, em: float) -> bool:
+    """Whether a reading of the crop with a wider margin has an arrow where the decision has a bar: the vector's
+    arrowhead sits on the crop's edge and the two narrow readings take it for a bar (\\vec{p} as \\bar{p})."""
+    crop = mathocr.cut(canvas, box, em)
+    if crop is None:
+        return True
+    return any(_ARROW.search(tex or "") for tex, _ in reader.read([mathocr._pad(crop, px) for px in ARROW_PADS]))
+
+
+def _ink_color(png: bytes) -> str | None:
+    """The colour of the picture's ink ("RRGGBB") when it is not black or dark grey (a red answer, a blue step)."""
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is None or img.ndim != 3 or img.shape[2] != 4:
+        return None
+    ink = img[img[:, :, 3] > 200][:, :3]
+    if len(ink) < 10:
+        return None
+    b, g, r = (int(v) for v in np.median(ink, axis=0))
+    if max(r, g, b) - min(r, g, b) < 60 and max(r, g, b) < 120:
+        return None
+    return f"{r:02X}{g:02X}{b:02X}"
+
+
+# Units written after a number or a formula: upright text, never variables (single letters that are also common
+# variables – t, x, a – are not here: "Q=\\frac{U^2}{R}t" keeps its t in the equation)
+UNITS = {
+    "m", "cm", "mm", "km", "dm", "nm", "μm", "s", "ms", "min", "h", "kg", "g", "mg", "N", "kN", "J", "kJ", "MJ",
+    "W", "kW", "MW", "V", "kV", "mV", "A", "mA", "Ω", "kΩ", "Hz", "kHz", "MHz", "Pa", "kPa", "MPa", "atm", "mol",
+    "K", "°C", "rad", "l", "L", "eV", "MeV", "C", "μC", "F", "μF", "T", "Wb", "dB", "%", "vòng", "lần",
+}
+
+
+def _unit(word: str) -> bool:
+    return bool(word) and all(p in UNITS for p in word.split("/"))
+
+
 def _leaves(items) -> str:
     return "".join(mathocr.SYMBOL_TEXT.get(n[1], n[1]) for n in mathocr._walk(items) if n[0] == "t")
 
@@ -412,11 +471,21 @@ def _risky(d: mathocr.MathDecision, ocr: str) -> str | None:
       - an exponent that is not a signed number or letter, a degree or primes (10^{-4} rad/s read as 10^{- rad/s});
       - a lone letter whose case only its height tells as a numerator or denominator (s/t read as S/t), and a
         numerator, denominator or root without a letter or digit (\\frac{}{\\Delta l});
-      - a leading "+" (k = … read as + = …)."""
+      - a leading "+" (k = … read as + = …);
+      - a bar over a point pair (\\overline{MA}: in exams mostly the vector \\overrightarrow{MA} whose arrowhead the
+        reading missed), a vector over several small letters (m\\vec{v} read as \\vec{mv})."""
     if re.match(r"\+(?!\d)", d.as_latex()):
         return "leading plus"
     items, _ = mathocr._parse(d.as_latex())
     for node in mathocr._walk(items):
+        if node[0] == "f" and node[1] in ("overline", "bar"):
+            text = re.sub(r"\s", "", _leaves(node[3][0]))
+            if re.fullmatch(r"[A-Z]{2,}", text):  # Latin capitals (not \\overline{\\Delta L}, a mean value)
+                return "bar over a point pair"  # \overrightarrow{MA} read as \overline{MA}: the arrowhead missed
+        if node[0] == "f" and node[1] in ("vec", "overrightarrow"):
+            text = re.sub(r"\s", "", _leaves(node[3][0]))
+            if len(text) > 1 and re.search(r"[a-z]", text):
+                return "vector over several small letters"  # m\vec{v} read as \vec{mv}
         if node[0] == "f" and node[1] in ("frac", "sqrt"):
             for arg in node[3]:
                 text = re.sub(r"\s", "", _leaves(arg))
@@ -454,13 +523,48 @@ def _glued(items: list) -> list:
     return out
 
 
+def _main_line(items: list) -> list:
+    """A row of an equation without the model's stray spaces: before a script (its base is the number or letter
+    before it: "10\\ ^{-18}"), and between a fraction or root and the letters after it ("\\frac{1}{2}\\ at^{2}")."""
+    out: list = []
+    for k, node in enumerate(items):
+        nxt = items[k + 1] if k + 1 < len(items) else None
+        if node[0] == "s" and node[1] is None and len(out) > 1 and out[-1] == ["t", "\\ "] and out[-2][0] in ("t", "g"):
+            out.pop()  # "10\\ ^{-18}": parsed as a space and a script without base
+            node = ["s", out.pop(), node[2], node[3]]
+        elif node == ["t", "\\ "] and out and out[-1][0] == "f" and nxt is not None and (
+            (nxt[0] == "t" and nxt[1][:1].isalpha()) or (nxt[0] == "s" and nxt[1] is not None and nxt[1][1][:1].isalpha())
+        ):
+            continue
+        if node[0] == "g":
+            node = ["g", _main_line(node[1])]
+        out.append(node)
+    return out
+
+
+# a unit after a number of an equation ("=5\\ m/s", "=45,22\\ mm"): written upright, not as variables
+_EQ_UNIT = re.compile(r"(?<=\d)\\ ([A-Za-zΩμ°%]+(?:/[A-Za-zΩμ°%]+)*)(?=(?:\^\{[^{}]*\})?(?:$|[=,;.:]|\\ ))")
+
+
 def _tight(d: mathocr.MathDecision) -> mathocr.MathDecision:
-    """The decision without spaces inside its scripts (the model's "10^{-\\,23}": superscript "- 23") and inside the
-    numbers of its fractions and roots ("\\frac{2\\ 1}{4}")."""
+    """The decision without stray spaces: inside its scripts (the model's "10^{-\\,23}": superscript "- 23"),
+    inside the numbers of its fractions and roots ("\\frac{2\\ 1}{4}"), before a script, after a fraction before
+    letters; in text, Tesseract's spaces around "=" and after a sign ("y= ax", "q= - 4"). Units after a number of an
+    equation upright (\\mathrm)."""
     if d.kind == "text":
-        parts = [(text if script is None else re.sub(r"\s", "", text), script) for text, script in d.parts]
+        parts = []
+        for k, (text, script) in enumerate(d.parts):
+            if script is not None:
+                text = re.sub(r"\s", "", text)
+            else:
+                text = re.sub(r"\s*=\s*", "=", text)
+                text = re.sub(r"(?<=[=(])-\s+(?=\d)", "-", text)
+                if k + 1 < len(d.parts) and d.parts[k + 1][1] is not None:
+                    text = text.rstrip()  # "6,72.10 " before its exponent
+            parts.append((text, script))
         return mathocr.MathDecision("text", parts=[p for p in parts if p[0]], conf=d.conf, source=d.source)
     items, _ = mathocr._parse(d.latex)
+    items = _main_line(items)
 
     def tight(items):
         out = []
@@ -479,7 +583,12 @@ def _tight(d: mathocr.MathDecision) -> mathocr.MathDecision:
                     node[slot] = tight(node[slot])
         elif node[0] == "f" and node[1] in ("frac", "sqrt"):
             node[3][:] = [_glued(arg) for arg in node[3]]
-    return mathocr.MathDecision("eq", latex=mathocr._ser(items), tail=d.tail, conf=d.conf, source=d.source)
+    latex = mathocr._ser(items)
+    upright = _EQ_UNIT.sub(lambda m: "\\ \\mathrm{%s}" % m.group(1) if _unit(m.group(1)) else m.group(0), latex)
+    latex = upright if _converts(upright) else latex
+    if not _converts(latex):
+        latex = d.latex
+    return mathocr.MathDecision("eq", latex=latex, tail=d.tail, conf=d.conf, source=d.source)
 
 
 def _without_next_punct(text: str, after: str) -> str:
@@ -498,18 +607,27 @@ def _apply(f: dict, h: Holder, d: mathocr.MathDecision, page_font: str = FONT) -
         return False
     font = _font(h.runs, i) or page_font
     after = _after(h, run)
+    color = run.color or _ink_color(run.image)  # a red answer stays red
     if d.kind == "eq":
-        run.math = run.math_text = d.latex
+        latex, tail = d.latex, d.tail
+        # letters after the last fraction or root that are not a unit are the equation's variables (V=\\frac{1}{3}Bh)
+        m = re.fullmatch(r"\s*([A-Za-z]+)(\s*[.,;:]*)", tail)
+        if m and not _unit(m.group(1)):
+            joined = latex + (" " if re.search(r"\\[A-Za-z]+$", latex) else "") + m.group(1)
+            if _converts(joined):
+                latex, tail = joined, m.group(2).strip()
+        run.math = run.math_text = latex
         run.font = font  # an inline equation (docx_builder._keep_inline): a lone one is not centred by Word
-        tail = _without_next_punct(d.tail, after)
+        run.color = color
+        tail = _without_next_punct(tail, after)
         if tail:
-            h.runs.insert(i + 1, Run(tail, size=run.size, font=font, color=run.color))
+            h.runs.insert(i + 1, Run(tail, size=run.size, font=font, color=color))
         f["read"] = "eq"
         return True
     texts = [(text, script) for text, script in d.parts if text]
     if texts and texts[-1][1] is None:
         texts[-1] = (_without_next_punct(texts[-1][0], after), None)
-    parts = [Run(text, size=run.size, font=font, color=run.color, script=script) for text, script in texts if text]
+    parts = [Run(text, size=run.size, font=font, color=color, script=script) for text, script in texts if text]
     if not parts:
         return False
     h.runs[i : i + 1] = parts

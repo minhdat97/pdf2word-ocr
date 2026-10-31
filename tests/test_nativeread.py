@@ -197,6 +197,26 @@ class HolderTest(unittest.TestCase):
         self.assertTrue(runs[1].image)
 
 
+    def test_coloured_picture_keeps_its_colour(self):
+        img = np.zeros((60, 160, 4), np.uint8)
+        cv2.putText(img, "4,5", (5, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 220, 255), 3)  # red ink (BGR)
+        run = Run(text="￼", size=12.0, image=cv2.imencode(".png", img)[1].tobytes(), image_w=38.4, image_h=14.4)
+        runs = [Run("v = ", font="Times"), run, Run(" m/s", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        self.read(runs, p, FakeReader("4,5"))
+        self.assertEqual(runs[1].color, "DC0000")
+        self.assertIsNone(nativeread._ink_color(picture_run().image))  # black ink: no colour
+
+    def test_variables_after_a_fraction_stay_in_the_equation(self):
+        runs = [Run("Công thức ", font="Times"), picture_run(), Run(" đúng.", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        f, _budget = self.read(runs, p, FakeReader(r"V=\frac{1}{3}Bh"))
+        self.assertEqual((f["read"], runs[1].math), ("eq", r"V=\frac{1}{3}Bh"))
+        runs = [Run("Ta có ", font="Times"), picture_run(), Run(".", font="Times")]
+        p = Paragraph(text="", x0=0, y0=0, x1=200, y1=14, font_pt=12, runs=runs)
+        f, _budget = self.read(runs, p, FakeReader(r"t=\frac{21}{5}\ s"))
+        self.assertEqual((runs[1].math, runs[2].text), (r"t=\frac{21}{5}", " s"))  # a unit stays text after it
+
     def test_symbol_font_neighbour_is_not_the_reading_font(self):
         # "⇒" typed in Symbol right before the picture: Word would draw the reading's letters as Greek
         runs = [Run("Suy ra ", font="Times New Roman"), Run("⇒", font="Symbol"), Run("\t"), picture_run()]
@@ -296,7 +316,7 @@ class BoundsTest(unittest.TestCase):
         with mock.patch.object(nativeread, "_reader", return_value=FakeReader("x_{A}")), \
                 mock.patch.object(nativeread, "_crop", side_effect=AssertionError("decoded")):
             nativeread.read_pictures(pymupdf.open().new_page(), [f], [h], budget)
-        self.assertEqual((budget.read, budget.unsure), (0, 1))
+        self.assertEqual((budget.read, budget.unsure, budget.skipped, budget.left), (0, 0, 1, 200))  # not charged
 
     def test_rotated_page_keeps_its_pictures(self):
         # its boxes are the unrotated page's, its rendering (Tesseract's words) is turned
@@ -308,7 +328,7 @@ class BoundsTest(unittest.TestCase):
         budget = nativeread.FormulaBudget(200, ["vie"])
         with mock.patch.object(nativeread, "_reader", return_value=FakeReader(r"f=\frac{1}{T}")):
             nativeread.read_pictures(page, [f], [h], budget)
-        self.assertEqual((budget.read, budget.unsure), (0, 1))
+        self.assertEqual((budget.read, budget.unsure, budget.skipped, budget.left), (0, 0, 1, 200))  # not charged
 
 
 class RiskyTest(unittest.TestCase):
@@ -324,6 +344,8 @@ class RiskyTest(unittest.TestCase):
             (D("text", parts=[("x", None), ("A", "sub")]), "xÀ"),  # script letters by Vietnamese ink
             (D("eq", latex=r"v=\frac{s}{t}"), ""),  # s/S: only the glyph's height tells
             (D("eq", latex=r"+=\frac{676}{35}"), ""),
+            (D("eq", latex=r"\vec{F}=-\vec{kx}"), ""),  # -k\vec{x}
+            (D("eq", latex=r"\overline{MA}+\overline{MB}"), ""),  # vectors whose arrowheads were missed
         ]:
             with self.subTest(d.as_latex()):
                 self.assertIsNotNone(nativeread._risky(d, ocr))
@@ -337,6 +359,8 @@ class RiskyTest(unittest.TestCase):
             D("text", parts=[("6,02.10", None), ("23", "super"), (" mol", None), ("-1", "super")]),
             D("eq", latex=r"f=\frac{1}{T}"),
             D("eq", latex=r"\frac{\Delta v}{\Delta t}"),
+            D("eq", latex=r"A=\overline{A}\pm\Delta A"),  # mean values
+            D("eq", latex=r"\overline{\Delta L}=0,03"),
         ]:
             with self.subTest(d.as_latex()):
                 self.assertIsNone(nativeread._risky(d, "x"))
@@ -349,6 +373,11 @@ class RiskyTest(unittest.TestCase):
         # numbers of fractions and roots: "2 1" over 4 in Word otherwise; a space between words stays
         self.assertEqual(nativeread._tight(D("eq", latex=r"\frac{2\ 1}{4}+\sqrt{1,2\ 5}")).latex, r"\frac{21}{4}+\sqrt{1,25}")
         self.assertEqual(nativeread._tight(D("eq", latex=r"\frac{m\ g}{2}")).latex, r"\frac{m\ g}{2}")
+        # stray spaces: before an exponent, after a fraction before letters; units after a number upright
+        self.assertEqual(nativeread._tight(D("eq", latex=r"x=10\ ^{-18}+\frac{1}{2}\ at^{2}")).latex, r"x=10^{-18}+\frac{1}{2}at^{2}")
+        self.assertEqual(nativeread._tight(D("eq", latex=r"\overline{L}=45,22\ mm")).latex, r"\overline{L}=45,22\ \mathrm{mm}")
+        d = nativeread._tight(D("text", parts=[("q", None), ("2", "sub"), ("= - 4.10 ", None), ("-8", "super"), (" C", None)]))
+        self.assertEqual(d.as_latex(), "q_{2}=-4.10^{-8} C")
 
 
 class PlainReadingsTest(unittest.TestCase):

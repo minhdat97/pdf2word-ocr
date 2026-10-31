@@ -330,11 +330,13 @@ async function convert(e, again = false) {
       if (info.native_formulas_over) {
         notes.push(`${info.native_formulas_over} công thức quá giới hạn ${info.max_formulas} công thức/file nên giữ dạng ảnh.`);
       }
+      // không thử đọc: trang xoay, ảnh quá lớn, hết thời gian đọc của file
+      if (info.native_formulas_skipped) notes.push(`${info.native_formulas_skipped} công thức chưa chuyển được nên giữ dạng ảnh.`);
       if (scanCareful && info.formulas_skipped) {
         notes.push(`File hơn ${ci.max_scan_pages || 5} trang scan nên công thức ở trang scan chưa chuyển.`);
       }
       const failed = info.native_formulas_failed || (scanCareful && info.formulas && info.formulas !== "model");
-      if (failed || (again && !read && !kept && !info.native_formulas_over)) {
+      if (failed || (again && !read && !kept && !info.native_formulas_over && !info.native_formulas_skipped)) {
         notes.push("Máy chủ chưa chuyển được công thức lúc này.");
       }
     }
@@ -342,7 +344,8 @@ async function convert(e, again = false) {
     // Công thức còn dạng ảnh mà mô hình đọc được: của trang có chữ (tối đa max_formulas mỗi file), của trang scan khi
     // ô của trang scan dùng được. Một nút chuyển lại với mô hình (cả trang scan khi ô dùng được); thời gian ước: lần
     // vừa rồi + mỗi công thức, mỗi trang có công thức dạng ảnh (Tesseract đọc lại trang), mỗi trang scan.
-    const nativeLeft = !info.careful && ci.available && ci.max_formulas > 0 ? info.native_formula_pictures || 0 : 0;
+    const readable = info.native_readable_pictures ?? info.native_formula_pictures;  // ảnh lần chuyển lại sẽ thử đọc
+    const nativeLeft = !info.careful && ci.available && ci.max_formulas > 0 ? readable || 0 : 0;
     const scanLeft = !info.careful && state.carefulOk ? info.formula_pictures || 0 : 0;
     if (nativeLeft + scanLeft) {
       state.estimate = seconds

@@ -3363,6 +3363,7 @@ def native_page(
     layout.equations = sum(1 for r in placed if r.math)
     layout.native_formula_pictures = len(placed) - layout.equations
     layout.native_formulas_read = sum(1 for f in ex.formulas if f.get("read"))
+    layout.native_readable_pictures = nativeread.readable(page, ex.formulas, _holders(flow))
     if ex._forms_doc is not None:  # the page copy of MathType forms: its pictures are drawn
         ex._forms_doc.close()
         ex._forms_doc = None
