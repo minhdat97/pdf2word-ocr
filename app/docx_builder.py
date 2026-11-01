@@ -20,6 +20,7 @@ from .omml import latex_to_omml
 
 FONT = "Times New Roman"
 EMU_PER_PT = 12700
+SAME_PAPER = 3.0  # pt: page sizes this close are one paper size (no new Word section)
 BOTTOM_SLACK = 10.0  # pt below the lowest line of the fullest page
 TAB_ALIGN = {
     "left": WD_TAB_ALIGNMENT.LEFT,
@@ -45,7 +46,9 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def _margins(pages: list[PageLayout], header: list[Paragraph], footer: list[Paragraph]):
+def _margins(pages: list[PageLayout], header: list[Paragraph], footer: list[Paragraph], ref_height: float | None = None):
+    """(left, right, top, bottom) margins of these pages; ref_height: the height of the page the footer lines were
+    measured on (pages[0]'s by default)."""
     filled = [p for p in pages if p.elements]
     if not filled:
         return 72.0, 72.0, 72.0, 72.0
@@ -63,7 +66,7 @@ def _margins(pages: list[PageLayout], header: list[Paragraph], footer: list[Para
     if header:
         top = max(top, max(h.y1 for h in header) + 2)
     if footer:
-        bottom = max(bottom, pages[0].height_pt - min(f.y0 for f in footer) + 2)
+        bottom = max(bottom, (ref_height or pages[0].height_pt) - min(f.y0 for f in footer) + 2)
     # Top/bottom may be tiny: content placed near the paper edge must still fit.
     return (_clamp(left, 14, 108), _clamp(right, 14, 108), _clamp(top, 4, 108), _clamp(bottom, 4, 108))
 
@@ -539,11 +542,24 @@ def _fill_story(story, paras: list[Paragraph], margin_left: float, right_edge: f
 def _section_starts(pages: list[PageLayout], versions: list[Version]) -> list[int]:
     """Pages that open a Word section: where the paper size or orientation changes (a landscape table after portrait
     questions), and where each exam version starts and ends (its own page numbering)."""
-    size = [(round(p.width_pt), round(p.height_pt)) for p in pages]
-    starts = {0} | {i for i in range(1, len(pages)) if size[i] != size[i - 1]}
+    # (sizes a few points apart are one paper: A4 written as 595.28 × 841.89 or 595.5 × 842.5)
+    starts = {0} | {
+        i for i in range(1, len(pages))
+        if abs(pages[i].width_pt - pages[i - 1].width_pt) > SAME_PAPER or abs(pages[i].height_pt - pages[i - 1].height_pt) > SAME_PAPER
+    }
     for v in versions:
         starts |= {v.start} | ({v.end + 1} if v.end + 1 < len(pages) else set())
     return sorted(starts)
+
+
+def _empty_story(story) -> None:
+    """An unlinked header or footer with nothing to show: its one empty paragraph a point high, so it does not
+    push the body (Word moves the body below a header or footer taller than the margin)."""
+    pf = story.paragraphs[0]._p.get_or_add_pPr()
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:line"), "20")
+    spacing.set(qn("w:lineRule"), "exact")
+    pf.insert(0, spacing)
 
 
 def _break_section(doc) -> object:
@@ -566,11 +582,14 @@ def _break_section(doc) -> object:
     return section
 
 
-def _restart_numbering(section) -> None:
-    """Page numbers of the section count from 1 (an exam version's own pages)."""
+def _restart_numbering(section, restart: bool) -> None:
+    """Page numbers of the section count from 1 (an exam version's own pages), or go on (python-docx copies the
+    previous section's restart into a new section)."""
     sect_pr = section._sectPr
     for old in sect_pr.findall(qn("w:pgNumType")):
         sect_pr.remove(old)
+    if not restart:
+        return
     num = OxmlElement("w:pgNumType")
     num.set(qn("w:start"), "1")
     later = next((sect_pr.find(qn(t)) for t in ("w:cols", "w:formProt", "w:vAlign", "w:noEndnote", "w:titlePg",
@@ -607,35 +626,51 @@ def build_docx(
     starts = _section_starts(pages, versions)
     ends = starts[1:] + [len(pages)]
 
+    # the versions' lines are all headers or all footers (one zone): only that story is each section's own
+    own_story = "header" if versions and all(v.line.zone == "top" for v in versions) else "footer"
+
     def open_section(k: int) -> tuple[float, float, float, float]:
         """Set up the section of pages starts[k]..; (left margin, top margin, right edge, content bottom)."""
         first, group = starts[k], pages[starts[k] : ends[k]]
         section = doc.sections[0] if k == 0 else _break_section(doc)
-        version = next((v for v in versions if v.start == first), None)
+        version = next((v for v in versions if v.start <= first <= v.end), None)
+        # the page the header/footer lines were measured on (a version's first page; else the file's first page):
+        # their distance from the paper's edge stays that of the PDF on a page of another size
+        ref = pages[version.start] if version else pages[0]
         top_lines, bottom_lines = header, footer
         if versions:
             line = [version.line] if version else []
-            top_lines, bottom_lines = (line, []) if line and line[0].zone == "top" else ([], line)
+            if version and any(version.start < s <= version.end for s in starts):
+                # a version over several sections (a landscape page inside it): its total as the PDF prints it
+                total = str(version.end - version.start + 1)
+                line = [replace(version.line, runs=[
+                    replace(r, text=total, field=None) if r.field == "SECTIONPAGES" else r for r in version.line.runs])]
+            top_lines, bottom_lines = (line, []) if own_story == "header" else ([], line)
         section.page_width, section.page_height = Pt(group[0].width_pt), Pt(group[0].height_pt)
         if len(starts) > 1:
             section.orientation = WD_ORIENT.LANDSCAPE if group[0].width_pt > group[0].height_pt else WD_ORIENT.PORTRAIT
-        left, right, top, bottom = _margins(group, top_lines, bottom_lines)
+        left, right, top, bottom = _margins(group, top_lines, bottom_lines, ref.height_pt)
         section.left_margin, section.right_margin = Pt(left), Pt(right)
         section.top_margin, section.bottom_margin = Pt(top), Pt(bottom)
         right_edge = group[0].width_pt - right
+        own = top_lines if own_story == "header" else bottom_lines
         if versions and k:  # each section its own lines (none on pages outside the versions: a matrix, a key)
-            section.header.is_linked_to_previous = False
-            section.footer.is_linked_to_previous = False
+            story = section.header if own_story == "header" else section.footer
+            story.is_linked_to_previous = False
+            if not own:
+                _empty_story(story)
         if top_lines:
             section.header_distance = Pt(max(min(h.y0 for h in top_lines), 4))
             if k == 0 or versions:
                 _fill_story(section.header, top_lines, left, right_edge, normal)
         if bottom_lines:
-            section.footer_distance = Pt(max(group[0].height_pt - max(f.y1 for f in bottom_lines), 4))
+            section.footer_distance = Pt(max(ref.height_pt - max(f.y1 for f in bottom_lines), 4))
             if k == 0 or versions:
                 _fill_story(section.footer, bottom_lines, left, right_edge, normal)
-        if version:
-            _restart_numbering(section)
+        if k:
+            _restart_numbering(section, version is not None and version.start == first)
+        elif version is not None:
+            _restart_numbering(section, True)
         return left, top, right_edge, group[0].height_pt - bottom
 
     z = count(251658240)

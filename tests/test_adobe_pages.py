@@ -64,6 +64,10 @@ class BrokenMapTest(unittest.TestCase):
         self.assertTrue(native._broken_map(self.chars(("𝐸", 85.4, 92.9), ("𝐸", 92.9, 92.9))))
         self.assertTrue(native._broken_map(self.chars(("�", 0, 5))))
 
+    def test_a_glyph_mapped_to_several_signs_is_fine(self):
+        # "…" written "...", ″ written ′′: not letters, the font's map is not broken
+        self.assertFalse(native._broken_map(self.chars(("′", 0, 5), ("′", 5, 5))))
+
     def test_doubled_letters_drawn_twice_are_fine(self):
         self.assertFalse(native._broken_map(self.chars(("𝑥", 0, 5), ("𝑥", 5, 10))))
 
@@ -88,6 +92,25 @@ class SplitLinesTest(unittest.TestCase):
     def test_gap_between_pieces_is_a_space(self):
         out = native._join_interleaved([line(span("p1", 87.3, 96.4, 286.1)), line(span("<", 99.7, 106.2, 286.1))])
         self.assertEqual("".join(s["text"] for s in out[0]["spans"]), "p1 <")
+
+    def test_script_inside_a_span_goes_in_its_place(self):
+        # "₂" drawn before its line, the line one span running across it ("khí H trong khí O dư"), with room for it
+        sub = line(span("2", 102.5, 106.5, 103, size=7))
+        s = span("khí H trong khí O dư", 60, 230, 100)  # "H" ends at 102.5
+        for c in s["chars"][5:]:
+            c["bbox"] = (c["bbox"][0] + 4.5, c["bbox"][1], c["bbox"][2] + 4.5, c["bbox"][3])
+            c["origin"] = (c["origin"][0] + 4.5, c["origin"][1])
+        s["bbox"] = (60, s["bbox"][1], 234.5, s["bbox"][3])
+        main = line(s)
+        out = native._join_interleaved([sub, main])
+        text = "".join(s["text"] for s in out[0]["spans"])
+        self.assertEqual(text.index("2"), text.index("H") + 1)
+
+    def test_option_label_keeps_its_tab(self):
+        # "… D." set 4 pt after the option before it: two options, not one run of text
+        a = line(span("A. p1 < p2.", 70, 124, 286))
+        b = line(span("B. p1 > p2.", 128, 182, 286))
+        self.assertEqual(len(native._join_interleaved([a, b])), 2)
 
     def test_formula_glyphs_stay_apart(self):
         # MathType glyphs without text ("!" at 7.9 pt) are grouped by _find_formulas, not joined to the text
@@ -153,6 +176,76 @@ class VersionsTest(unittest.TestCase):
         # no paragraph of its own for a section break after text: it sits in the section's last paragraph
         self.assertEqual(sum(1 for p in root.iter(W + "p") if p.find(f"{W}pPr/{W}sectPr") is not None
                              and not "".join(p.itertext()).strip()), 0)
+
+    def test_no_header_part_when_versions_use_footers(self):
+        # an empty unlinked header (one 12.6 pt paragraph 36 pt from the edge) would push the body of every page
+        pages = self.pages()
+        versions = split_versions(pages)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx(pages, out, versions=versions)
+            z = zipfile.ZipFile(out)
+            names = z.namelist()
+            empties = [z.read(n).decode() for n in names if n.startswith("word/footer") and "SECTIONPAGES" not in z.read(n).decode()]
+            root = etree.fromstring(z.read("word/document.xml"))
+        self.assertFalse(any(n.startswith("word/header") for n in names))
+        self.assertTrue(empties and all('w:lineRule="exact"' in f for f in empties))  # the key's and matrix's
+        restarts = [s.find(W + "pgNumType") is not None for s in root.iter(W + "sectPr")]
+        self.assertEqual(restarts, [True, True, False, False])  # not copied into the key and the matrix
+
+    def test_label_inside_a_piece(self):
+        for text in ("Mã đề {c} - Trang {n}/2", "Trang {n}/2 - Mã đề thi {c}", "Page {n} of 2 – {c}"):
+            pages = []
+            for code in (121, 122):
+                for n in (1, 2):
+                    t = text.format(c=code, n=n)
+                    pages.append(PageLayout(595, 842, elements=[
+                        body(f"Câu {n}"), Paragraph(t, 56, 806, 566, 818, 12, zone="bottom", runs=[Run(t)])]))
+            with self.subTest(text):
+                versions = split_versions(pages)
+                self.assertEqual([(v.start, v.end) for v in versions], [(0, 1), (2, 3)])
+                fields = [(r.text, r.field) for r in versions[0].line.runs if r.field]
+                self.assertEqual(fields, [("1", "PAGE"), ("2", "SECTIONPAGES")])  # never the code's 121
+                self.assertIn("121", "".join(r.text for r in versions[0].line.runs if not r.field))
+
+    def test_version_over_a_landscape_page(self):
+        # A4, A4 landscape, A4 in one version: three sections with its line, numbered on, the PDF's total
+        pages = []
+        for code in (121, 122):
+            for n, (w, h) in enumerate(((595, 842), (842, 595), (595, 842)), 1):
+                f = footer(code, n, 3)
+                pages.append(PageLayout(w, h, elements=[body(f"Câu {n}"), f]))
+        versions = split_versions(pages)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx(pages, out, versions=versions)
+            z = zipfile.ZipFile(out)
+            root = etree.fromstring(z.read("word/document.xml"))
+            footers = [z.read(n).decode() for n in z.namelist() if n.startswith("word/footer")]
+        sects = list(root.iter(W + "sectPr"))
+        self.assertEqual(len(sects), 6)
+        self.assertEqual([s.find(W + "pgNumType") is not None for s in sects], [True, False, False] * 2)
+        self.assertTrue(all("Mã đề" in f for f in footers))
+        self.assertFalse(any("SECTIONPAGES" in f for f in footers))
+
+    def test_footer_distance_on_another_paper(self):
+        # one numbering, an A3 page in an A4 file: the footer stays as far from the edge as on page 1
+        pages = [PageLayout(595, 842, elements=[body("a")]), PageLayout(842, 1191, elements=[body("b")])]
+        line = Paragraph("Trang 1/2", 280, 806, 320, 818, 12, zone="bottom", runs=[Run("Trang 1/2")])
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx(pages, out, footer=[line])
+            root = etree.fromstring(zipfile.ZipFile(out).read("word/document.xml"))
+        distances = [int(s.find(W + "pgMar").get(W + "footer")) for s in root.iter(W + "sectPr")]
+        self.assertEqual(distances, [480, 480])  # 842 - 818 = 24 pt
+
+    def test_near_sizes_are_one_paper(self):
+        pages = [PageLayout(595.28, 841.89, elements=[body("a")]), PageLayout(595.5, 842.5, elements=[body("b")])]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx(pages, out)
+            root = etree.fromstring(zipfile.ZipFile(out).read("word/document.xml"))
+        self.assertEqual(len(list(root.iter(W + "sectPr"))), 1)
 
     def test_one_section_stays_as_before(self):
         pages = [PageLayout(595, 842, elements=[body("a")]), PageLayout(595, 842, elements=[body("b")])]

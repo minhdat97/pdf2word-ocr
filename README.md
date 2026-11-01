@@ -411,8 +411,13 @@ tắt.
     án). Thêm/bớt trang trong Word thì số trang tự cập nhật. **File nhiều mã đề** đánh số lại từ 1 mỗi
     mã đề ("Mã đề 121 ⇥ Trang 1/3", rồi "Mã đề 122 ⇥ Trang 1/3"…): mỗi đoạn trang 1/n … n/n (phần còn lại
     của dòng giống nhau) là một section Word riêng, chân trang là chính dòng đó với số trang thành trường
-    PAGE / SECTIONPAGES, đếm lại từ 1 (`convert.split_versions`); trang không có số (đáp án, ma trận) để
-    chân trang trống. Đoạn đứng ngay sau một dòng bị bỏ
+    PAGE / SECTIONPAGES, đếm lại từ 1 (`convert.split_versions`; nhãn là cả mẩu "Trang 1/3", "1/3" hay nằm
+    trong mẩu "Mã đề 121 - Trang 1/3", "Page 1 of 3"; OCR đọc phần còn lại của dòng thành dòng riêng ở một
+    trang thì vẫn khớp, giữ dòng đầy đủ nhất); trang không có số (đáp án, ma trận) có chân trang trống cao
+    1 pt (không đẩy thân bài). Chỉ phần các mã đề dùng (chân hay đầu trang) là riêng mỗi section. Mã đề có
+    trang khổ khác ở giữa thì các section của nó cùng dòng, không đếm lại, tổng là số in trên PDF. Có mã đề
+    thì không tìm dòng lặp lại ở đầu/chân trang (trang đầu mỗi mã đề là trang lẻ: tiêu đề đề thi bị coi là
+    đầu trang lẻ của sách in hai mặt). Đoạn đứng ngay sau một dòng bị bỏ
     (đầu/chân trang, chữ watermark, link) lấy khoảng trước đoạn từ phần còn lại phía trên nó (0 ở
     đầu trang), không từ dòng đã bỏ: chữ chạy liền nên khoảng đó sẽ thành khe hở giữa trang.
   - Khoảng dòng và khoảng cách đoạn lấy từ baseline thật. Độ rộng "tự nhiên" của mỗi dòng
@@ -536,8 +541,9 @@ tắt.
      trang chỉ có một trang, chỉ bỏ dòng nằm trong dải tiêu đề/chân trang đã tìm thấy – đề 3 trang
      OCR đọc tiêu đề trang 2 khác đi từng làm câu đầu trang 2 bị coi là "tiêu đề trang chẵn".
 - **Ghi DOCX** (`app/docx_builder.py`): khổ giấy, lề, header/footer, ảnh nổi (`wp:anchor`),
-  section mới (khổ, hướng giấy, lề riêng) ở trang đổi khổ/hướng (bảng ma trận khổ ngang sau đề khổ dọc) và ở
-  đầu/cuối mỗi mã đề; dấu ngắt section nằm trong đoạn cuối của section (không thành đoạn trống riêng có thể
+  section mới (khổ, hướng giấy, lề riêng) ở trang đổi khổ/hướng (lệch dưới 3 pt là cùng khổ; bảng ma trận khổ
+  ngang sau đề khổ dọc) và ở đầu/cuối mỗi mã đề; khoảng cách chân/đầu trang giữ như trên trang PDF nó được đo
+  (trang A3 trong file A4 không đẩy chân trang lên giữa trang); dấu ngắt section nằm trong đoạn cuối của section (không thành đoạn trống riêng có thể
   tràn sang trang mới); file một khổ một cách đánh số vẫn một section như trước,
   bảng, tab stop, khoảng dòng "at least"/"exactly", tắt widow/orphan control. Lề dưới chừa 10pt
   dưới dòng thấp nhất của trang đầy nhất (Word dàn cao hơn PDF vài pt là dòng cuối đã sang trang
@@ -581,7 +587,7 @@ Kết quả hiện tại (M4 Pro):
   trước 40 ảnh công thức cao 45–77 pt nuốt 157 từ của các dòng quanh chúng, 22 trang Word "Trang x/22", bảng
   ma trận bị cắt; giờ ảnh cao 10–22 pt (12 từ còn thiếu, đều là chữ trong hình), 0 Equation sai (font toán
   bảng mã hỏng: giữ ảnh), số mũ/chỉ số đúng chỗ, mỗi mã đề một section "Mã đề 12x ⇥ Trang x/3", ma trận
-  khổ ngang; 23 trang Word (mã đề đầu đúng 3 trang, ba mã đề sau dư một trang). Bai_1–6, đề Vật lí, đề
+  khổ ngang; 20 trang Word (ba mã đề đúng 3 trang, một mã đề dư một trang, đáp án và 6 trang ma trận đúng). Bai_1–6, đề Vật lí, đề
   mẫu, zoomh, marks, bảng mẫu (bỏ/không bỏ watermark) và đề ZOOM-H giống hệt từng byte; VL1108 chỉ một
   Equation đổi cỡ 12,5 → 12 (bằng cỡ dòng).
 - "Chuyển thành công thức sửa được" trên đề đó (158 ảnh công thức): 120 đọc được – 11 Equation, 109 chữ có
@@ -654,9 +660,9 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
 
 ## Giới hạn
 
-- PDF in từ Word qua Adobe PDF Library: Word dàn một số trang dài hơn PDF một hai dòng (dòng chữ, hình
-  neo đầu trang bị đẩy xuống thì chữ chạy vòng quanh hình), nên mã đề 3 trang có thể thành 4 trang Word;
-  nội dung, công thức, số mũ đúng chỗ.
+- Hình neo ở đầu trang chạm dòng đầu của câu ngay dưới (cách < 2 pt trong PDF) thì Word cho dòng đó chạy vòng
+  quanh hình; ảnh công thức rộng hơn chữ gốc làm một dòng xuống thêm: một trang đầy có thể dư một hai dòng
+  sang trang sau (đề Lí 12 bốn mã đề: một mã đề 4 trang thay vì 3).
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
   scan (OCR) chưa có ô gộp.

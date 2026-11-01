@@ -52,8 +52,8 @@ def _same_numbers(found: list[tuple[int, str]], total: int) -> bool:
     """The numbers of a line seen on several pages (page index, text) are the same on each, or the ones that
     change follow the page number (with a fixed offset: a file that starts at page 5) or are the page count."""
     runs = [(i, re.findall(r"\d+", text)) for i, text in found]
-    if len({len(r) for _, r in runs}) != 1:
-        return False
+    if len({len(r) for _, r in runs}) != 1 or any(len(n) > 9 for _, r in runs for n in r):
+        return False  # (numbers of many digits are no page numbers; int() refuses thousands of them)
     for pos in range(len(runs[0][1])):
         values = [int(r[pos]) for _, r in runs]
         if len(set(values)) == 1:
@@ -101,77 +101,101 @@ def _page_number_fields(template: Paragraph, occurrences: list[tuple[int, str]],
     template.runs = [replace(r, text=canonical(r.text)) for r in runs]
 
 
-def _label_numbers(el: Paragraph) -> tuple[int, int, int] | None:
-    """(piece index, page, total) of a header/footer line's page label "Trang 2/3" ("2 / 3", "Page 2 of 3")."""
+# a page label inside a header/footer piece: "Trang 2/3", "Trang 1/2 - Mã đề thi 121", "Page 2 of 3"
+_LABEL_IN = re.compile(r"\b(?:trang|page)\s*(\d{1,4})\s*(?:/|of)\s*(\d{1,4})\b", re.I)
+
+
+def _piece_text(runs: list[Run]) -> str:
+    return "".join(r.text for r in runs)
+
+
+def _label_numbers(el: Paragraph) -> tuple[int, int, int, int, int] | None:
+    """(piece index, page, total, start, end) of a header/footer line's page label: a piece that is only a label
+    ("Trang 2/3", "2/3") or holds one ("Mã đề 121 - Trang 2/3", "Page 2 of 3"); start/end: where the label's
+    numbers are in the piece's text."""
     for j, (_x0, _x1, runs) in enumerate(_pieces_of(el)):
-        text = "".join(r.text for r in runs).strip()
-        numbers = re.findall(r"\d+", text)
-        if text and looks_like_page_label(text) and len(numbers) == 2:
-            return j, int(numbers[0]), int(numbers[1])
+        text = _piece_text(runs)
+        numbers = list(re.finditer(r"\d+", text))
+        if text.strip() and looks_like_page_label(text.strip()) and len(numbers) == 2 \
+                and all(len(m.group()) <= 4 for m in numbers):  # (a number of thousands of digits: not a page)
+            return j, int(numbers[0].group()), int(numbers[1].group()), numbers[0].start(), numbers[1].end()
+        if (m := _LABEL_IN.search(text)) is not None:
+            return j, int(m.group(1)), int(m.group(2)), m.start(1), m.end(2)
     return None
 
 
 def split_versions(pages: list[PageLayout]) -> list[Version]:
     """A file of several exam versions numbers each version's pages from 1 ("Mã đề 121 … Trang 1/3", then 122's
     "Trang 1/3"…): each run of pages a header/footer line numbers 1/n … n/n, the rest of the line the same on them,
-    becomes a Version – that line, its page numbers as fields counting the run's own pages (PAGE, SECTIONPAGES),
-    for a Word section of its own (docx_builder) – and the line leaves its pages. [] when the numbering does not
-    start again at least once: one numbering for the file (extract_header_footer)."""
-    found: dict[int, tuple[Paragraph, int, int, int, str]] = {}  # page -> (line, piece, number, total, rest)
+    becomes a Version – that line, its page numbers as fields counting the version's own pages (PAGE,
+    SECTIONPAGES), for a Word section of its own (docx_builder) – and the line leaves its pages. [] when the
+    numbering does not start again at least once: one numbering for the file (extract_header_footer). OCR may read
+    the rest of the line apart on one page ("Mã đề 121" on a line of its own): an empty rest matches any, and the
+    line kept is the fullest one."""
+    found: dict[int, tuple[Paragraph, tuple, str]] = {}  # page -> (line, label, rest)
     for i, page in enumerate(pages):
         for el in page.elements:
             if isinstance(el, Paragraph) and el.zone and (label := _label_numbers(el)) is not None:
-                rest = _norm(" ".join("".join(r.text for r in runs) for j, (_a, _b, runs) in enumerate(_pieces_of(el))
-                                      if j != label[0]))
-                found.setdefault(i, (el, *label, rest))
+                pieces = _pieces_of(el)
+                own = _piece_text(pieces[label[0]][2])
+                rest = _norm(" ".join([own[: label[3]] + own[label[4] :]] + [
+                    _piece_text(runs) for j, (_a, _b, runs) in enumerate(pieces) if j != label[0]]))
+                rest = re.sub(r"[^\w#]", "", rest.replace("trang", "").replace("page", ""))
+                found.setdefault(i, (el, label, rest))
     runs: list[tuple[int, int]] = []
     i = 0
     while i < len(pages):
         line = found.get(i)
-        if line is None or line[2] != 1:
+        if line is None or line[1][1] != 1:
             i += 1
             continue
         end = i
-        while (nxt := found.get(end + 1)) is not None and nxt[2] == found[end][2] + 1 and nxt[3] == line[3] \
-                and nxt[4] == line[4] and nxt[0].zone == line[0].zone:
+        rests = {line[2]} - {""}
+        while (nxt := found.get(end + 1)) is not None and nxt[1][1] == found[end][1][1] + 1 \
+                and nxt[1][2] == line[1][2] and nxt[0].zone == line[0].zone and len(rests | ({nxt[2]} - {""})) <= 1:
+            rests |= {nxt[2]} - {""}
             end += 1
-        if end - i + 1 == line[3]:  # all its pages: 1/n … n/n
+        if end - i + 1 == line[1][2]:  # all its pages: 1/n … n/n
             runs.append((i, end))
         i = end + 1
     if len(runs) < 2:
         return []
     versions = []
     for start, end in runs:
-        el, piece, _number, _total, _rest = found[start]
-        line = replace(el, runs=_label_fields(el, piece))
-        versions.append(Version(start, end, line))
-        for k in range(start, end + 1):
-            _keep_only(pages[k], [e for e in pages[k].elements if e is not found[k][0]])
+        k = max(range(start, end + 1), key=lambda p: (len(found[p][2]), -p))  # the fullest line
+        el, label, _rest = found[k]
+        versions.append(Version(start, end, replace(el, runs=_label_fields(el, label[0], label[3], label[4]))))
+        for p in range(start, end + 1):
+            _keep_only(pages[p], [e for e in pages[p].elements if e is not found[p][0]])
     return versions
 
 
-def _label_fields(el: Paragraph, piece: int) -> list[Run]:
-    """The line's runs with the label's two numbers (piece `piece`) as PAGE and SECTIONPAGES fields."""
+def _label_fields(el: Paragraph, piece: int, start: int, end: int) -> list[Run]:
+    """The line's runs with the two numbers of its label (piece `piece`, text offsets start..end) as PAGE and
+    SECTIONPAGES fields."""
     out: list[Run] = []
-    k = j = 0
+    j = k = off = 0
     for r in el.runs or [Run(el.text, size=el.font_pt, bold=el.bold)]:
         if r.text == TAB:
             j += 1
+            off = 0
             out.append(r)
             continue
         if j != piece or r.field:
             out.append(r)
+            off += len(r.text) if j == piece else 0
             continue
         pos = 0
         for m in re.finditer(r"\d+", r.text):
-            if k < 2:
+            if start <= off + m.start() < end and k < 2:
                 if m.start() > pos:
                     out.append(replace(r, text=r.text[pos : m.start()]))
                 out.append(replace(r, text=m.group(), field="PAGE" if k == 0 else "SECTIONPAGES"))
                 pos = m.end()
-            k += 1
+                k += 1
         if pos < len(r.text):
             out.append(replace(r, text=r.text[pos:]))
+        off += len(r.text)
     return out
 
 
@@ -576,9 +600,9 @@ def convert(
         raise TaskError("no_text_found")
     removed_pictures, removed_lines = strip_watermarks(pages) if strip else (0, 0)
     versions = split_versions(pages)
-    header, footer = extract_header_footer(pages)
-    if versions:  # each version's own line numbers its pages: no line for the whole file
-        header, footer = [], []
+    # each version's own line numbers its pages: no line for the whole file, and no search for repeated lines
+    # either (a version's first page is an odd page: its title would be taken for a two-sided book's odd header)
+    header, footer = ([], []) if versions else extract_header_footer(pages)
     out = Path(tempfile.mkstemp(suffix=".docx")[1])
     build_docx(pages, out, header, footer, versions)
     return out, {

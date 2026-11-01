@@ -57,6 +57,9 @@ TALL_BOX = 2.0
 MEET = 0.5  # em: lines of a block on one baseline this close (or running into each other) are one line
 SCRIPT_CHARS = 4  # characters a superscript or subscript line holds at most ("³", "-1", "max")
 SCRIPT_SIZE = 0.8  # a script line's size against its line's
+SPACE_GAP = 0.15  # em: a gap this wide between two joined lines' text is a space ("dm³ và": 2.3 pt at 12 pt)
+JOIN_SPANS_MAX = 400  # spans a line joined from pieces holds at most (Word's lines: a few dozen)
+JOIN_LINES_MAX = 600  # lines of a block past which scripts and meeting lines are not joined
 OCR_REGION_MIN_AREA = 0.15  # share of the page a raster image needs before OCR is tried
 SOFT_HYPHEN = "\xad"
 WATERMARK_MIN_AREA = 0.02  # share of the page from which a background is taken for a watermark
@@ -813,7 +816,7 @@ def _broken_map(chars: list[dict]) -> bool:
         if c["c"] == "\ufffd":
             return True
         if (
-            prev is not None and c["c"] == prev["c"] and c["c"].strip() and c["bbox"][2] - c["bbox"][0] < 0.01
+            prev is not None and c["c"] == prev["c"] and c["c"].isalpha() and c["bbox"][2] - c["bbox"][0] < 0.01
             and prev["bbox"][2] - prev["bbox"][0] >= 0.01
         ):
             return True
@@ -843,11 +846,20 @@ def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | N
                 return None
             unmapped |= chars
         if any(sub == "Type0" for _x, sub, _ns in fonts):  # whatever its name: the span's own name may differ
-            for b in page.get_text("rawdict", flags=NO_CID_TEXT)["blocks"]:
+            doubled = False
+            for b in page.get_text("dict", flags=NO_CID_TEXT)["blocks"]:
                 for ln in b.get("lines", ()):
                     for s in ln["spans"]:
-                        if UNICODE_MATH_FONT.search(s["font"]) and _broken_map(s["chars"]):
-                            return None
+                        if UNICODE_MATH_FONT.search(s["font"]):
+                            if "\ufffd" in s["text"]:
+                                return None
+                            doubled = doubled or any(a == b and a.isalpha() for a, b in pairwise(s["text"]))
+            if doubled:  # a letter twice in a row: its widths tell a glyph mapped twice (_broken_map)
+                for b in page.get_text("rawdict", flags=NO_CID_TEXT)["blocks"]:
+                    for ln in b.get("lines", ()):
+                        for s in ln["spans"]:
+                            if UNICODE_MATH_FONT.search(s["font"]) and _broken_map(s["chars"]):
+                                return None
         return frozenset(unmapped), names
     except Exception:  # noqa: BLE001 – a broken font object: pictures, the file still converts
         return None
@@ -1609,7 +1621,9 @@ class _Extractor:
         for r in rows:
             if id(r) in parts:
                 _n, size, baseline = max(parts[id(r)], key=lambda m: (m[0], m[1]))
-                if r.size <= SCRIPT_SIZE * size:  # only where a script's line came first
+                # only where a script's line came first: smaller and off the line's baseline (not a code listing's
+                # small line numbers on the code's baseline)
+                if r.size <= SCRIPT_SIZE * size and abs(r.baseline - baseline) >= 0.15 * size:
                     r.size, r.baseline = size, baseline
         return _join_split_lines(rows)
 
@@ -1800,8 +1814,11 @@ class _Extractor:
             for i in f["drawings"]:
                 ink |= self.drawings[i]["rect"]
             parts += [(pymupdf.Rect(self.drawings[i]["rect"]), 1.0, 1.0) for i in f["drawings"]]
+            # glyphs whose boxes _tight_boxes cut: their ink may reach past the em (a display ∫, a two-row brace)
+            reach = [(pymupdf.Rect(c["full_bbox"]), 0.2 * size) for c, size in zip(f["chars"], sizes) if "full_bbox" in c]
             out.append({
                 "rect": f["rect"], "size": median(sizes), "baseline": baseline, "parts": parts, "run": None, "ink": ink,
+                "reach": reach,
                 "pieces": pieces if f.get("mt") else self._equation(f, span_of, fraction_bars),
                 "mt": bool(f.get("mt")), "form": f.get("form"),
             })
@@ -2393,7 +2410,10 @@ class _Extractor:
             except Exception:  # noqa: BLE001 – drawn from the page instead
                 f = {**f, "form": None}
         rect = f["rect"]
-        clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6) & self.page.rect
+        clip = pymupdf.Rect(rect.x0, rect.y0 - 0.6, rect.x1, rect.y1 + 0.6)
+        for r, _pad in f.get("reach", ()):
+            clip.y0, clip.y1 = min(clip.y0, r.y0), max(clip.y1, r.y1)
+        clip &= self.page.rect
         full = _rgb(self.page.get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
         ground = _rgb(self._ground_page().get_pixmap(dpi=FORMULA_DPI, clip=clip, alpha=False))
         h, w = full.shape[:2]
@@ -2413,6 +2433,19 @@ class _Extractor:
             y0, y1 = max(int((r.y0 - pady - clip.y0) * s), 0), min(int((r.y1 + pady - clip.y0) * s) + 1, h)
             own[y0:y1, x0:x1] = True
         shown = ink & own
+        if f.get("reach"):
+            # ink in a cut glyph's whole box counts where it is joined to the formula's own (the rest of a tall ∫);
+            # the lines above and below, also in that box, are not
+            far = np.zeros((h, w), dtype=bool)
+            for r, padx in f["reach"]:
+                x0, x1 = max(int((r.x0 - padx - clip.x0) * s), 0), min(int((r.x1 + padx - clip.x0) * s) + 1, w)
+                y0, y1 = max(int((r.y0 - clip.y0) * s), 0), min(int((r.y1 - clip.y0) * s) + 1, h)
+                far[y0:y1, x0:x1] = True
+            count, labels = cv2.connectedComponents((shown | (ink & far)).astype(np.uint8), connectivity=8)
+            joined = np.zeros(count, dtype=bool)
+            joined[np.unique(labels[shown])] = True
+            joined[0] = False
+            shown = joined[labels]
         # specks: pieces of ink without a single strong pixel (overlapping strokes of a pale
         # watermark) are not part of the formula
         count, labels = cv2.connectedComponents(shown.astype(np.uint8), connectivity=8)
@@ -2955,6 +2988,7 @@ def _tight_boxes(blocks: list[dict]) -> None:
                     x0, y0, x1, y1 = c["bbox"]
                     if y1 - y0 > TALL_BOX * size:
                         oy = c["origin"][1]
+                        c["full_bbox"] = c["bbox"]  # a formula picture still takes ink of the glyph reaching past the em
                         c["bbox"] = (x0, oy - asc * size, x1, oy - desc * size)
                 if s["chars"]:
                     s["bbox"] = (s["bbox"][0], min(c["bbox"][1] for c in s["chars"]), s["bbox"][2],
@@ -2977,38 +3011,60 @@ def _join_interleaved(lines: list[dict]) -> list[dict]:
     and a script in a line of its own joins the line whose box holds it ("³" of
     "dm³", "⁰" of "27⁰C", "₁" of "p₁" – before or after that line). A blank span
     starting on a glyph of the other line is dropped; one running under a glyph is
-    cut short at it (the printed space before the superscript, not a tab)."""
+    cut short at it (the printed space before the superscript, not a tab). A line
+    of JOIN_SPANS_MAX spans takes no more; a block of more than JOIN_LINES_MAX lines
+    only joins lines that run into each other (as before scripts and meeting lines)."""
     out: list[dict] = []
     scripts: list[tuple[int, dict]] = []  # (where it stood in out, line)
-    sizes = [b[1] for line in lines if (b := _line_baseline(line)) is not None]
+    bases: dict[int, tuple[float, float] | None] = {}
+    plain: dict[int, bool] = {}
+
+    def base_of(ln: dict):
+        if id(ln) not in bases:
+            bases[id(ln)] = _line_baseline(ln)
+        return bases[id(ln)]
+
+    def plain_of(ln: dict) -> bool:
+        if id(ln) not in plain:
+            plain[id(ln)] = _plain_line(ln)
+        return plain[id(ln)]
+
+    new_rules = len(lines) <= JOIN_LINES_MAX
+    sizes = [b[1] for line in lines if (b := base_of(line)) is not None]
     big = max(sizes, default=0.0)
     for line in lines:
-        base = _line_baseline(line)
-        if base is not None and base[1] <= SCRIPT_SIZE * big and _script_line(line) and _plain_line(line):
+        base = base_of(line)
+        if new_rules and base is not None and base[1] <= SCRIPT_SIZE * big and _script_line(line) and plain_of(line):
             scripts.append((len(out), line))
             continue
-        host = None
+        host, overlap = None, False
         if base is not None:
             for q in out:
-                qb = _line_baseline(q)
+                qb = base_of(q)
+                if qb is None or abs(qb[0] - base[0]) > 0.3 * max(qb[1], base[1]):
+                    continue
                 gap = max(line["bbox"][0] - q["bbox"][2], q["bbox"][0] - line["bbox"][2])
-                # running into each other; or meeting, both plain text (a formula's glyphs are grouped apart)
-                meets = gap < -1 or (gap < MEET * max(qb[1], base[1]) if qb else False) and _plain_line(line) and _plain_line(q)
-                if qb is not None and abs(qb[0] - base[0]) <= 0.3 * max(qb[1], base[1]) and meets:
+                overlap = gap < -1
+                # running into each other; or meeting, both plain text (a formula's glyphs are grouped apart), and the
+                # right one not an answer option ("… D." set 4 pt after option C keeps its tab)
+                right = line if line["bbox"][0] >= q["bbox"][0] else q
+                if gap < -1 or new_rules and gap < MEET * max(qb[1], base[1]) and plain_of(line) and plain_of(q) \
+                        and not OPTION_LABEL.match("".join(s["text"] for s in right["spans"]).lstrip()[:2]):
                     host = q
                     break
-        if host is None:
+        if host is None or not _merge_line(host, line, cut=not overlap):
             out.append(line)
             continue
-        _merge_line(host, line)
+        bases.pop(id(host), None)
+        plain[id(host)] = plain_of(host) and plain_of(line)
     kept = 0
     for at, line in scripts:
-        host = _script_host(line, out)
-        if host is None:  # stays where it was
+        host = _script_host(line, out, base_of, plain_of)
+        if host is None or not _merge_line(host, line):  # stays where it was
             out.insert(at + kept, line)
             kept += 1
         else:
-            _merge_line(host, line)
+            bases.pop(id(host), None)
     return out
 
 
@@ -3030,60 +3086,104 @@ def _script_line(line: dict) -> bool:
     return 0 < len(text) <= SCRIPT_CHARS
 
 
-def _script_host(line: dict, lines: list[dict]) -> dict | None:
-    """The line a script line belongs to: larger text whose box holds the script's middle, the script inside its
-    width (or just after it); the one whose baseline is nearest."""
+def _script_host(line: dict, lines: list[dict], base_of=_line_baseline, plain_of=None) -> dict | None:
+    """The line a script line belongs to: larger plain text whose box holds the script's middle, the script inside
+    its width (or just after it); the one whose baseline is nearest."""
+    plain_of = plain_of or _plain_line
     size = max(s["size"] for s in line["spans"] if s["text"].strip())
     x0, y0, x1, y1 = line["bbox"]
     cy = (y0 + y1) / 2
-    best = None
+    best, best_d = None, 0.0
     for q in lines:
-        qb = _line_baseline(q)
-        if qb is None or size > SCRIPT_SIZE * qb[1] or not _plain_line(q):
+        if not (q["bbox"][1] <= cy <= q["bbox"][3]):
             continue
-        if not (q["bbox"][1] <= cy <= q["bbox"][3]) or x0 < q["bbox"][0] - 0.3 * qb[1] or x1 > q["bbox"][2] + 0.6 * qb[1]:
+        qb = base_of(q)
+        if qb is None or size > SCRIPT_SIZE * qb[1]:
             continue
-        if best is None or abs(qb[0] - cy) < abs(_line_baseline(best)[0] - cy):
-            best = q
+        if x0 < q["bbox"][0] - 0.3 * qb[1] or x1 > q["bbox"][2] + 0.6 * qb[1] or not plain_of(q):
+            continue
+        if best is None or abs(qb[0] - cy) < best_d:
+            best, best_d = q, abs(qb[0] - cy)
     return best
 
 
-def _merge_line(host: dict, line: dict) -> None:
-    """Put line's spans into host, in order across (see _join_interleaved)."""
-    spans = host["spans"] + line["spans"]
-    boxes = [pymupdf.Rect(s["bbox"]) for s in spans if s["text"].strip()]
-    spans = [
-        s for s in spans
-        if s["text"].strip() or not any(r.x0 - 0.5 <= s["bbox"][0] < r.x1 - 0.5 for r in boxes)
-    ]
-    for k, s in enumerate(spans):
-        if s["text"].strip():
+def _cut_spans(spans: list[dict], edges: list[float]) -> list[dict]:
+    """Spans cut where an edge falls inside their text (between characters, by the characters' middles)."""
+    out = []
+    for s in spans:
+        x0, x1 = s["bbox"][0], s["bbox"][2]
+        cuts = sorted(x for x in edges if x0 + 0.5 < x < x1 - 0.5) if s["text"].strip() and s.get("chars") else []
+        if not cuts:
+            out.append(s)
             continue
-        end = min((r.x0 for r in boxes if s["bbox"][0] < r.x0 < s["bbox"][2]), default=None)
-        if end is not None:
-            cut = lambda bb: (bb[0], bb[1], min(bb[2], end), bb[3])  # noqa: E731
-            spans[k] = {**s, "bbox": cut(s["bbox"]), "chars": [{**c, "bbox": cut(c["bbox"])} for c in s["chars"]]}
-    spans.sort(key=lambda s: s["bbox"][0])
-    # a gap between the two lines' text is a space (as _add_row puts one between rows): "p₁ < p₂", set as
-    # separate pieces with room around "<"
-    mine = {id(s) for s in line["spans"]}
-    theirs = [id(s) in mine for s in spans]
+        parts: list[list[dict]] = [[]]
+        k = 0
+        for c in s["chars"]:
+            while k < len(cuts) and (c["bbox"][0] + c["bbox"][2]) / 2 >= cuts[k]:
+                if parts[-1]:
+                    parts.append([])
+                k += 1
+            parts[-1].append(c)
+        for cs in (p for p in parts if p):
+            out.append({**s, "chars": cs, "text": "".join(c["c"] for c in cs), "origin": cs[0]["origin"],
+                        "bbox": (cs[0]["bbox"][0], s["bbox"][1], cs[-1]["bbox"][2], s["bbox"][3])})
+    return out
+
+
+def _merge_line(host: dict, line: dict, cut: bool = True) -> bool:
+    """Put line's spans into host, in order across (see _join_interleaved); False when host is full
+    (JOIN_SPANS_MAX). Only what the new spans change is looked at: blanks of either line starting on a glyph of
+    the other are dropped, blanks running under one are cut short at it, and a gap between the two lines' text
+    is a space (as _add_row puts one between rows: "p₁ < p₂", set as separate pieces with room around "<")."""
+    if len(host["spans"]) + len(line["spans"]) > JOIN_SPANS_MAX:
+        return False
+    # a span of one line running across where the other line's text starts is cut there, by its characters: the
+    # script then sorts into its place ("khí H" "₂" " trong", not "khí H trong …₂")
+    # (lines running into each other – Word's export – keep their spans whole, as before)
+    if cut:
+        host_edges = [s["bbox"][0] for s in host["spans"] if s["text"].strip()]
+        line_edges = [s["bbox"][0] for s in line["spans"] if s["text"].strip()]
+        host["spans"] = _cut_spans(host["spans"], line_edges)
+        line["spans"] = _cut_spans(line["spans"], host_edges)
+    old_boxes = [(s["bbox"][0], s["bbox"][2]) for s in host["spans"] if s["text"].strip()]
+    new_boxes = [(s["bbox"][0], s["bbox"][2]) for s in line["spans"] if s["text"].strip()]
+
+    def settle(spans: list[dict], boxes: list[tuple[float, float]]) -> list[dict]:
+        kept = []
+        for s in spans:
+            if not s["text"].strip():
+                x0, x1 = s["bbox"][0], s["bbox"][2]
+                if any(a - 0.5 <= x0 < b - 0.5 for a, b in boxes):
+                    continue
+                end = min((a for a, _b in boxes if x0 < a < x1), default=None)
+                if end is not None:
+                    cut = lambda bb: (bb[0], bb[1], min(bb[2], end), bb[3])  # noqa: E731
+                    s = {**s, "bbox": cut(s["bbox"]), "chars": [{**c, "bbox": cut(c["bbox"])} for c in s["chars"]]}
+            kept.append(s)
+        return kept
+
+    mine = settle(line["spans"], old_boxes + new_boxes)
+    ids = {id(s) for s in mine}
+    spans = sorted(settle(host["spans"], new_boxes) + mine, key=lambda s: s["bbox"][0])
     last = None  # index of the previous visible span
     for k, sp in enumerate(spans):
         if not sp["text"].strip():
             last = None
             continue
-        if last is not None and theirs[last] != theirs[k]:
+        if last is not None and (id(spans[last]) in ids) != (id(sp) in ids):
             prev = spans[last]
             if not prev["text"].endswith(" ") and not sp["text"].startswith(" ") and sp["chars"] \
-                    and sp["bbox"][0] - prev["bbox"][2] >= 0.2 * max(prev["size"], sp["size"]):
+                    and sp["bbox"][0] - prev["bbox"][2] >= SPACE_GAP * max(prev["size"], sp["size"]):
                 first = sp["chars"][0]
                 space = {**first, "c": " ", "bbox": (prev["bbox"][2], first["bbox"][1], sp["bbox"][0], first["bbox"][3])}
                 spans[k] = {**sp, "text": " " + sp["text"], "chars": [space] + sp["chars"],
                             "bbox": (prev["bbox"][2], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3])}
+                if id(sp) in ids:
+                    ids.add(id(spans[k]))
         last = k
     host["spans"] = spans
     host["bbox"] = tuple(pymupdf.Rect(host["bbox"]) | pymupdf.Rect(line["bbox"]))
+    return True
 
 
 def _add_row(q: _Row, r: _Row) -> None:
@@ -3117,6 +3217,34 @@ def _bare_label(row: _Row) -> bool:
     return bool(re.fullmatch(r"\s*[A-DĐa-d][.)]\s*", row.text))
 
 
+def _join_labels(rows: list[_Row], counts: Counter) -> list[_Row]:
+    """A lone answer label ("A. ") of a block of several lines joins the option right after it on its baseline
+    (Adobe's PDF Library keeps "A. " and "p₁ < p₂…" apart with a subscript line in between). One pass, rows found
+    by baseline."""
+    labels = [r for r in rows if counts[r.block] != 1 and _bare_label(r)]
+    if not labels:
+        return list(rows)
+    near: dict[int, list[_Row]] = {}
+    for q in rows:
+        near.setdefault(int(q.baseline // 4), []).append(q)
+    gone: set[int] = set()
+    for r in labels:
+        if id(r) in gone:
+            continue
+        key = int(r.baseline // 4)
+        best = None
+        for q in (q for k in (key - 1, key, key + 1) for q in near.get(k, ())):
+            if q is r or id(q) in gone or _bare_label(q) or abs(q.baseline - r.baseline) > 0.3 * min(q.size, r.size):
+                continue
+            gap = q.x0 - r.x1
+            if -1 <= gap <= 4 * max(q.size, r.size) and (best is None or gap < best[0]):
+                best = (gap, q)
+        if best is not None:
+            _add_row(best[1], r)
+            gone.add(id(r))
+    return [r for r in rows if id(r) not in gone]
+
+
 def _join_split_lines(rows: list[_Row]) -> list[_Row]:
     """One printed line that MuPDF cut into one-line blocks (around formulas,
     between answer options) becomes one row again: a row whose block has no
@@ -3125,14 +3253,12 @@ def _join_split_lines(rows: list[_Row]) -> list[_Row]:
     counts = Counter(r.block for r in rows)
     formula = lambda row: any(run.image or run.math for seg in row.segs for run in seg.runs)
     option = lambda row: bool(ITEM_LABEL.match(row.text.lstrip()))
-    out = list(rows)
+    out = _join_labels(rows, counts)
     changed = True
     while changed:
         changed = False
         for r in sorted(out, key=lambda x: x.x0):
-            # a lone answer label joins its option in its own block too ("A. " and "p₁ < p₂…" kept apart by a
-            # subscript line in between: Adobe's PDF Library)
-            if counts[r.block] != 1 and not (option(r) and _bare_label(r)):
+            if counts[r.block] != 1:
                 continue
             for q in out:
                 if q is r or abs(q.baseline - r.baseline) > 0.3 * min(q.size, r.size):
