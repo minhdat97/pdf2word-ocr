@@ -15,12 +15,22 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
-from .model import LINE_BREAK, TAB, Columns, PageLayout, Paragraph, Picture, Run, Table, Version
+from .model import (
+    LINE_BREAK,
+    TAB,
+    Columns,
+    PageLayout,
+    Paragraph,
+    Picture,
+    Run,
+    Table,
+    Version,
+)
 from .omml import latex_to_omml
 
 FONT = "Times New Roman"
 EMU_PER_PT = 12700
-SAME_PAPER = 3.0  # pt: page sizes this close are one paper size (no new Word section)
+SAME_PAPER = 0.1  # page sizes within 10% of each other are one paper (no new Word section)
 BOTTOM_SLACK = 10.0  # pt below the lowest line of the fullest page
 TAB_ALIGN = {
     "left": WD_TAB_ALIGNMENT.LEFT,
@@ -542,11 +552,12 @@ def _fill_story(story, paras: list[Paragraph], margin_left: float, right_edge: f
 def _section_starts(pages: list[PageLayout], versions: list[Version]) -> list[int]:
     """Pages that open a Word section: where the paper size or orientation changes (a landscape table after portrait
     questions), and where each exam version starts and ends (its own page numbering)."""
-    # (sizes a few points apart are one paper: A4 written as 595.28 × 841.89 or 595.5 × 842.5)
-    starts = {0} | {
-        i for i in range(1, len(pages))
-        if abs(pages[i].width_pt - pages[i - 1].width_pt) > SAME_PAPER or abs(pages[i].height_pt - pages[i - 1].height_pt) > SAME_PAPER
-    }
+    # (sizes a little apart are one paper: A4 written as 595.28 × 841.89 or 595.5 × 842.5, a scan app's 589 × 835;
+    # A4 against A3 or A5 is 41% apart, portrait against landscape 29%)
+    def other(a: PageLayout, b: PageLayout) -> bool:
+        return any(abs(x - y) > SAME_PAPER * max(x, y) for x, y in ((a.width_pt, b.width_pt), (a.height_pt, b.height_pt)))
+
+    starts = {0} | {i for i in range(1, len(pages)) if other(pages[i], pages[i - 1])}
     for v in versions:
         starts |= {v.start} | ({v.end + 1} if v.end + 1 < len(pages) else set())
     return sorted(starts)
@@ -555,11 +566,9 @@ def _section_starts(pages: list[PageLayout], versions: list[Version]) -> list[in
 def _empty_story(story) -> None:
     """An unlinked header or footer with nothing to show: its one empty paragraph a point high, so it does not
     push the body (Word moves the body below a header or footer taller than the margin)."""
-    pf = story.paragraphs[0]._p.get_or_add_pPr()
-    spacing = OxmlElement("w:spacing")
-    spacing.set(qn("w:line"), "20")
-    spacing.set(qn("w:lineRule"), "exact")
-    pf.insert(0, spacing)
+    pf = story.paragraphs[0].paragraph_format  # (python-docx keeps w:pPr's children in the schema's order)
+    pf.line_spacing = Pt(1)
+    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
 
 
 def _break_section(doc) -> object:
@@ -626,17 +635,16 @@ def build_docx(
     starts = _section_starts(pages, versions)
     ends = starts[1:] + [len(pages)]
 
-    # the versions' lines are all headers or all footers (one zone): only that story is each section's own
-    own_story = "header" if versions and all(v.line.zone == "top" for v in versions) else "footer"
+    shown = {"header": False, "footer": False}  # whether the previous section's header / footer shows a line
 
     def open_section(k: int) -> tuple[float, float, float, float]:
         """Set up the section of pages starts[k]..; (left margin, top margin, right edge, content bottom)."""
         first, group = starts[k], pages[starts[k] : ends[k]]
         section = doc.sections[0] if k == 0 else _break_section(doc)
         version = next((v for v in versions if v.start <= first <= v.end), None)
-        # the page the header/footer lines were measured on (a version's first page; else the file's first page):
+        # the page the header/footer lines were measured on (the version's line's own; else the file's first page):
         # their distance from the paper's edge stays that of the PDF on a page of another size
-        ref = pages[version.start] if version else pages[0]
+        ref = pages[version.page] if version else pages[0]
         top_lines, bottom_lines = header, footer
         if versions:
             line = [version.line] if version else []
@@ -645,7 +653,7 @@ def build_docx(
                 total = str(version.end - version.start + 1)
                 line = [replace(version.line, runs=[
                     replace(r, text=total, field=None) if r.field == "SECTIONPAGES" else r for r in version.line.runs])]
-            top_lines, bottom_lines = (line, []) if own_story == "header" else ([], line)
+            top_lines, bottom_lines = (line, []) if version and version.line.zone == "top" else ([], line)
         section.page_width, section.page_height = Pt(group[0].width_pt), Pt(group[0].height_pt)
         if len(starts) > 1:
             section.orientation = WD_ORIENT.LANDSCAPE if group[0].width_pt > group[0].height_pt else WD_ORIENT.PORTRAIT
@@ -653,12 +661,17 @@ def build_docx(
         section.left_margin, section.right_margin = Pt(left), Pt(right)
         section.top_margin, section.bottom_margin = Pt(top), Pt(bottom)
         right_edge = group[0].width_pt - right
-        own = top_lines if own_story == "header" else bottom_lines
-        if versions and k:  # each section its own lines (none on pages outside the versions: a matrix, a key)
-            story = section.header if own_story == "header" else section.footer
-            story.is_linked_to_previous = False
-            if not own:
-                _empty_story(story)
+        if versions:
+            # each section its own line, where its PDF has it; a header or footer the previous section showed a line
+            # in is emptied where this one has none (a matrix, a key); one no section before showed anything in stays
+            # linked (no story: no room taken)
+            for name, own in (("header", top_lines), ("footer", bottom_lines)):
+                if k and (own or shown[name]):
+                    story = getattr(section, name)
+                    story.is_linked_to_previous = False
+                    if not own:
+                        _empty_story(story)
+                shown[name] = bool(own)
         if top_lines:
             section.header_distance = Pt(max(min(h.y0 for h in top_lines), 4))
             if k == 0 or versions:
@@ -757,6 +770,8 @@ def build_docx(
                 _float_picture(first_para, pic, next(z))
         if new_page:  # empty page
             doc.add_paragraph().paragraph_format.page_break_before = True
+        elif section_start and not page.elements and not page.pictures:  # an empty page opening a section
+            doc.add_paragraph()
 
     doc.core_properties.author = "pdf2word-ocr"
     doc.save(out_path)

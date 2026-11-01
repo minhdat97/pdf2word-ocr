@@ -816,8 +816,8 @@ def _broken_map(chars: list[dict]) -> bool:
         if c["c"] == "\ufffd":
             return True
         if (
-            prev is not None and c["c"] == prev["c"] and c["c"].isalpha() and c["bbox"][2] - c["bbox"][0] < 0.01
-            and prev["bbox"][2] - prev["bbox"][0] >= 0.01
+            prev is not None and c["c"] == prev["c"] and c["c"].isalpha() and c["c"] != "f"  # (the ligature ﬀ as "ff")
+            and c["bbox"][2] - c["bbox"][0] < 0.01 and prev["bbox"][2] - prev["bbox"][0] >= 0.01
         ):
             return True
         prev = c
@@ -3030,11 +3030,30 @@ def _join_interleaved(lines: list[dict]) -> list[dict]:
         return plain[id(ln)]
 
     new_rules = len(lines) <= JOIN_LINES_MAX
-    sizes = [b[1] for line in lines if (b := base_of(line)) is not None]
+    # small against the block's biggest plain text (a formula's big bracket makes no script of the text beside it)
+    sizes = [b[1] for line in lines if (b := base_of(line)) is not None and plain_of(line)]
     big = max(sizes, default=0.0)
+    deferred = {
+        id(line) for line in lines
+        if new_rules and (b := base_of(line)) is not None and b[1] <= SCRIPT_SIZE * big and _script_line(line)
+        and plain_of(line)
+    }
+    # the scripts' places: lines meeting around one get no space for the room it takes ("27" "⁰" "C")
+    holes = [line["bbox"] for line in lines if id(line) in deferred]
+
+    def overlapping(line: dict) -> dict | None:
+        """A line of out on line's baseline that it runs into."""
+        base = base_of(line)
+        for q in out if base is not None else ():
+            qb = base_of(q)
+            if qb is not None and abs(qb[0] - base[0]) <= 0.3 * max(qb[1], base[1]) \
+                    and max(line["bbox"][0] - q["bbox"][2], q["bbox"][0] - line["bbox"][2]) < -1:
+                return q
+        return None
+
     for line in lines:
         base = base_of(line)
-        if new_rules and base is not None and base[1] <= SCRIPT_SIZE * big and _script_line(line) and plain_of(line):
+        if id(line) in deferred:
             scripts.append((len(out), line))
             continue
         host, overlap = None, False
@@ -3052,15 +3071,19 @@ def _join_interleaved(lines: list[dict]) -> list[dict]:
                         and not OPTION_LABEL.match("".join(s["text"] for s in right["spans"]).lstrip()[:2]):
                     host = q
                     break
-        if host is None or not _merge_line(host, line, cut=not overlap):
+        if host is None or not _merge_line(host, line, cut=not overlap, holes=holes):
             out.append(line)
             continue
         bases.pop(id(host), None)
         plain[id(host)] = plain_of(host) and plain_of(line)
     kept = 0
     for at, line in scripts:
-        host = _script_host(line, out, base_of, plain_of)
-        if host is None or not _merge_line(host, line):  # stays where it was
+        host, cut = _script_host(line, out, base_of, plain_of), True
+        if host is None:
+            # a short line no line takes as its script (beside a bigger heading): it joins a line it runs into, as
+            # any line ("27 C" + "⁰ )" of Word's export)
+            host, cut = overlapping(line), False
+        if host is None or not _merge_line(host, line, cut=cut):  # stays where it was
             out.insert(at + kept, line)
             kept += 1
         else:
@@ -3087,11 +3110,11 @@ def _script_line(line: dict) -> bool:
 
 
 def _script_host(line: dict, lines: list[dict], base_of=_line_baseline, plain_of=None) -> dict | None:
-    """The line a script line belongs to: larger plain text whose box holds the script's middle, the script inside
-    its width (or just after it); the one whose baseline is nearest."""
+    """The line a script line belongs to: larger plain text whose box holds the script's middle, the script starting
+    inside its width or just after it (however wide: "Fe" "³⁺"); the one whose baseline is nearest."""
     plain_of = plain_of or _plain_line
     size = max(s["size"] for s in line["spans"] if s["text"].strip())
-    x0, y0, x1, y1 = line["bbox"]
+    x0, y0, _x1, y1 = line["bbox"]
     cy = (y0 + y1) / 2
     best, best_d = None, 0.0
     for q in lines:
@@ -3100,7 +3123,7 @@ def _script_host(line: dict, lines: list[dict], base_of=_line_baseline, plain_of
         qb = base_of(q)
         if qb is None or size > SCRIPT_SIZE * qb[1]:
             continue
-        if x0 < q["bbox"][0] - 0.3 * qb[1] or x1 > q["bbox"][2] + 0.6 * qb[1] or not plain_of(q):
+        if x0 < q["bbox"][0] - 0.3 * qb[1] or x0 > q["bbox"][2] + 0.3 * qb[1] or not plain_of(q):
             continue
         if best is None or abs(qb[0] - cy) < best_d:
             best, best_d = q, abs(qb[0] - cy)
@@ -3130,11 +3153,13 @@ def _cut_spans(spans: list[dict], edges: list[float]) -> list[dict]:
     return out
 
 
-def _merge_line(host: dict, line: dict, cut: bool = True) -> bool:
+def _merge_line(host: dict, line: dict, cut: bool = True, holes: list[tuple] = ()) -> bool:
     """Put line's spans into host, in order across (see _join_interleaved); False when host is full
     (JOIN_SPANS_MAX). Only what the new spans change is looked at: blanks of either line starting on a glyph of
     the other are dropped, blanks running under one are cut short at it, and a gap between the two lines' text
-    is a space (as _add_row puts one between rows: "p₁ < p₂", set as separate pieces with room around "<")."""
+    is a space (as _add_row puts one between rows: "p₁ < p₂", set as separate pieces with room around "<"), the room
+    `holes` take there (boxes of scripts still to come) not counted. Scripts starting at one x: the lower first
+    (x₁²; pieces of a big sign in the text's size stay in the PDF's order)."""
     if len(host["spans"]) + len(line["spans"]) > JOIN_SPANS_MAX:
         return False
     # a span of one line running across where the other line's text starts is cut there, by its characters: the
@@ -3164,7 +3189,9 @@ def _merge_line(host: dict, line: dict, cut: bool = True) -> bool:
 
     mine = settle(line["spans"], old_boxes + new_boxes)
     ids = {id(s) for s in mine}
-    spans = sorted(settle(host["spans"], new_boxes) + mine, key=lambda s: s["bbox"][0])
+    top = max((s["size"] for s in host["spans"] + line["spans"]), default=0.0)
+    spans = sorted(settle(host["spans"], new_boxes) + mine,
+                   key=lambda s: (s["bbox"][0], -s["origin"][1] if s["size"] <= SCRIPT_SIZE * top else 0.0))
     last = None  # index of the previous visible span
     for k, sp in enumerate(spans):
         if not sp["text"].strip():
@@ -3172,12 +3199,15 @@ def _merge_line(host: dict, line: dict, cut: bool = True) -> bool:
             continue
         if last is not None and (id(spans[last]) in ids) != (id(sp) in ids):
             prev = spans[last]
+            # (a script to come in the gap: the space after it – "H" "₂" " trong", "27" "⁰" "C" without one)
+            start = max([prev["bbox"][2]] + [h[2] for h in holes if prev["bbox"][2] - 1 <= h[0] and h[2] <= sp["bbox"][0] + 1
+                                             and h[1] < sp["bbox"][3] and h[3] > sp["bbox"][1]])
             if not prev["text"].endswith(" ") and not sp["text"].startswith(" ") and sp["chars"] \
-                    and sp["bbox"][0] - prev["bbox"][2] >= SPACE_GAP * max(prev["size"], sp["size"]):
+                    and sp["bbox"][0] - start >= SPACE_GAP * max(prev["size"], sp["size"]):
                 first = sp["chars"][0]
-                space = {**first, "c": " ", "bbox": (prev["bbox"][2], first["bbox"][1], sp["bbox"][0], first["bbox"][3])}
+                space = {**first, "c": " ", "bbox": (start, first["bbox"][1], sp["bbox"][0], first["bbox"][3])}
                 spans[k] = {**sp, "text": " " + sp["text"], "chars": [space] + sp["chars"],
-                            "bbox": (prev["bbox"][2], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3])}
+                            "bbox": (start, sp["bbox"][1], sp["bbox"][2], sp["bbox"][3])}
                 if id(sp) in ids:
                     ids.add(id(spans[k]))
         last = k

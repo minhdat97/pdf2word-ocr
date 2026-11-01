@@ -335,9 +335,11 @@ tắt.
     mũ "⁰" cùng ") được" là một dòng riêng bắt đầu giữa "J/kg" và "C") được ghép theo thứ tự ngang,
     không thành tab; mảnh sát nhau ghép thẳng, không chèn tab. PDF in qua Adobe PDF Library cắt dòng ở
     mỗi số mũ/chỉ số: hai mảnh chữ thường cùng đường chân chữ cách nhau dưới 0,5 em là một dòng (khe
-    hở ≥ 0,2 em giữa hai mảnh là một dấu cách), mảnh nhỏ ≤ 4 ký tự (cỡ ≤ 0,8 dòng) nằm trong khung một
-    dòng chữ là số mũ/chỉ số của dòng đó ("2 dm³", "27⁰C", "p₁" – cả khi PDF ghi nó trước dòng); glyph
-    công thức (font toán, Symbol, mã "!\"#") không ghép kiểu này. Hàng bắt đầu bằng dòng chỉ số lấy cỡ chữ
+    hở ≥ 0,15 em giữa hai mảnh là một dấu cách, không tính chỗ số mũ/chỉ số nằm trong khe: "27⁰C"), mảnh
+    nhỏ ≤ 4 ký tự (cỡ ≤ 0,8 chữ thường lớn nhất của khối) bắt đầu trong khung một dòng chữ hay ngay sau nó
+    là số mũ/chỉ số của dòng đó ("2 dm³", "27⁰C", "p₁", "Fe³⁺" – cả khi PDF ghi nó trước dòng; chỉ số dưới
+    và trên cùng chỗ: dưới trước, "x₁²"); mảnh nhỏ không dòng nào nhận (cạnh tiêu đề chữ to) ghép với dòng
+    nó chen vào như mọi dòng; glyph công thức (font toán, Symbol, mã "!\"#") không ghép kiểu này. Hàng bắt đầu bằng dòng chỉ số lấy cỡ chữ
     và đường chân chữ của dòng nhiều chữ nhất; nhãn "A." đứng riêng được nối với phương án ngay sau nó.
     Khung glyph cao hơn 2 em (font khai báo sai: Cambria Math của Adobe PDF Library cao 5,6 em trên dòng
     12 pt) được cắt còn một em quanh đường chân chữ, như khi vẽ: ảnh công thức không trùm sang dòng bên
@@ -414,10 +416,13 @@ tắt.
     PAGE / SECTIONPAGES, đếm lại từ 1 (`convert.split_versions`; nhãn là cả mẩu "Trang 1/3", "1/3" hay nằm
     trong mẩu "Mã đề 121 - Trang 1/3", "Page 1 of 3"; OCR đọc phần còn lại của dòng thành dòng riêng ở một
     trang thì vẫn khớp, giữ dòng đầy đủ nhất); trang không có số (đáp án, ma trận) có chân trang trống cao
-    1 pt (không đẩy thân bài). Chỉ phần các mã đề dùng (chân hay đầu trang) là riêng mỗi section. Mã đề có
+    1 pt (không đẩy thân bài). Mỗi mã đề giữ dòng ở chỗ PDF in (chân hay đầu trang, mỗi mã đề một chỗ);
+    đầu/chân trang section trước có dòng mà section này không có thì để trống 1 pt. Mã đề có
     trang khổ khác ở giữa thì các section của nó cùng dòng, không đếm lại, tổng là số in trên PDF. Có mã đề
-    thì không tìm dòng lặp lại ở đầu/chân trang (trang đầu mỗi mã đề là trang lẻ: tiêu đề đề thi bị coi là
-    đầu trang lẻ của sách in hai mặt). Đoạn đứng ngay sau một dòng bị bỏ
+    thì cái lặp lại ở đầu/chân trang (tên trường, số trang đếm cả file, link) vẫn bị bỏ như không có mã đề,
+    trừ kiểu trang lẻ/chẵn của sách in hai mặt (trang đầu mỗi mã đề là trang lẻ: tiêu đề đề thi bị coi là
+    đầu trang lẻ). Đề một mã đề kèm trang đáp án đánh số riêng ("Trang 1/3…3/3", rồi "Trang 1/1") cũng
+    tách hai section như vậy. Đoạn đứng ngay sau một dòng bị bỏ
     (đầu/chân trang, chữ watermark, link) lấy khoảng trước đoạn từ phần còn lại phía trên nó (0 ở
     đầu trang), không từ dòng đã bỏ: chữ chạy liền nên khoảng đó sẽ thành khe hở giữa trang.
   - Khoảng dòng và khoảng cách đoạn lấy từ baseline thật. Độ rộng "tự nhiên" của mỗi dòng
@@ -541,10 +546,11 @@ tắt.
      trang chỉ có một trang, chỉ bỏ dòng nằm trong dải tiêu đề/chân trang đã tìm thấy – đề 3 trang
      OCR đọc tiêu đề trang 2 khác đi từng làm câu đầu trang 2 bị coi là "tiêu đề trang chẵn".
 - **Ghi DOCX** (`app/docx_builder.py`): khổ giấy, lề, header/footer, ảnh nổi (`wp:anchor`),
-  section mới (khổ, hướng giấy, lề riêng) ở trang đổi khổ/hướng (lệch dưới 3 pt là cùng khổ; bảng ma trận khổ
+  section mới (khổ, hướng giấy, lề riêng) ở trang đổi khổ/hướng (lệch dưới 10% là cùng khổ: trang ứng dụng
+  scan 589 × 835 cạnh trang A4; A4 với A3/A5 lệch 41%, dọc với ngang 29%; bảng ma trận khổ
   ngang sau đề khổ dọc) và ở đầu/cuối mỗi mã đề; khoảng cách chân/đầu trang giữ như trên trang PDF nó được đo
-  (trang A3 trong file A4 không đẩy chân trang lên giữa trang); dấu ngắt section nằm trong đoạn cuối của section (không thành đoạn trống riêng có thể
-  tràn sang trang mới); file một khổ một cách đánh số vẫn một section như trước,
+  (trang A3 trong file A4 không đẩy chân trang lên giữa trang; dòng của mã đề đo trên trang có dòng đầy đủ nhất); dấu ngắt section nằm trong đoạn cuối của section (không thành đoạn trống riêng có thể
+  tràn sang trang mới; trang trống mở đầu section vẫn là một trang); file một khổ một cách đánh số vẫn một section như trước,
   bảng, tab stop, khoảng dòng "at least"/"exactly", tắt widow/orphan control. Lề dưới chừa 10pt
   dưới dòng thấp nhất của trang đầy nhất (Word dàn cao hơn PDF vài pt là dòng cuối đã sang trang
   mới). Lề phải là mép xa nhất mà ít nhất hai khối chữ chạm tới (một dòng PDF lấn lề không làm

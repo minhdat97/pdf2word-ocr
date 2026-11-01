@@ -127,11 +127,13 @@ class Picture:
 @dataclass
 class Version:
     """Pages start..end (inclusive) the PDF numbers from 1 by themselves (one exam version of several: "Mã đề 121
-    … Trang 1/3"); line: their header/footer line, its page numbers as PAGE / SECTIONPAGES fields."""
+    … Trang 1/3"); line: their header/footer line, its page numbers as PAGE / SECTIONPAGES fields; page: the page
+    the line was taken from (its distance from the paper's edge is measured there)."""
 
     start: int
     end: int
     line: Paragraph
+    page: int
 
 
 @dataclass

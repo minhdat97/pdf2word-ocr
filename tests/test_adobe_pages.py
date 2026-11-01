@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lxml import etree  # noqa: E402
 
 from app import native  # noqa: E402
-from app.convert import split_versions  # noqa: E402
+from app.convert import _move_repeated, split_versions  # noqa: E402
 from app.docx_builder import build_docx  # noqa: E402
 from app.model import TAB, PageLayout, Paragraph, Run  # noqa: E402
 
@@ -68,6 +68,10 @@ class BrokenMapTest(unittest.TestCase):
         # "…" written "...", ″ written ′′: not letters, the font's map is not broken
         self.assertFalse(native._broken_map(self.chars(("′", 0, 5), ("′", 5, 5))))
 
+    def test_ligature_ff_is_fine(self):
+        # a math font (STIX) writing its ﬀ ligature as "ff", the second without width
+        self.assertFalse(native._broken_map(self.chars(("f", 0, 5), ("f", 5, 5))))
+
     def test_doubled_letters_drawn_twice_are_fine(self):
         self.assertFalse(native._broken_map(self.chars(("𝑥", 0, 5), ("𝑥", 5, 10))))
 
@@ -105,6 +109,39 @@ class SplitLinesTest(unittest.TestCase):
         out = native._join_interleaved([sub, main])
         text = "".join(s["text"] for s in out[0]["spans"])
         self.assertEqual(text.index("2"), text.index("H") + 1)
+
+    def test_short_line_beside_a_heading_joins_the_line_it_runs_into(self):
+        # Word's export: "… 27 C" then "⁰ )" starting inside it; a 16 pt heading in the block makes "⁰ )" look small
+        head = line(span("ĐỀ THI THỬ", 200, 300, 60, size=16))
+        main = line(span("Nhiệt lượng (t – 27 C", 56, 200, 100))
+        sup = line(span("0", 190, 194, 95, size=7), span(" )", 194, 205, 100))
+        out = native._join_interleaved([head, main, sup])
+        self.assertEqual(len(out), 2)
+        self.assertEqual("".join(s["text"] for s in out[1]["spans"]).replace(" ", ""), "Nhiệtlượng(t–27C0)")
+
+    def test_no_space_where_a_script_goes(self):
+        # Adobe's order: the right piece, then the script, then the left piece; nothing between "27", "⁰" and "C"
+        right = line(span("C, áp suất", 119.6, 170, 100))
+        sup = line(span("0", 115.3, 119.1, 95.4, size=7.1))
+        left = line(span("nhiệt độ 27", 56, 115, 100))
+        out = native._join_interleaved([right, sup, left])
+        self.assertEqual(len(out), 1)
+        self.assertEqual("".join(s["text"] for s in out[0]["spans"]), "nhiệt độ 270C, áp suất")
+
+    def test_stacked_scripts_lower_first(self):
+        sup = line(span("2", 70, 74, 95, size=7))
+        sub = line(span("1", 70, 74, 103, size=7))
+        host = line(span("trị", 56, 70, 100))
+        out = native._join_interleaved([sup, sub, host])
+        self.assertEqual("".join(s["text"] for s in out[0]["spans"]), "trị12")
+
+    def test_wide_script_at_the_end(self):
+        # "Fe" "³⁺": the script runs more than half an em past its line's end
+        host = line(span("Fe", 56, 70, 100))
+        sup = line(span("3+", 70.3, 78.5, 95, size=7))
+        out = native._join_interleaved([host, sup])
+        self.assertEqual(len(out), 1)
+        self.assertEqual("".join(s["text"] for s in out[0]["spans"]), "Fe3+")
 
     def test_option_label_keeps_its_tab(self):
         # "… D." set 4 pt after the option before it: two options, not one run of text
@@ -192,6 +229,85 @@ class VersionsTest(unittest.TestCase):
         self.assertTrue(empties and all('w:lineRule="exact"' in f for f in empties))  # the key's and matrix's
         restarts = [s.find(W + "pgNumType") is not None for s in root.iter(W + "sectPr")]
         self.assertEqual(restarts, [True, True, False, False])  # not copied into the key and the matrix
+
+    def build(self, pages, versions):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out.docx"
+            build_docx(pages, out, versions=versions)
+            z = zipfile.ZipFile(out)
+            parts = {n: etree.fromstring(z.read(n)) for n in z.namelist() if n.endswith(".xml") and n.startswith("word/")}
+        return parts
+
+    def test_empty_story_in_schema_order(self):
+        # w:pStyle first in w:pPr (Word may refuse or drop the rest otherwise)
+        pages = self.pages()
+        parts = self.build(pages, split_versions(pages))
+        for name, root in parts.items():
+            for ppr in root.iter(W + "pPr"):
+                tags = [c.tag for c in ppr]
+                if W + "pStyle" in tags:
+                    self.assertEqual(tags.index(W + "pStyle"), 0, name)
+
+    def test_versions_in_two_zones(self):
+        # 121 numbered in the footer, 122 in the header (a part from another source): each in its own story
+        pages = [PageLayout(595, 842, elements=[body(f"Câu {n}"), footer(121, n, 2)]) for n in (1, 2)]
+        for n in (1, 2):
+            t = f"Mã đề 122 - Trang {n}/2"
+            pages.append(PageLayout(595, 842, elements=[Paragraph(t, 56, 20, 566, 32, 12, zone="top", runs=[Run(t)]),
+                                                        body(f"Câu {n}")]))
+        parts = self.build(pages, split_versions(pages))
+        doc = parts["word/document.xml"]
+        sects = list(doc.iter(W + "sectPr"))
+        self.assertEqual(len(sects), 2)
+        text = {n: "".join(r.itertext()) for n, r in parts.items() if "/header" in n or "/footer" in n}
+        self.assertTrue(any("122" in t for n, t in text.items() if "/header" in n))
+        self.assertFalse(any("122" in t for n, t in text.items() if "/footer" in n))
+        self.assertTrue(all(int(s.find(W + "pgMar").get(W + "footer")) < 1000 for s in sects))  # not 805 pt
+
+    def test_scan_sizes_are_one_paper(self):
+        pages = [PageLayout(w, h, elements=[body("x")]) for w, h in ((595, 842), (589, 835), (601, 849))]
+        parts = self.build(pages, [])
+        self.assertEqual(len(list(parts["word/document.xml"].iter(W + "sectPr"))), 1)
+
+    def test_footer_distance_from_the_lines_page(self):
+        # the fullest line is on the version's portrait page 2; its first page is landscape
+        pages = []
+        for code in (101, 102):
+            pages.append(PageLayout(842, 595, elements=[body("Bảng"), Paragraph("Trang 1/2", 400, 559, 440, 571, 12,
+                                                                               zone="bottom", runs=[Run("Trang 1/2")])]))
+            t = f"Mã đề {code} - Trang 2/2"
+            pages.append(PageLayout(595, 842, elements=[body("Câu 1"), Paragraph(t, 56, 806, 566, 818, 12, zone="bottom",
+                                                                                runs=[Run(t)])]))
+        versions = split_versions(pages)
+        self.assertEqual([v.page for v in versions], [1, 3])
+        parts = self.build(pages, versions)
+        self.assertTrue(all(s.find(W + "pgMar").get(W + "footer") == "480"
+                            for s in parts["word/document.xml"].iter(W + "sectPr")))  # 842 - 818 = 24 pt
+
+    def test_empty_page_opening_a_section_is_kept(self):
+        pages = self.pages()[:4]
+        pages.insert(2, PageLayout(595, 842))  # blank page between the versions
+        pages += [PageLayout(595, 842), PageLayout(595, 842, elements=[body("ĐÁP ÁN")])]  # blank page, then the key
+        doc = self.build(pages, split_versions(pages))["word/document.xml"]
+        key = next(p for p in doc.iter(W + "p") if "ĐÁP ÁN" in "".join(p.itertext()))
+        before = key.getprevious()
+        self.assertEqual("".join(before.itertext()), "")
+        self.assertIsNone(before.find(f"{W}pPr/{W}sectPr"))  # the blank page's own paragraph, not a section's end
+
+    def test_repeated_lines_go_with_versions(self):
+        # a school's name on every page goes; a title on each version's first page (pages 1, 3, 5) stays
+        pages = []
+        for code in (121, 122, 123):
+            for n in (1, 2):
+                top = [Paragraph("Sở GD&ĐT Hà Nội", 56, 20, 200, 32, 12, zone="top", runs=[Run("Sở GD&ĐT Hà Nội")])]
+                if n == 1:
+                    top.append(Paragraph("ĐỀ THI THỬ", 250, 36, 350, 48, 12, zone="top", runs=[Run("ĐỀ THI THỬ")]))
+                pages.append(PageLayout(595, 842, elements=top + [body(f"Câu {n}", 120), footer(code, n, 2)]))
+        self.assertEqual(len(split_versions(pages)), 3)
+        _move_repeated(pages, {}, two_sided=False)
+        texts = [[e.text for e in p.elements] for p in pages]
+        self.assertFalse(any("Sở GD&ĐT Hà Nội" in t for t in texts))
+        self.assertEqual(sum("ĐỀ THI THỬ" in t for t in texts), 3)
 
     def test_label_inside_a_piece(self):
         for text in ("Mã đề {c} - Trang {n}/2", "Trang {n}/2 - Mã đề thi {c}", "Page {n} of 2 – {c}"):

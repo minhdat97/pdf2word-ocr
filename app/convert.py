@@ -102,7 +102,7 @@ def _page_number_fields(template: Paragraph, occurrences: list[tuple[int, str]],
 
 
 # a page label inside a header/footer piece: "Trang 2/3", "Trang 1/2 - Mã đề thi 121", "Page 2 of 3"
-_LABEL_IN = re.compile(r"\b(?:trang|page)\s*(\d{1,4})\s*(?:/|of)\s*(\d{1,4})\b", re.I)
+_LABEL_IN = re.compile(r"\b(?:trang|page)\s*(\d{1,4})\s*(?:/|of)\s*(\d{1,4})\b", re.IGNORECASE)
 
 
 def _piece_text(runs: list[Run]) -> str:
@@ -164,7 +164,7 @@ def split_versions(pages: list[PageLayout]) -> list[Version]:
     for start, end in runs:
         k = max(range(start, end + 1), key=lambda p: (len(found[p][2]), -p))  # the fullest line
         el, label, _rest = found[k]
-        versions.append(Version(start, end, replace(el, runs=_label_fields(el, label[0], label[3], label[4]))))
+        versions.append(Version(start, end, replace(el, runs=_label_fields(el, label[0], label[3], label[4])), k))
         for p in range(start, end + 1):
             _keep_only(pages[p], [e for e in pages[p].elements if e is not found[p][0]])
     return versions
@@ -388,11 +388,12 @@ def _side(on: list[int], total: int) -> str | None:
     return None
 
 
-def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, object]]) -> None:
+def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, object]], two_sided: bool = True) -> None:
     """Move zone lines and pictures repeated on the pages into `templates` (one
     per kind, with its side); numbers that count pages become PAGE / NUMPAGES
     fields. A line is told by its text and by where it sits (left, centre,
-    right: a book's page number flips between the outer edges)."""
+    right: a book's page number flips between the outer edges). two_sided=False:
+    only what repeats on most pages of both kinds (no odd/even pages)."""
     width = pages[0].width_pt
 
     def key(el, page: PageLayout) -> tuple | None:
@@ -424,7 +425,9 @@ def _move_repeated(pages: list[PageLayout], templates: dict[tuple, tuple[str, ob
         if ITEM_LABEL.match(texts[k][0][1].lstrip()) or (native and not _same_numbers(texts[k], len(pages))):
             del on[k]
     sides = {k: s for k, pages_on in on.items() if (s := _side(pages_on, len(pages)))}
-    if any(s in ("odd", "even") for s in sides.values()):
+    if not two_sided:
+        sides = {k: s for k, s in sides.items() if s == "all"}
+    elif any(s in ("odd", "even") for s in sides.values()):
         # Printed two-sided: what sits on every page of one kind and none of the
         # other belongs there too, even when that kind has a single page – then
         # only where the header/footer found so far sits: a 3-page OCR file whose
@@ -600,9 +603,15 @@ def convert(
         raise TaskError("no_text_found")
     removed_pictures, removed_lines = strip_watermarks(pages) if strip else (0, 0)
     versions = split_versions(pages)
-    # each version's own line numbers its pages: no line for the whole file, and no search for repeated lines
-    # either (a version's first page is an odd page: its title would be taken for a two-sided book's odd header)
-    header, footer = ([], []) if versions else extract_header_footer(pages)
+    if versions:
+        # each version's own line numbers its pages: no line for the whole file; what repeats on the pages (a
+        # school's name, a page number counting the whole file, a site link) goes as it would without versions,
+        # but not as a two-sided book's odd/even lines (a version's first page is an odd page: its title would be
+        # taken for one)
+        _move_repeated(pages, {}, two_sided=False)
+        header, footer = [], []
+    else:
+        header, footer = extract_header_footer(pages)
     out = Path(tempfile.mkstemp(suffix=".docx")[1])
     build_docx(pages, out, header, footer, versions)
     return out, {
