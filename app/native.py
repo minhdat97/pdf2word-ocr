@@ -51,6 +51,12 @@ FIGURE_DPI = 220
 BACKGROUND_DPI = 150
 HEADER_ZONE = 0.08  # top/bottom share of the page searched for headers and footers
 DESCENT = 0.22  # depth below the baseline of a line box, in em
+# A glyph box taller than this many em is the font's metrics read wrong (Cambria Math embedded by Adobe's PDF
+# Library: 5.6 em on a 12 pt line), not the glyph: cut to the em around its baseline (_tight_boxes)
+TALL_BOX = 2.0
+MEET = 0.5  # em: lines of a block on one baseline this close (or running into each other) are one line
+SCRIPT_CHARS = 4  # characters a superscript or subscript line holds at most ("³", "-1", "max")
+SCRIPT_SIZE = 0.8  # a script line's size against its line's
 OCR_REGION_MIN_AREA = 0.15  # share of the page a raster image needs before OCR is tried
 SOFT_HYPHEN = "\xad"
 WATERMARK_MIN_AREA = 0.02  # share of the page from which a background is taken for a watermark
@@ -798,11 +804,29 @@ def _page_fonts(doc: pymupdf.Document, page: pymupdf.Page) -> list[tuple[int, st
     return fonts
 
 
+def _broken_map(chars: list[dict]) -> bool:
+    """A math font's map that cannot be trusted: a glyph outside it (U+FFFD), or a glyph mapped to its letter twice
+    – the second without width (Adobe's PDF Library writes 𝐸𝐸 for the glyph of E, and maps other glyphs to wrong
+    letters as well: T to 𝑘𝑘), so no letter of that font can be taken at its word."""
+    prev = None
+    for c in chars:
+        if c["c"] == "\ufffd":
+            return True
+        if (
+            prev is not None and c["c"] == prev["c"] and c["c"].strip() and c["bbox"][2] - c["bbox"][0] < 0.01
+            and prev["bbox"][2] - prev["bbox"][0] >= 0.01
+        ):
+            return True
+        prev = c
+    return False
+
+
 def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | None:
     """(text the page's Unicode math fonts give without a real mapping (see _simple_font_unmapped),
     names of the page's fonts). None: glyphs that cannot be told apart, so the page's formulas stay
     pictures – a CID font's glyph outside its map (MuPDF writes the glyph id as the character: "ӈ"
-    for ℎ; read without that, it is U+FFFD), a font list or map too large to read, a broken font."""
+    for ℎ; read without that, it is U+FFFD) or mapped to its letter twice (_broken_map), a font list or
+    map too large to read, a broken font."""
     doc = page.parent
     try:
         fonts = _page_fonts(doc, page)
@@ -819,10 +843,10 @@ def _math_fonts(page: pymupdf.Page) -> tuple[frozenset[str], frozenset[str]] | N
                 return None
             unmapped |= chars
         if any(sub == "Type0" for _x, sub, _ns in fonts):  # whatever its name: the span's own name may differ
-            for b in page.get_text("dict", flags=NO_CID_TEXT)["blocks"]:
+            for b in page.get_text("rawdict", flags=NO_CID_TEXT)["blocks"]:
                 for ln in b.get("lines", ()):
                     for s in ln["spans"]:
-                        if UNICODE_MATH_FONT.search(s["font"]) and "\ufffd" in s["text"]:
+                        if UNICODE_MATH_FONT.search(s["font"]) and _broken_map(s["chars"]):
                             return None
         return frozenset(unmapped), names
     except Exception:  # noqa: BLE001 – a broken font object: pictures, the file still converts
@@ -1542,6 +1566,7 @@ class _Extractor:
     def rows(self) -> list[_Row]:
         flags = pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES
         blocks = self.page.get_text("rawdict", flags=flags)["blocks"]
+        _tight_boxes(blocks)
         spans = [s for b in blocks if b["type"] == 0 for ln in b["lines"] for s in ln["spans"]]
         for s in spans:  # rawdict has per-character boxes instead of "text"
             s["text"] = "".join(c["c"] for c in s["chars"])
@@ -1562,6 +1587,7 @@ class _Extractor:
             self.formulas = self._find_formulas(blocks)
             hosts = self._formula_hosts(blocks)
         rows: list[_Row] = []
+        parts: dict[int, list[tuple[int, float, float]]] = {}  # id(row) -> (characters, size, baseline) of its lines
         for bno, b in enumerate(blocks):
             if b["type"] != 0:
                 continue
@@ -1572,9 +1598,19 @@ class _Extractor:
                 prev = rows[-1] if rows else None
                 if prev and prev.block == bno and abs(row.baseline - prev.baseline) <= 0.3 * row.size:
                     # Same baseline in one block: further items of the row.
+                    parts.setdefault(id(prev), [(len(prev.text.strip()), prev.size, prev.baseline)])
+                    parts[id(prev)].append((len(row.text.strip()), row.size, row.baseline))
                     _add_row(prev, row)
                     continue
                 rows.append(row)
+        # A row's size and baseline are those of its line holding the most text (as _row picks a line's span), not
+        # of its first line: Adobe's PDF Library puts p₁'s "1" in a line of its own before the "p" – the row read
+        # as 7 pt and lowered would not join its label "A." (_join_split_lines) and would set a 7 pt paragraph.
+        for r in rows:
+            if id(r) in parts:
+                _n, size, baseline = max(parts[id(r)], key=lambda m: (m[0], m[1]))
+                if r.size <= SCRIPT_SIZE * size:  # only where a script's line came first
+                    r.size, r.baseline = size, baseline
         return _join_split_lines(rows)
 
     # --- formulas -----------------------------------------------------------
@@ -2893,47 +2929,161 @@ def _line_baseline(line: dict) -> tuple[float, float] | None:
     return median(s["origin"][1] for s in visible if s["size"] > main - 0.5), main
 
 
+
+def _tight_boxes(blocks: list[dict]) -> None:
+    """Glyph boxes several em tall (TALL_BOX) cut to the em around their baseline, as the glyphs are drawn
+    (get_texttrace): the font's ascender and descender as the span reports them, else 0.8 and 0.2 em. Cambria Math
+    embedded by Adobe's PDF Library has boxes 5.6 em high: a formula's box would take in the lines above and below
+    it, its picture cover them and their words go into it. The spans, lines and blocks get the boxes of their
+    glyphs. Horizontal lines only (a turned line's baseline is not a y)."""
+    for b in blocks:
+        if b["type"] != 0:
+            continue
+        block_changed = False
+        for ln in b["lines"]:
+            if ln["dir"][0] < 0.98:
+                continue
+            line_changed = False
+            for s in ln["spans"]:
+                size = s["size"]
+                if size <= 0 or s["bbox"][3] - s["bbox"][1] <= TALL_BOX * size:
+                    continue
+                asc, desc = s.get("ascender", 0.8), s.get("descender", -0.2)
+                if not 0.5 <= asc - desc <= 1.5:
+                    asc, desc = 0.8, -0.2
+                for c in s["chars"]:
+                    x0, y0, x1, y1 = c["bbox"]
+                    if y1 - y0 > TALL_BOX * size:
+                        oy = c["origin"][1]
+                        c["bbox"] = (x0, oy - asc * size, x1, oy - desc * size)
+                if s["chars"]:
+                    s["bbox"] = (s["bbox"][0], min(c["bbox"][1] for c in s["chars"]), s["bbox"][2],
+                                 max(c["bbox"][3] for c in s["chars"]))
+                    line_changed = True
+            if line_changed:
+                ln["bbox"] = (ln["bbox"][0], min(s["bbox"][1] for s in ln["spans"]), ln["bbox"][2],
+                              max(s["bbox"][3] for s in ln["spans"]))
+                block_changed = True
+        if block_changed:
+            b["bbox"] = (b["bbox"][0], min(ln["bbox"][1] for ln in b["lines"]), b["bbox"][2],
+                         max(ln["bbox"][3] for ln in b["lines"]))
+
 def _join_interleaved(lines: list[dict]) -> list[dict]:
     """Lines of a block that run into each other on one baseline become one
     line, their spans in order across: Word's export puts a superscript and the
     text after it in a line of its own that starts inside the previous one
-    ("J/kg" "C" + "⁰" ") được"). A blank span starting on a glyph of the other
-    line is dropped; one running under a glyph is cut short at it (the printed
-    space before the superscript, not a tab)."""
+    ("J/kg" "C" + "⁰" ") được"). So do lines on one baseline that meet (Adobe's
+    PDF Library cuts a line at each superscript: "… có " | "2 dm" " hỗn hợp …"),
+    and a script in a line of its own joins the line whose box holds it ("³" of
+    "dm³", "⁰" of "27⁰C", "₁" of "p₁" – before or after that line). A blank span
+    starting on a glyph of the other line is dropped; one running under a glyph is
+    cut short at it (the printed space before the superscript, not a tab)."""
     out: list[dict] = []
+    scripts: list[tuple[int, dict]] = []  # (where it stood in out, line)
+    sizes = [b[1] for line in lines if (b := _line_baseline(line)) is not None]
+    big = max(sizes, default=0.0)
     for line in lines:
         base = _line_baseline(line)
+        if base is not None and base[1] <= SCRIPT_SIZE * big and _script_line(line) and _plain_line(line):
+            scripts.append((len(out), line))
+            continue
         host = None
         if base is not None:
             for q in out:
                 qb = _line_baseline(q)
-                if (
-                    qb is not None
-                    and abs(qb[0] - base[0]) <= 0.3 * max(qb[1], base[1])
-                    and line["bbox"][0] < q["bbox"][2] - 1
-                    and q["bbox"][0] < line["bbox"][2] - 1
-                ):
+                gap = max(line["bbox"][0] - q["bbox"][2], q["bbox"][0] - line["bbox"][2])
+                # running into each other; or meeting, both plain text (a formula's glyphs are grouped apart)
+                meets = gap < -1 or (gap < MEET * max(qb[1], base[1]) if qb else False) and _plain_line(line) and _plain_line(q)
+                if qb is not None and abs(qb[0] - base[0]) <= 0.3 * max(qb[1], base[1]) and meets:
                     host = q
                     break
         if host is None:
             out.append(line)
             continue
-        spans = host["spans"] + line["spans"]
-        boxes = [pymupdf.Rect(s["bbox"]) for s in spans if s["text"].strip()]
-        spans = [
-            s for s in spans
-            if s["text"].strip() or not any(r.x0 - 0.5 <= s["bbox"][0] < r.x1 - 0.5 for r in boxes)
-        ]
-        for k, s in enumerate(spans):
-            if s["text"].strip():
-                continue
-            end = min((r.x0 for r in boxes if s["bbox"][0] < r.x0 < s["bbox"][2]), default=None)
-            if end is not None:
-                cut = lambda bb: (bb[0], bb[1], min(bb[2], end), bb[3])  # noqa: E731
-                spans[k] = {**s, "bbox": cut(s["bbox"]), "chars": [{**c, "bbox": cut(c["bbox"])} for c in s["chars"]]}
-        host["spans"] = sorted(spans, key=lambda s: s["bbox"][0])
-        host["bbox"] = tuple(pymupdf.Rect(host["bbox"]) | pymupdf.Rect(line["bbox"]))
+        _merge_line(host, line)
+    kept = 0
+    for at, line in scripts:
+        host = _script_host(line, out)
+        if host is None:  # stays where it was
+            out.insert(at + kept, line)
+            kept += 1
+        else:
+            _merge_line(host, line)
     return out
+
+
+def _plain_line(line: dict) -> bool:
+    """A line of ordinary text: no glyph of a formula (math or Symbol font, glyphs without usable text, math
+    letters), which _find_formulas groups on its own."""
+    return not any(
+        s["text"].strip() and (
+            MATH_FONT.search(s["font"]) or SYMBOL_FONT.search(s["font"]) or _opaque(s["text"])
+            or any(_math_alnum(ch) for ch in s["text"])
+        )
+        for s in line["spans"]
+    )
+
+
+def _script_line(line: dict) -> bool:
+    """A line that may hold only a superscript or subscript: a few characters (small: see _join_interleaved)."""
+    text = "".join(s["text"] for s in line["spans"]).strip()
+    return 0 < len(text) <= SCRIPT_CHARS
+
+
+def _script_host(line: dict, lines: list[dict]) -> dict | None:
+    """The line a script line belongs to: larger text whose box holds the script's middle, the script inside its
+    width (or just after it); the one whose baseline is nearest."""
+    size = max(s["size"] for s in line["spans"] if s["text"].strip())
+    x0, y0, x1, y1 = line["bbox"]
+    cy = (y0 + y1) / 2
+    best = None
+    for q in lines:
+        qb = _line_baseline(q)
+        if qb is None or size > SCRIPT_SIZE * qb[1] or not _plain_line(q):
+            continue
+        if not (q["bbox"][1] <= cy <= q["bbox"][3]) or x0 < q["bbox"][0] - 0.3 * qb[1] or x1 > q["bbox"][2] + 0.6 * qb[1]:
+            continue
+        if best is None or abs(qb[0] - cy) < abs(_line_baseline(best)[0] - cy):
+            best = q
+    return best
+
+
+def _merge_line(host: dict, line: dict) -> None:
+    """Put line's spans into host, in order across (see _join_interleaved)."""
+    spans = host["spans"] + line["spans"]
+    boxes = [pymupdf.Rect(s["bbox"]) for s in spans if s["text"].strip()]
+    spans = [
+        s for s in spans
+        if s["text"].strip() or not any(r.x0 - 0.5 <= s["bbox"][0] < r.x1 - 0.5 for r in boxes)
+    ]
+    for k, s in enumerate(spans):
+        if s["text"].strip():
+            continue
+        end = min((r.x0 for r in boxes if s["bbox"][0] < r.x0 < s["bbox"][2]), default=None)
+        if end is not None:
+            cut = lambda bb: (bb[0], bb[1], min(bb[2], end), bb[3])  # noqa: E731
+            spans[k] = {**s, "bbox": cut(s["bbox"]), "chars": [{**c, "bbox": cut(c["bbox"])} for c in s["chars"]]}
+    spans.sort(key=lambda s: s["bbox"][0])
+    # a gap between the two lines' text is a space (as _add_row puts one between rows): "p₁ < p₂", set as
+    # separate pieces with room around "<"
+    mine = {id(s) for s in line["spans"]}
+    theirs = [id(s) in mine for s in spans]
+    last = None  # index of the previous visible span
+    for k, sp in enumerate(spans):
+        if not sp["text"].strip():
+            last = None
+            continue
+        if last is not None and theirs[last] != theirs[k]:
+            prev = spans[last]
+            if not prev["text"].endswith(" ") and not sp["text"].startswith(" ") and sp["chars"] \
+                    and sp["bbox"][0] - prev["bbox"][2] >= 0.2 * max(prev["size"], sp["size"]):
+                first = sp["chars"][0]
+                space = {**first, "c": " ", "bbox": (prev["bbox"][2], first["bbox"][1], sp["bbox"][0], first["bbox"][3])}
+                spans[k] = {**sp, "text": " " + sp["text"], "chars": [space] + sp["chars"],
+                            "bbox": (prev["bbox"][2], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3])}
+        last = k
+    host["spans"] = spans
+    host["bbox"] = tuple(pymupdf.Rect(host["bbox"]) | pymupdf.Rect(line["bbox"]))
 
 
 def _add_row(q: _Row, r: _Row) -> None:
@@ -2962,6 +3112,11 @@ def _add_row(q: _Row, r: _Row) -> None:
     q.y0, q.y1 = min(q.y0, r.y0), max(q.y1, r.y1)
 
 
+def _bare_label(row: _Row) -> bool:
+    """A row holding an answer label and nothing else ("A. ")."""
+    return bool(re.fullmatch(r"\s*[A-DĐa-d][.)]\s*", row.text))
+
+
 def _join_split_lines(rows: list[_Row]) -> list[_Row]:
     """One printed line that MuPDF cut into one-line blocks (around formulas,
     between answer options) becomes one row again: a row whose block has no
@@ -2975,7 +3130,9 @@ def _join_split_lines(rows: list[_Row]) -> list[_Row]:
     while changed:
         changed = False
         for r in sorted(out, key=lambda x: x.x0):
-            if counts[r.block] != 1:
+            # a lone answer label joins its option in its own block too ("A. " and "p₁ < p₂…" kept apart by a
+            # subscript line in between: Adobe's PDF Library)
+            if counts[r.block] != 1 and not (option(r) and _bare_label(r)):
                 continue
             for q in out:
                 if q is r or abs(q.baseline - r.baseline) > 0.3 * min(q.size, r.size):

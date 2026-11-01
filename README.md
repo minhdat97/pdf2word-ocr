@@ -295,7 +295,9 @@ tắt.
     trang), nhiều màu, nhãn có dấu, ký tự lạ, font chữ thường lẫn giữa, glyph dưới 4 pt, công thức quá
     lớn (300 glyph/nét, 32 dấu ghép), LaTeX `omml.py` không nhận; và glyph mà font toán không có bảng mã
     chữ (ToUnicode rỗng/thiếu mã: PDF chỉ còn mã "!\"#$"; font CID thì đọc lại trang không thay mã lạ,
-    gặp U+FFFD là giữ ảnh), font không có trong danh sách font của trang (chỉ đọc từ điển /Font của chính
+    gặp U+FFFD là giữ ảnh; bảng mã ghi một glyph thành chữ đó hai lần – "𝐸𝐸" cho E, chữ thứ hai không rộng:
+    Adobe PDF Library in từ Word, bảng mã đó còn gán nhầm chữ khác, T thành 𝑘 – cũng giữ ảnh cả trang), font
+    không có trong danh sách font của trang (chỉ đọc từ điển /Font của chính
     trang, có giới hạn; font toán riêng của Form XObject thì cả trang giữ ảnh). Bảng mã ToUnicode chỉ đọc
     trong giới hạn (64 KB, giải nén Flate có chặn, 1 MB mỗi file), đối tượng font đọc một lần mỗi file.
     Word for Mac xuất chỉ số bằng glyph không có bảng mã ("x_A" đọc thành "𝑥!"), nên công thức có chỉ số
@@ -331,7 +333,15 @@ tắt.
     (")?", ".") nằm ngoài khối chữ của công thức vẫn là chữ; số và nhãn "(1)", "20%", "(1) 6273." là chữ. Dòng
     bị PDF cắt quanh công thức được nối lại; hai dòng của PDF chen nhau trên cùng đường chân chữ (số
     mũ "⁰" cùng ") được" là một dòng riêng bắt đầu giữa "J/kg" và "C") được ghép theo thứ tự ngang,
-    không thành tab; mảnh sát nhau ghép thẳng, không chèn tab. Dòng công
+    không thành tab; mảnh sát nhau ghép thẳng, không chèn tab. PDF in qua Adobe PDF Library cắt dòng ở
+    mỗi số mũ/chỉ số: hai mảnh chữ thường cùng đường chân chữ cách nhau dưới 0,5 em là một dòng (khe
+    hở ≥ 0,2 em giữa hai mảnh là một dấu cách), mảnh nhỏ ≤ 4 ký tự (cỡ ≤ 0,8 dòng) nằm trong khung một
+    dòng chữ là số mũ/chỉ số của dòng đó ("2 dm³", "27⁰C", "p₁" – cả khi PDF ghi nó trước dòng); glyph
+    công thức (font toán, Symbol, mã "!\"#") không ghép kiểu này. Hàng bắt đầu bằng dòng chỉ số lấy cỡ chữ
+    và đường chân chữ của dòng nhiều chữ nhất; nhãn "A." đứng riêng được nối với phương án ngay sau nó.
+    Khung glyph cao hơn 2 em (font khai báo sai: Cambria Math của Adobe PDF Library cao 5,6 em trên dòng
+    12 pt) được cắt còn một em quanh đường chân chữ, như khi vẽ: ảnh công thức không trùm sang dòng bên
+    cạnh và nuốt chữ của chúng. Dòng công
     thức rộng cạnh hình không bị coi là nhãn của hình.
   - **"Chuyển thành công thức sửa được"** (`careful`, `app/nativeread.py`): các ảnh công thức nội dòng trên
     được mô hình công thức đọc như vùng công thức trang scan (`mathocr.read_regions`: hai lần đọc phải
@@ -398,7 +408,11 @@ tắt.
     trang chẵn, số trang ở mép ngoài). Thay vào là một dòng "Trang " + trường PAGE + "/" + trường
     NUMPAGES ở chỗ PDF đặt số trang (giữa chân trang nếu PDF không có hay số trang đổi bên); y
     giữ số của PDF khi nhãn ghi tổng khác số trang ("Trang 1/4" trong file 6 trang có 2 trang đáp
-    án). Thêm/bớt trang trong Word thì số trang tự cập nhật. Đoạn đứng ngay sau một dòng bị bỏ
+    án). Thêm/bớt trang trong Word thì số trang tự cập nhật. **File nhiều mã đề** đánh số lại từ 1 mỗi
+    mã đề ("Mã đề 121 ⇥ Trang 1/3", rồi "Mã đề 122 ⇥ Trang 1/3"…): mỗi đoạn trang 1/n … n/n (phần còn lại
+    của dòng giống nhau) là một section Word riêng, chân trang là chính dòng đó với số trang thành trường
+    PAGE / SECTIONPAGES, đếm lại từ 1 (`convert.split_versions`); trang không có số (đáp án, ma trận) để
+    chân trang trống. Đoạn đứng ngay sau một dòng bị bỏ
     (đầu/chân trang, chữ watermark, link) lấy khoảng trước đoạn từ phần còn lại phía trên nó (0 ở
     đầu trang), không từ dòng đã bỏ: chữ chạy liền nên khoảng đó sẽ thành khe hở giữa trang.
   - Khoảng dòng và khoảng cách đoạn lấy từ baseline thật. Độ rộng "tự nhiên" của mỗi dòng
@@ -522,6 +536,9 @@ tắt.
      trang chỉ có một trang, chỉ bỏ dòng nằm trong dải tiêu đề/chân trang đã tìm thấy – đề 3 trang
      OCR đọc tiêu đề trang 2 khác đi từng làm câu đầu trang 2 bị coi là "tiêu đề trang chẵn".
 - **Ghi DOCX** (`app/docx_builder.py`): khổ giấy, lề, header/footer, ảnh nổi (`wp:anchor`),
+  section mới (khổ, hướng giấy, lề riêng) ở trang đổi khổ/hướng (bảng ma trận khổ ngang sau đề khổ dọc) và ở
+  đầu/cuối mỗi mã đề; dấu ngắt section nằm trong đoạn cuối của section (không thành đoạn trống riêng có thể
+  tràn sang trang mới); file một khổ một cách đánh số vẫn một section như trước,
   bảng, tab stop, khoảng dòng "at least"/"exactly", tắt widow/orphan control. Lề dưới chừa 10pt
   dưới dòng thấp nhất của trang đầy nhất (Word dàn cao hơn PDF vài pt là dòng cuối đã sang trang
   mới). Lề phải là mép xa nhất mà ít nhất hai khối chữ chạm tới (một dòng PDF lấn lề không làm
@@ -560,6 +577,13 @@ Kết quả hiện tại (M4 Pro):
 - Đề Vật lí 10 gõ MathType, Word xuất PDF 6 trang: ~1,2 giây, ~145 ảnh công thức; khớp 98,7% từ
   với file Word gốc (công thức tính là một từ); Word render đúng 6 trang; trang đọc đề đọc đủ 28/28
   đáp án.
+- Đề Lí 12 bốn mã đề in qua Adobe PDF Library (19 trang: 12 trang đề, đáp án, 6 trang ma trận khổ ngang):
+  trước 40 ảnh công thức cao 45–77 pt nuốt 157 từ của các dòng quanh chúng, 22 trang Word "Trang x/22", bảng
+  ma trận bị cắt; giờ ảnh cao 10–22 pt (12 từ còn thiếu, đều là chữ trong hình), 0 Equation sai (font toán
+  bảng mã hỏng: giữ ảnh), số mũ/chỉ số đúng chỗ, mỗi mã đề một section "Mã đề 12x ⇥ Trang x/3", ma trận
+  khổ ngang; 23 trang Word (mã đề đầu đúng 3 trang, ba mã đề sau dư một trang). Bai_1–6, đề Vật lí, đề
+  mẫu, zoomh, marks, bảng mẫu (bỏ/không bỏ watermark) và đề ZOOM-H giống hệt từng byte; VL1108 chỉ một
+  Equation đổi cỡ 12,5 → 12 (bằng cỡ dòng).
 - "Chuyển thành công thức sửa được" trên đề đó (158 ảnh công thức): 120 đọc được – 11 Equation, 109 chữ có
   chỉ số –, so với 157 công thức chuẩn gõ tay: 120 đúng, 0 sai; 38 giữ ảnh (phần lớn nhãn A, B chữ nghiêng);
   so với file Word gốc mọi Equation đều khớp, chữ 99,3 %. Không chọn: 22 PDF có chữ, Bai_1–6 và VL1108 ra
@@ -629,6 +653,10 @@ Cách chuyển cho máy chủ nhỏ (2026-10-28; trong ngoặc: bản trước, 
   bản đã đo (bản int8, mặc định: thời gian như dòng đầu của bảng ở trên).
 
 ## Giới hạn
+
+- PDF in từ Word qua Adobe PDF Library: Word dàn một số trang dài hơn PDF một hai dòng (dòng chữ, hình
+  neo đầu trang bị đẩy xuống thì chữ chạy vòng quanh hình), nên mã đề 3 trang có thể thành 4 trang Word;
+  nội dung, công thức, số mũ đúng chỗ.
 
 - Bảng phải có kẻ khung đầy đủ; chưa hỗ trợ bảng không viền; màu viền chưa giữ (luôn đen); bảng
   scan (OCR) chưa có ô gộp.

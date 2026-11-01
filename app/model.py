@@ -16,7 +16,7 @@ class Run:
     color: str | None = None  # "RRGGBB"; None = automatic
     font: str | None = None
     script: str | None = None  # "super" | "sub"
-    field: str | None = None  # "PAGE" | "NUMPAGES"
+    field: str | None = None  # "PAGE" | "NUMPAGES" | "SECTIONPAGES"
     highlight: str | None = None  # "RRGGBB" fill painted behind the text (Word highlight / shading)
     # A formula kept as a picture (its glyphs had no usable text): PNG, size in points and how
     # far it reaches below the baseline (text is "\ufffc").
@@ -122,6 +122,16 @@ class Picture:
     # behind_text only: True for a watermark (large, rotated text, pale or translucent paint), False
     # for small dark line art drawn behind the text (rules, bars); None: unknown (treated as watermark)
     watermark: bool | None = None
+
+
+@dataclass
+class Version:
+    """Pages start..end (inclusive) the PDF numbers from 1 by themselves (one exam version of several: "Mã đề 121
+    … Trang 1/3"); line: their header/footer line, its page numbers as PAGE / SECTIONPAGES fields."""
+
+    start: int
+    end: int
+    line: Paragraph
 
 
 @dataclass

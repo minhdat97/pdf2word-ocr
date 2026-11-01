@@ -26,7 +26,7 @@ from .analyze import open_pdf, page_kind
 from .docx_builder import build_docx
 from .errors import TaskError
 from .layout import canonical, looks_like_page_label, looks_like_page_number
-from .model import TAB, PageLayout, Paragraph, Picture, Run
+from .model import TAB, PageLayout, Paragraph, Picture, Run, Version
 from .native import HEADER_ZONE, ITEM_LABEL, image_page, native_page
 from .ocr import formula_reader, formulas_mode, ocr_page
 from .settings import MAX_DRAWINGS, MFR_MAX_FORMULAS, MFR_MAX_PAGES, VIETOCR_MAX_PAGES
@@ -99,6 +99,80 @@ def _page_number_fields(template: Paragraph, occurrences: list[tuple[int, str]],
         if pos < len(r.text):
             runs.append(replace(r, text=r.text[pos:]))
     template.runs = [replace(r, text=canonical(r.text)) for r in runs]
+
+
+def _label_numbers(el: Paragraph) -> tuple[int, int, int] | None:
+    """(piece index, page, total) of a header/footer line's page label "Trang 2/3" ("2 / 3", "Page 2 of 3")."""
+    for j, (_x0, _x1, runs) in enumerate(_pieces_of(el)):
+        text = "".join(r.text for r in runs).strip()
+        numbers = re.findall(r"\d+", text)
+        if text and looks_like_page_label(text) and len(numbers) == 2:
+            return j, int(numbers[0]), int(numbers[1])
+    return None
+
+
+def split_versions(pages: list[PageLayout]) -> list[Version]:
+    """A file of several exam versions numbers each version's pages from 1 ("Mã đề 121 … Trang 1/3", then 122's
+    "Trang 1/3"…): each run of pages a header/footer line numbers 1/n … n/n, the rest of the line the same on them,
+    becomes a Version – that line, its page numbers as fields counting the run's own pages (PAGE, SECTIONPAGES),
+    for a Word section of its own (docx_builder) – and the line leaves its pages. [] when the numbering does not
+    start again at least once: one numbering for the file (extract_header_footer)."""
+    found: dict[int, tuple[Paragraph, int, int, int, str]] = {}  # page -> (line, piece, number, total, rest)
+    for i, page in enumerate(pages):
+        for el in page.elements:
+            if isinstance(el, Paragraph) and el.zone and (label := _label_numbers(el)) is not None:
+                rest = _norm(" ".join("".join(r.text for r in runs) for j, (_a, _b, runs) in enumerate(_pieces_of(el))
+                                      if j != label[0]))
+                found.setdefault(i, (el, *label, rest))
+    runs: list[tuple[int, int]] = []
+    i = 0
+    while i < len(pages):
+        line = found.get(i)
+        if line is None or line[2] != 1:
+            i += 1
+            continue
+        end = i
+        while (nxt := found.get(end + 1)) is not None and nxt[2] == found[end][2] + 1 and nxt[3] == line[3] \
+                and nxt[4] == line[4] and nxt[0].zone == line[0].zone:
+            end += 1
+        if end - i + 1 == line[3]:  # all its pages: 1/n … n/n
+            runs.append((i, end))
+        i = end + 1
+    if len(runs) < 2:
+        return []
+    versions = []
+    for start, end in runs:
+        el, piece, _number, _total, _rest = found[start]
+        line = replace(el, runs=_label_fields(el, piece))
+        versions.append(Version(start, end, line))
+        for k in range(start, end + 1):
+            _keep_only(pages[k], [e for e in pages[k].elements if e is not found[k][0]])
+    return versions
+
+
+def _label_fields(el: Paragraph, piece: int) -> list[Run]:
+    """The line's runs with the label's two numbers (piece `piece`) as PAGE and SECTIONPAGES fields."""
+    out: list[Run] = []
+    k = j = 0
+    for r in el.runs or [Run(el.text, size=el.font_pt, bold=el.bold)]:
+        if r.text == TAB:
+            j += 1
+            out.append(r)
+            continue
+        if j != piece or r.field:
+            out.append(r)
+            continue
+        pos = 0
+        for m in re.finditer(r"\d+", r.text):
+            if k < 2:
+                if m.start() > pos:
+                    out.append(replace(r, text=r.text[pos : m.start()]))
+                out.append(replace(r, text=m.group(), field="PAGE" if k == 0 else "SECTIONPAGES"))
+                pos = m.end()
+            k += 1
+        if pos < len(r.text):
+            out.append(replace(r, text=r.text[pos:]))
+    return out
 
 
 def extract_header_footer(pages: list[PageLayout]) -> tuple[list[Paragraph], list[Paragraph]]:
@@ -501,9 +575,12 @@ def convert(
     if sources["ocr"] == total and not words and not any(p.pictures for p in pages):
         raise TaskError("no_text_found")
     removed_pictures, removed_lines = strip_watermarks(pages) if strip else (0, 0)
+    versions = split_versions(pages)
     header, footer = extract_header_footer(pages)
+    if versions:  # each version's own line numbers its pages: no line for the whole file
+        header, footer = [], []
     out = Path(tempfile.mkstemp(suffix=".docx")[1])
-    build_docx(pages, out, header, footer)
+    build_docx(pages, out, header, footer, versions)
     return out, {
         "mode": mode,
         "used_ocr": words > 0,

@@ -7,6 +7,7 @@ from itertools import count, pairwise
 from pathlib import Path
 
 from docx import Document
+from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
 from docx.exceptions import InvalidSpanError
@@ -14,7 +15,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
-from .model import LINE_BREAK, TAB, Columns, PageLayout, Paragraph, Picture, Run, Table
+from .model import LINE_BREAK, TAB, Columns, PageLayout, Paragraph, Picture, Run, Table, Version
 from .omml import latex_to_omml
 
 FONT = "Times New Roman"
@@ -535,13 +536,63 @@ def _fill_story(story, paras: list[Paragraph], margin_left: float, right_edge: f
 # --- document ---------------------------------------------------------------------
 
 
+def _section_starts(pages: list[PageLayout], versions: list[Version]) -> list[int]:
+    """Pages that open a Word section: where the paper size or orientation changes (a landscape table after portrait
+    questions), and where each exam version starts and ends (its own page numbering)."""
+    size = [(round(p.width_pt), round(p.height_pt)) for p in pages]
+    starts = {0} | {i for i in range(1, len(pages)) if size[i] != size[i - 1]}
+    for v in versions:
+        starts |= {v.start} | ({v.end + 1} if v.end + 1 < len(pages) else set())
+    return sorted(starts)
+
+
+def _break_section(doc) -> object:
+    """A new section from the next page on. python-docx puts the break in an empty paragraph of its own, which can
+    spill onto a page of its own after a full page: the break goes into the section's last paragraph instead (as
+    Word keeps it), or that paragraph is made a point high after a table."""
+    section = doc.add_section(WD_SECTION.NEW_PAGE)
+    body = doc.element.body
+    carrier = body.xpath("./w:p[w:pPr/w:sectPr]")[-1]
+    prev = carrier.getprevious()
+    if prev is not None and prev.tag == qn("w:p") and prev.find(qn("w:pPr") + "/" + qn("w:sectPr")) is None:
+        prev.set_sectPr(carrier.pPr.sectPr)
+        body.remove(carrier)
+    else:
+        pf = carrier.get_or_add_pPr()
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:line"), "20")
+        spacing.set(qn("w:lineRule"), "exact")
+        pf.insert(0, spacing)
+    return section
+
+
+def _restart_numbering(section) -> None:
+    """Page numbers of the section count from 1 (an exam version's own pages)."""
+    sect_pr = section._sectPr
+    for old in sect_pr.findall(qn("w:pgNumType")):
+        sect_pr.remove(old)
+    num = OxmlElement("w:pgNumType")
+    num.set(qn("w:start"), "1")
+    later = next((sect_pr.find(qn(t)) for t in ("w:cols", "w:formProt", "w:vAlign", "w:noEndnote", "w:titlePg",
+                                                  "w:textDirection", "w:bidi", "w:rtlGutter", "w:docGrid")
+                  if sect_pr.find(qn(t)) is not None), None)
+    if later is not None:
+        later.addprevious(num)
+    else:
+        sect_pr.append(num)
+
+
 def build_docx(
     pages: list[PageLayout],
     out_path: Path,
     header: list[Paragraph] | None = None,
     footer: list[Paragraph] | None = None,
+    versions: list[Version] | None = None,
 ) -> None:
-    header, footer = header or [], footer or []
+    """versions: exam versions numbering their own pages (convert.split_versions): each is a section whose footer
+    (or header) is its own line, page numbers counted from 1; `header`/`footer` are then not used. Pages of another
+    paper size or orientation are sections too (landscape tables)."""
+    header, footer, versions = header or [], footer or [], versions or []
     doc = Document()
     normal = doc.styles["Normal"]
     normal.font.name = FONT
@@ -553,32 +604,56 @@ def build_docx(
     # Lines stay where the PDF put them; no widow/orphan reflow across pages.
     normal.paragraph_format.widow_control = False
 
-    section = doc.sections[0]
-    section.page_width = Pt(pages[0].width_pt)
-    section.page_height = Pt(pages[0].height_pt)
-    left, right, top, bottom = _margins(pages, header, footer)
-    section.left_margin, section.right_margin = Pt(left), Pt(right)
-    section.top_margin, section.bottom_margin = Pt(top), Pt(bottom)
-    right_edge = pages[0].width_pt - right
-    if header:
-        section.header_distance = Pt(max(min(h.y0 for h in header), 4))
-        _fill_story(section.header, header, left, right_edge, normal)
-    if footer:
-        section.footer_distance = Pt(max(pages[0].height_pt - max(f.y1 for f in footer), 4))
-        _fill_story(section.footer, footer, left, right_edge, normal)
+    starts = _section_starts(pages, versions)
+    ends = starts[1:] + [len(pages)]
+
+    def open_section(k: int) -> tuple[float, float, float, float]:
+        """Set up the section of pages starts[k]..; (left margin, top margin, right edge, content bottom)."""
+        first, group = starts[k], pages[starts[k] : ends[k]]
+        section = doc.sections[0] if k == 0 else _break_section(doc)
+        version = next((v for v in versions if v.start == first), None)
+        top_lines, bottom_lines = header, footer
+        if versions:
+            line = [version.line] if version else []
+            top_lines, bottom_lines = (line, []) if line and line[0].zone == "top" else ([], line)
+        section.page_width, section.page_height = Pt(group[0].width_pt), Pt(group[0].height_pt)
+        if len(starts) > 1:
+            section.orientation = WD_ORIENT.LANDSCAPE if group[0].width_pt > group[0].height_pt else WD_ORIENT.PORTRAIT
+        left, right, top, bottom = _margins(group, top_lines, bottom_lines)
+        section.left_margin, section.right_margin = Pt(left), Pt(right)
+        section.top_margin, section.bottom_margin = Pt(top), Pt(bottom)
+        right_edge = group[0].width_pt - right
+        if versions and k:  # each section its own lines (none on pages outside the versions: a matrix, a key)
+            section.header.is_linked_to_previous = False
+            section.footer.is_linked_to_previous = False
+        if top_lines:
+            section.header_distance = Pt(max(min(h.y0 for h in top_lines), 4))
+            if k == 0 or versions:
+                _fill_story(section.header, top_lines, left, right_edge, normal)
+        if bottom_lines:
+            section.footer_distance = Pt(max(group[0].height_pt - max(f.y1 for f in bottom_lines), 4))
+            if k == 0 or versions:
+                _fill_story(section.footer, bottom_lines, left, right_edge, normal)
+        if version:
+            _restart_numbering(section)
+        return left, top, right_edge, group[0].height_pt - bottom
 
     z = count(251658240)
 
-    content_bottom = pages[0].height_pt - bottom
     lines = [p.line_height_pt or 1.2 * p.font_pt for pg in pages for p in pg.elements if isinstance(p, Paragraph)]
     body_line = sorted(lines)[len(lines) // 2] if lines else 14.0
+    left, top, right_edge, content_bottom = open_section(0)
     for i, page in enumerate(pages):
+        # A page opening a section starts a page of its own (the section break): no page break before it.
+        section_start = i > 0 and i in starts
+        if section_start:
+            left, top, right_edge, content_bottom = open_section(starts.index(i))
         # A page the PDF only started because the previous one was full flows on
         # from it, so edits (or "Chuẩn hóa đề") never leave a near-empty page; its
         # opening paragraphs are kept together just enough not to slip into the
         # room left on the previous page, so unedited pages still break as in the PDF.
-        room = _room_before(pages[i - 1], page, content_bottom, body_line) if i else None
-        new_page = i > 0 and room is None
+        room = _room_before(pages[i - 1], page, content_bottom, body_line) if i and not section_start else None
+        new_page = i > 0 and room is None and not section_start
         # Word also has the bottom slack (and a point of its own) to fill.
         chain = _keep_chain(page, room + BOTTOM_SLACK + 1) if room is not None else 0
         first_para = None
@@ -590,7 +665,7 @@ def build_docx(
         figures = [p for p in page.pictures if p.wrap and not p.behind_text]
         prev_p = None  # the previous element's Word paragraph, if it was one
         for j, el in enumerate(page.elements):
-            at_top = j == 0 and (i == 0 or new_page)  # the page's first paragraph, at the top margin in Word
+            at_top = j == 0 and (i == 0 or new_page or section_start)  # the page's first paragraph, at the top margin
             space_before = (el.y0 - top) if at_top else el.space_before_pt
             if isinstance(el, Paragraph):
                 gap_top = el.y0 - space_before
